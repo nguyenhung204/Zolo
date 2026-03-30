@@ -4,9 +4,8 @@ import { Phone, Users, Search, MoreHorizontal, Hash, Megaphone } from "lucide-re
 import { useConversation } from "@/hooks/useConversations";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
-import { useCallStore } from "@/stores/callStore";
 import { useRouter } from "next/navigation";
-import { apiClient } from "@/lib/api/client";
+import { useCall } from "@/hooks/useCall";
 import type { ConversationType } from "@/lib/api/conversations";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
@@ -42,7 +41,7 @@ interface ConversationHeaderProps {
 export function ConversationHeader({ conversationId, onMembersClick }: ConversationHeaderProps) {
   const { data: conv } = useConversation(conversationId);
   const router = useRouter();
-  const setActiveMeeting = useCallStore((s) => s.setActiveMeeting);
+  const { startMeeting } = useCall();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   if (!conv) {
@@ -63,11 +62,10 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
       : conv.name ?? "Unnamed";
 
   const handleStartCall = async () => {
+    if (!conv) return;
     try {
-      const res = await apiClient.post(`/calls/${conversationId}/start`);
-      const { meetingId, hostId } = res.data.data;
-      setActiveMeeting({ meetingId, conversationId, hostId });
-      router.push(`/calls/${meetingId}`);
+      const meeting = await startMeeting(conversationId, conv.orgId, false);
+      router.push(`/calls/${meeting.meetingId}`);
     } catch {
       // TODO: toast error
     }

@@ -1,5 +1,5 @@
 import { io, Socket } from "socket.io-client";
-import type { ClientEvents, ServerEvents } from "./events";
+import type { ClientEvents, ServerEvents, CallClientEvents, CallServerEvents } from "./events";
 
 const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:3002";
@@ -38,9 +38,9 @@ export function disconnectChatSocket() {
 
 // ─── Call socket ─────────────────────────────────────────────────────────────
 
-let callSocket: Socket<ServerEvents, ClientEvents> | null = null;
+let callSocket: Socket<CallServerEvents, CallClientEvents> | null = null;
 
-export function getCallSocket(): Socket<ServerEvents, ClientEvents> {
+export function getCallSocket(): Socket<CallServerEvents, CallClientEvents> {
   if (!callSocket) {
     callSocket = io(`${WS_URL}/call`, {
       autoConnect: false,

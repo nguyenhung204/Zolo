@@ -24,7 +24,7 @@ export function useSendMessage() {
   const pendingMap = useRef<Map<string, string>>(new Map()); // clientMessageId → conversationId
 
   const send = useCallback(
-    ({ conversationId, content, type = "TEXT", replyToMessageId, mediaId }: SendOptions) => {
+    ({ conversationId, content, type = "text", replyToMessageId, mediaId }: SendOptions) => {
       const clientMessageId = uuid();
       const socket = getChatSocket();
 
@@ -64,7 +64,7 @@ export function useSendMessage() {
       socket.emit("message:send", {
         conversationId,
         content,
-        type,
+        type: type.toLowerCase() as typeof type,
         clientMessageId,
         replyToMessageId,
         mediaId,

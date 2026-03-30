@@ -10,6 +10,7 @@ export interface Conversation {
   type: ConversationType;
   name: string | null;
   description: string | null;
+  avatarMediaId: string | null;
   avatarUrl: string | null;
   memberCount: number;
   maxOffset: number | string;
@@ -54,13 +55,14 @@ export interface CreateConversationPayload {
   memberIds: string[];
   name?: string;
   description?: string;
+  avatarMediaId?: string;
   metadata?: { departmentId?: string };
 }
 
 export interface UpdateConversationInfoPayload {
   name?: string;
   description?: string;
-  avatarUrl?: string;
+  avatarMediaId?: string;
 }
 
 // ─── API calls ────────────────────────────────────────────────────────────────

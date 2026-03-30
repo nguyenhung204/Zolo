@@ -1,7 +1,9 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
-export type MessageType = "TEXT" | "IMAGE" | "FILE" | "AUDIO" | "VIDEO" | "SYSTEM";
-export type MediaStatus = "CREATED" | "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
+export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system";
+export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
+export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
+export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
 
 export interface WsMessage {
   messageId: string;
@@ -117,20 +119,122 @@ export interface ServerEvents {
 
   error: (data: { message: string; code: string }) => void;
 
-  // ─── Call events ─────────────────────────────────────────────────────────
-  "call:started": (data: {
+  // NOTE: call / meeting events are NOT on this namespace.
+  // They are emitted on the /call namespace — see CallServerEvents below.
+}
+
+// ─── /call namespace — Client → Server ───────────────────────────────────────
+
+export interface CallClientEvents {
+  authenticate: (payload: { token: string }) => void;
+
+  "meeting:start": (payload: {
+    conversationId: string;
+    orgId: string;
+    allowWaitingRoom?: boolean;
+  }) => void;
+
+  "meeting:join": (payload: { conversationId: string }) => void;
+
+  "meeting:approve_waiting": (payload: { meetingId: string; userId: string }) => void;
+
+  "meeting:reject_waiting": (payload: {
+    meetingId: string;
+    userId: string;
+    reason?: string;
+  }) => void;
+
+  "meeting:leave": (payload: { meetingId: string }) => void;
+
+  "meeting:end": (payload: { meetingId: string }) => void;
+
+  "meeting:media_state": (payload: {
+    meetingId: string;
+    micOn: boolean;
+    cameraOn: boolean;
+    screenSharing: boolean;
+  }) => void;
+
+  "meeting:moderate": (payload: {
+    meetingId: string;
+    targetUserId: string;
+    action: ModerationAction;
+    reason?: string;
+  }) => void;
+
+  "meeting:snapshot": (payload: { meetingId: string }) => void;
+}
+
+// ─── /call namespace — Server → Client ───────────────────────────────────────
+
+export interface CallServerEvents {
+  authenticated: (data: { userId: string; socketId: string }) => void;
+
+  "meeting:started": (data: {
     meetingId: string;
     hostId: string;
     conversationId: string;
+    startedAt: string;
   }) => void;
-  "call:join_requested": (data: { meetingId: string; userId: string }) => void;
-  "call:approved": (data: { meetingId: string; approvalToken: string }) => void;
-  "call:participant_joined": (data: { meetingId: string; userId: string }) => void;
-  "call:participant_left": (data: { meetingId: string; userId: string }) => void;
-  "call:media_state_updated": (data: {
+
+  "meeting:join_requested": (data: {
+    meetingId: string;
+    userId: string;
+    conversationId: string;
+  }) => void;
+
+  "meeting:participant_joined": (data: {
+    meetingId: string;
+    userId: string;
+    conversationId: string;
+    role: string;
+    joinedAt: string;
+  }) => void;
+
+  "meeting:participant_left": (data: {
+    meetingId: string;
+    userId: string;
+    conversationId: string;
+  }) => void;
+
+  /** Sent only to the user who was waiting — they are now approved to join */
+  "meeting:approved": (data: { meetingId: string; conversationId: string }) => void;
+
+  /** Sent only to the user who was waiting — they were rejected by the host */
+  "meeting:rejected": (data: {
+    meetingId: string;
+    conversationId: string;
+    reason?: string;
+  }) => void;
+
+  "meeting:ended": (data: {
+    meetingId: string;
+    conversationId: string;
+    durationMs: number;
+  }) => void;
+
+  "meeting:media_state": (data: {
     meetingId: string;
     userId: string;
     mediaState: { micOn: boolean; cameraOn: boolean; screenSharing: boolean };
   }) => void;
-  "call:ended": (data: { meetingId: string; durationMs: number }) => void;
+
+  "meeting:recording_state": (data: {
+    meetingId: string;
+    recordingId: string;
+    status: RecordingStatus;
+    startedBy: string;
+  }) => void;
+
+  "meeting:participant_moderated": (data: {
+    meetingId: string;
+    targetUserId: string;
+    moderatorId: string;
+    action: ModerationAction;
+  }) => void;
+
+  /** Sent only to the user who was kicked */
+  "meeting:kicked": (data: { meetingId: string; reason?: string }) => void;
+
+  error: (data: { message: string; code: string }) => void;
 }

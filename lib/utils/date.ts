@@ -24,3 +24,26 @@ export function formatDistanceToNowStrict(isoString: string): string {
     day: "numeric",
   });
 }
+
+/** Returns HH:mm — e.g. "09:41" */
+export function formatTime(isoString: string): string {
+  return new Date(isoString).toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+/** Returns "Today", "Yesterday", or "Mon, Jan 5" */
+export function formatDateDivider(isoString: string): string {
+  const now = new Date();
+  const d = new Date(isoString);
+  const diffDays = Math.floor(
+    (new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() -
+      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) /
+      86_400_000
+  );
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}

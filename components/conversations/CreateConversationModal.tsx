@@ -14,7 +14,6 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   useCreateConversation,
-  useUpdateConversationInfo,
 } from "@/hooks/useConversations";
 import { useUserSearch } from "@/hooks/useFriends";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
@@ -49,20 +48,19 @@ export function CreateConversationModal({ open, onClose }: Props) {
   const [selectedMembers, setSelectedMembers] = useState<UserSearchResult[]>([]);
   const [selectedDirect, setSelectedDirect] = useState<UserSearchResult | null>(null);
   const [error, setError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
   const create = useCreateConversation();
-  const updateInfo = useUpdateConversationInfo();
   const avatarUpload = useAvatarUpload();
 
   const { data: searchResults = [] } = useUserSearch(memberQuery);
 
   const isUploading =
     avatarUpload.status === "uploading" ||
-    avatarUpload.status === "finalizing" ||
-    avatarUpload.status === "processing";
+    avatarUpload.status === "finalizing";
 
   // ─── Reset ─────────────────────────────────────────────────────────────────
 
@@ -75,6 +73,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
     setSelectedMembers([]);
     setSelectedDirect(null);
     setError("");
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     avatarUpload.reset();
   }, [avatarUpload]);
 
@@ -97,6 +96,8 @@ export function CreateConversationModal({ open, onClose }: Props) {
       deleteMedia(avatarUpload.mediaId).catch(() => {});
       avatarUpload.reset();
     }
+    // Optimistic local preview
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
     avatarUpload.upload(file);
     e.target.value = "";
   };
@@ -138,6 +139,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: selectedMembers.map((m) => m.id),
+          avatarMediaId: avatarUpload.mediaId ?? undefined,
         });
       } else if (type === "DEPARTMENT") {
         if (!departmentId.trim()) {
@@ -161,13 +163,10 @@ export function CreateConversationModal({ open, onClose }: Props) {
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: [],
+          avatarMediaId: avatarUpload.mediaId ?? undefined,
         });
       }
 
-      // Apply avatar if uploaded
-      if (avatarUpload.url && type !== "DIRECT") {
-        await updateInfo.mutateAsync({ id: conv.id, avatarUrl: avatarUpload.url });
-      }
 
       // Clear avatar state so handleClose won't delete the now-saved media
       avatarUpload.reset();
@@ -180,7 +179,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const isPending = create.isPending || updateInfo.isPending;
+  const isPending = create.isPending;
   const disabled = isPending || isUploading;
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -239,10 +238,10 @@ export function CreateConversationModal({ open, onClose }: Props) {
                   onClick={() => fileInputRef.current?.click()}
                   className="relative w-16 h-16 rounded-2xl bg-border/60 flex items-center justify-center cursor-pointer hover:bg-border transition overflow-hidden shrink-0"
                 >
-                  {avatarUpload.url ? (
+                  {previewUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={avatarUpload.url}
+                      src={previewUrl}
                       alt="avatar preview"
                       className="w-full h-full object-cover"
                     />

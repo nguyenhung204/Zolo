@@ -36,7 +36,12 @@ export default function ConversationPage({ params }: Props) {
   }, [id, setActive]);
 
   const memberNames = Object.fromEntries(
-    members.map((m) => [m.userId, m.userId])
+    members.map((m) => [
+      m.userId,
+      (m as typeof m & { displayName?: string; username?: string }).displayName ??
+      (m as typeof m & { username?: string }).username ??
+      m.userId.slice(0, 8),
+    ])
   );
 
   const handleScrollChange = useCallback(

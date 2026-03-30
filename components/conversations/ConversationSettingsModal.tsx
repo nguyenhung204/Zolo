@@ -73,6 +73,12 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [isDirty, setIsDirty] = useState(false);
   const [addQuery, setAddQuery] = useState("");
   const [pendingAdd, setPendingAdd] = useState<UserSearchResult[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const handleClose = () => {
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    onClose();
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -97,8 +103,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const ownerCount = members.filter((m) => m.role.toUpperCase() === "OWNER").length;
   const isUploading =
     avatarUpload.status === "uploading" ||
-    avatarUpload.status === "finalizing" ||
-    avatarUpload.status === "processing";
+    avatarUpload.status === "finalizing";
 
   // Sync edit fields when conv or tab changes
   useEffect(() => {
@@ -115,9 +120,24 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
-    const url = await avatarUpload.upload(file);
-    if (url) {
-      updateInfo.mutate({ id: conversationId, avatarUrl: url });
+    // Optimistic preview — instant feedback while upload runs
+    const blobUrl = URL.createObjectURL(file);
+    setPreviewUrl(blobUrl);
+    const mediaId = await avatarUpload.upload(file);
+    if (mediaId) {
+      updateInfo.mutate(
+        { id: conversationId, avatarMediaId: mediaId },
+        {
+          onSuccess: () => {
+            // Server avatarUrl is now in the refetched query; release the blob
+            setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+          },
+        }
+      );
+    } else {
+      // Upload failed — drop the preview
+      URL.revokeObjectURL(blobUrl);
+      setPreviewUrl(null);
     }
   };
 
@@ -157,14 +177,14 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
-  const displayAvatarUrl = avatarUpload.url ?? conv.avatarUrl;
+  const displayAvatarUrl = previewUrl ?? conv.avatarUrl;
 
   return (
     <>
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={handleClose}
       />
 
       {/* Dialog */}
@@ -174,7 +194,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
           <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
             <h2 className="text-base font-bold text-primary">Conversation Settings</h2>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-border/50 transition cursor-pointer"
             >
               <X className="w-4 h-4" />

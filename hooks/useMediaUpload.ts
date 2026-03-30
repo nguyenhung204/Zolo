@@ -9,6 +9,7 @@ import {
   preCheckMedia,
   type MediaType,
 } from "@/lib/api/media";
+// Note: getMediaSignedUrl is kept for pollForSignedUrl (used by other callers if needed)
 
 type UploadStatus = "idle" | "checking" | "uploading" | "finalizing" | "processing" | "ready" | "error";
 
@@ -112,7 +113,6 @@ interface AvatarUploadState {
   status: UploadStatus;
   progress: number;
   mediaId: string | null;
-  url: string | null;
   error: string | null;
 }
 
@@ -121,12 +121,11 @@ export function useAvatarUpload() {
     status: "idle",
     progress: 0,
     mediaId: null,
-    url: null,
     error: null,
   });
 
   const upload = useCallback(async (file: File): Promise<string | null> => {
-    setState({ status: "uploading", progress: 0, mediaId: null, url: null, error: null });
+    setState({ status: "uploading", progress: 0, mediaId: null, error: null });
     try {
       // Step 1: Initiate — get pre-signed PUT URL
       const { mediaId, uploadUrl } = await initiateUpload({
@@ -141,15 +140,13 @@ export function useAvatarUpload() {
         setState((s) => ({ ...s, progress }));
       });
 
-      // Step 3: Finalize — tells backend file is in MinIO, triggers worker
+      // Step 3: Finalize — tells backend the file is in MinIO, triggers worker
       setState((s) => ({ ...s, status: "finalizing", progress: 100 }));
       await finalizeUpload({ mediaId });
 
-      // Step 4 + 5: Poll /media/:mediaId/url until worker finishes → signed URL
-      setState((s) => ({ ...s, status: "processing" }));
-      const signedUrl = await pollForSignedUrl(mediaId);
-      setState({ status: "ready", progress: 100, mediaId, url: signedUrl, error: null });
-      return signedUrl;
+      // Done — return mediaId; Gateway resolves the URL at read time
+      setState({ status: "ready", progress: 100, mediaId, error: null });
+      return mediaId;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upload failed";
       setState((s) => ({ ...s, status: "error", error: msg }));
@@ -158,7 +155,7 @@ export function useAvatarUpload() {
   }, []);
 
   const reset = useCallback(() => {
-    setState({ status: "idle", progress: 0, mediaId: null, url: null, error: null });
+    setState({ status: "idle", progress: 0, mediaId: null, error: null });
   }, []);
 
   return { ...state, upload, reset };

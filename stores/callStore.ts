@@ -11,14 +11,17 @@ interface CallState {
   activeMeetingId: string | null;
   conversationId: string | null;
   hostId: string | null;
+  allowWaitingRoom: boolean;
+  isWaiting: boolean; // true when current user is in the waiting room
   participants: MeetingParticipant[];
   myMedia: { micOn: boolean; cameraOn: boolean; screenSharing: boolean };
   waitingParticipants: string[];
   livekitToken: string | null;
   livekitUrl: string | null;
 
-  setActiveMeeting: (data: { meetingId: string; conversationId: string; hostId: string }) => void;
+  setActiveMeeting: (data: { meetingId: string; conversationId: string; hostId: string; allowWaitingRoom?: boolean }) => void;
   setLivekitCredentials: (token: string, url: string) => void;
+  setWaiting: (waiting: boolean) => void;
   addParticipant: (p: MeetingParticipant) => void;
   removeParticipant: (userId: string) => void;
   updateParticipantMedia: (userId: string, media: Partial<MeetingParticipant>) => void;
@@ -32,17 +35,21 @@ export const useCallStore = create<CallState>((set) => ({
   activeMeetingId: null,
   conversationId: null,
   hostId: null,
+  allowWaitingRoom: false,
+  isWaiting: false,
   participants: [],
-  myMedia: { micOn: true, cameraOn: true, screenSharing: false },
+  myMedia: { micOn: true, cameraOn: false, screenSharing: false },
   waitingParticipants: [],
   livekitToken: null,
   livekitUrl: null,
 
-  setActiveMeeting: ({ meetingId, conversationId, hostId }) =>
-    set({ activeMeetingId: meetingId, conversationId, hostId }),
+  setActiveMeeting: ({ meetingId, conversationId, hostId, allowWaitingRoom }) =>
+    set({ activeMeetingId: meetingId, conversationId, hostId, allowWaitingRoom: allowWaitingRoom ?? false }),
 
   setLivekitCredentials: (token, url) =>
     set({ livekitToken: token, livekitUrl: url }),
+
+  setWaiting: (waiting) => set({ isWaiting: waiting }),
 
   addParticipant: (p) =>
     set((state) => ({
@@ -79,6 +86,8 @@ export const useCallStore = create<CallState>((set) => ({
       activeMeetingId: null,
       conversationId: null,
       hostId: null,
+      allowWaitingRoom: false,
+      isWaiting: false,
       participants: [],
       waitingParticipants: [],
       livekitToken: null,

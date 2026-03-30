@@ -5,11 +5,12 @@ import { useAuthStore } from "@/stores/authStore";
 import { useSocketStore } from "@/stores/socketStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useTypingStore } from "@/stores/typingStore";
-import { useCallStore } from "@/stores/callStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
 import type { WsMessage } from "@/lib/socket/events";
+import { appendMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
+import { getMessages } from "@/lib/api/messages";
 
 /**
  * Initialise the Socket.IO event listeners and keep them alive.
@@ -20,7 +21,6 @@ export function useSocket() {
   const { setConnected } = useSocketStore();
   const { setPresence } = usePresenceStore();
   const { setTyping, clearTyping } = useTypingStore();
-  const callStore = useCallStore();
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Per-user typing auto-clear timers
   const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -59,41 +59,78 @@ export function useSocket() {
 
     // ─── Messages ──────────────────────────────────────────────────────────
     socket.on("message:new", (msg: WsMessage) => {
-      qc.setQueryData(
-        queryKeys.messages.list(msg.conversationId),
-        (old: { pages: WsMessage[][] } | undefined) => {
-          if (!old) return old;
-          // Append to last page (most recent)
-          const pages = [...old.pages];
-          const last = pages[pages.length - 1];
-          // Avoid duplicates
-          if (last.some((m) => m.messageId === msg.messageId)) return old;
-          pages[pages.length - 1] = [...last, msg];
-          return { ...old, pages };
-        }
-      );
-      // Also bump conversation list unread  
+      // Backend may send a partial payload (no content/createdAt) — fetch the
+      // full message from REST so the bubble renders correctly.
+      if (!msg.content || !msg.createdAt) {
+        getMessages({ conversationId: msg.conversationId, after: msg.offset - 1, limit: 1 })
+          .then((page) => {
+            const full = page.data[0];
+            if (full) {
+              appendMessage(qc, msg.conversationId, full);
+              qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+      // Full payload path — append directly without extra round-trip
+      appendMessage(qc, msg.conversationId, {
+        ...msg,
+        type: (msg.type ?? "text").toLowerCase() as WsMessage["type"],
+        updatedAt: msg.editedAt ?? msg.createdAt,
+      });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     });
 
-    socket.on("message:notify", ({ conversationId }) => {
+    socket.on("message:notify", ({ conversationId, latestOffset }: { conversationId: string; latestOffset: number }) => {
+      // Fetch the new message and append it — smooth update without full cache invalidation.
+      // This handles the case where message:new wasn't received (user not in the room).
+      getMessages({ conversationId, after: latestOffset - 1, limit: 1 })
+        .then((page) => {
+          const msg = page.data[0];
+          if (msg) appendMessage(qc, conversationId, msg);
+        })
+        .catch(() => {});
+      // Re-order the sidebar + update unread badge
       qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.unread(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+    });
+
+    socket.on("message:queued", ({ clientMessageId, messageId }: { clientMessageId: string; messageId: string }) => {
+      // Server confirmed message received — update temp id so message:new dedup works
+      const allQueryKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
+      for (const query of allQueryKeys) {
+        qc.setQueryData(
+          query.queryKey,
+          (old: MessagesInfiniteData | undefined) => {
+            if (!old) return old;
+            const pages = old.pages.map((page) => ({
+              ...page,
+              data: page.data.map((m) =>
+                m.clientMessageId === clientMessageId ? { ...m, messageId } : m
+              ),
+            }));
+            return { ...old, pages };
+          }
+        );
+      }
     });
 
     socket.on("message:saved", ({ clientMessageId, messageId, conversationId, offset }) => {
-      // Reconcile optimistic message: swap clientMessageId → real messageId
+      // Reconcile optimistic message: swap clientMessageId → real messageId, clear pending flag
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
-        (old: { pages: WsMessage[][] } | undefined) => {
+        (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
-          const pages = old.pages.map((page) =>
-            page.map((m) =>
+          const pages = old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((m) =>
               m.clientMessageId === clientMessageId
-                ? { ...m, messageId, offset, clientMessageId: undefined }
+                ? { ...m, messageId, offset, clientMessageId: undefined, _pending: false }
                 : m
-            )
-          );
+            ),
+          }));
           return { ...old, pages };
         }
       );
@@ -103,33 +140,35 @@ export function useSocket() {
       // Mark optimistic message as failed — scan all conversation caches
       const allKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
       for (const query of allKeys) {
-      qc.setQueryData(
-        query.queryKey,
-        (old: { pages: WsMessage[][] } | undefined) => {
-          if (!old) return old;
-          const pages = old.pages.map((page) =>
-            page.map((m) =>
-              m.clientMessageId === clientMessageId
-                ? { ...m, _failed: true } as WsMessage & { _failed: boolean }
-                : m
-            )
-          );
-          return { ...old, pages };
-        }
-      );
+        qc.setQueryData(
+          query.queryKey,
+          (old: MessagesInfiniteData | undefined) => {
+            if (!old) return old;
+            const pages = old.pages.map((page) => ({
+              ...page,
+              data: page.data.map((m) =>
+                m.clientMessageId === clientMessageId
+                  ? { ...m, _failed: true, _pending: false }
+                  : m
+              ),
+            }));
+            return { ...old, pages };
+          }
+        );
       }
     });
 
     socket.on("message:edited", ({ messageId, conversationId, content, editedAt }) => {
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
-        (old: { pages: WsMessage[][] } | undefined) => {
+        (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
-          const pages = old.pages.map((page) =>
-            page.map((m) =>
+          const pages = old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((m) =>
               m.messageId === messageId ? { ...m, content, editedAt } : m
-            )
-          );
+            ),
+          }));
           return { ...old, pages };
         }
       );
@@ -138,15 +177,16 @@ export function useSocket() {
     socket.on("message:deleted", ({ messageId, conversationId }) => {
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
-        (old: { pages: WsMessage[][] } | undefined) => {
+        (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
-          const pages = old.pages.map((page) =>
-            page.map((m) =>
+          const pages = old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((m) =>
               m.messageId === messageId
                 ? { ...m, deletedAt: new Date().toISOString() }
                 : m
-            )
-          );
+            ),
+          }));
           return { ...old, pages };
         }
       );
@@ -156,13 +196,14 @@ export function useSocket() {
       // Media processing complete — update cache across all conversations
       qc.setQueriesData(
         { queryKey: queryKeys.messages.all },
-        (old: { pages: WsMessage[][] } | undefined) => {
+        (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
-          const pages = old.pages.map((page) =>
-            page.map((m) =>
+          const pages = old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((m) =>
               m.messageId === messageId ? { ...m, mediaStatus } : m
-            )
-          );
+            ),
+          }));
           return { ...old, pages };
         }
       );
@@ -204,35 +245,8 @@ export function useSocket() {
     });
 
     // ─── Call events ───────────────────────────────────────────────────────
-    socket.on("call:started", ({ meetingId, hostId, conversationId }) => {
-      callStore.setActiveMeeting({ meetingId, conversationId, hostId });
-    });
-
-    socket.on("call:join_requested", ({ userId }) => {
-      callStore.addWaiting(userId);
-    });
-
-    socket.on("call:participant_joined", ({ userId }) => {
-      callStore.removeWaiting(userId);
-      callStore.addParticipant({
-        userId,
-        micOn: true,
-        cameraOn: true,
-        screenSharing: false,
-      });
-    });
-
-    socket.on("call:participant_left", ({ userId }) => {
-      callStore.removeParticipant(userId);
-    });
-
-    socket.on("call:media_state_updated", ({ userId, mediaState }) => {
-      callStore.updateParticipantMedia(userId, mediaState);
-    });
-
-    socket.on("call:ended", () => {
-      callStore.endCall();
-    });
+    // NOTE: All meeting:* events are handled in useCallSocket (namespace /call).
+    // Nothing to register here.
 
     return () => {
       socket.removeAllListeners();

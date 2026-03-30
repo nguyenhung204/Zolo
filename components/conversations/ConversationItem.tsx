@@ -99,7 +99,7 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
         {lastMsg && (
           <p className="text-xs text-muted truncate mt-0.5">
             {lastMsg.senderId === userId ? "You: " : ""}
-            {lastMsg.type === "TEXT" ? lastMsg.content : `📎 ${lastMsg.type.toLowerCase()}`}
+            {lastMsg.type === "text" ? lastMsg.content : `📎 ${lastMsg.type}`}
           </p>
         )}
       </div>

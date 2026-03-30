@@ -1,6 +1,27 @@
 import { apiClient } from "@/lib/api/client";
 import type { MessageType, MediaStatus } from "@/lib/socket/events";
 
+// Raw shape returned by the REST endpoint (field names differ from our internal type)
+interface RawMessage {
+  id: string;
+  messageId?: string;
+  conversationId: string;
+  senderId: string;
+  content: string;
+  type: string;
+  offset: number;
+  mediaId?: string;
+  mediaStatus?: MediaStatus;
+  replyToMessageId?: string;
+  clientMessageId?: string;
+  metadata?: { mentions?: string[]; tags?: string[]; attachmentUrls?: string[] };
+  createdAt: string;
+  updatedAt?: string;
+  editedAt?: string;
+  deletedAt?: string;
+  isDeleted?: boolean;
+}
+
 export interface Message {
   messageId: string;
   conversationId: string;
@@ -49,5 +70,22 @@ export async function getMessages(params: {
   const res = await apiClient.get(
     `/conversations/${conversationId}/messages?${query}`
   );
-  return res.data;
+  // Actual envelope: { statusCode, message, data: RawMessage[], metadata: { hasMore, oldestOffset, newestOffset } }
+  const rawMessages: RawMessage[] = res.data.data;
+  const metadata: { hasMore: boolean; oldestOffset: string | number; newestOffset: string | number } =
+    res.data.metadata ?? {};
+  return {
+    data: rawMessages.map((m) => ({
+      ...m,
+      messageId: m.messageId ?? m.id,
+      type: (m.type ?? "text").toLowerCase() as MessageType,
+      updatedAt: m.updatedAt ?? m.createdAt,
+      deletedAt: m.deletedAt ?? (m.isDeleted ? m.createdAt : undefined),
+    })),
+    meta: {
+      hasMore: metadata.hasMore ?? false,
+      oldestOffset: Number(metadata.oldestOffset ?? 0),
+      newestOffset: Number(metadata.newestOffset ?? 0),
+    },
+  };
 }

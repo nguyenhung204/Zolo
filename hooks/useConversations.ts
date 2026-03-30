@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getConversations,
@@ -14,15 +15,32 @@ import {
 } from "@/lib/api/conversations";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
+import { prefetchMessages } from "@/hooks/useMessages";
+
+const TOP_CONVERSATIONS_TO_PREFETCH = 10;
 
 export function useConversations() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({
+  const qc = useQueryClient();
+
+  const query = useQuery({
     queryKey: queryKeys.conversations.list(),
     queryFn: getConversations,
     staleTime: 30_000,
     enabled: isAuthenticated,
   });
+
+  // Warm the message cache for the top-N most recent conversations
+  useEffect(() => {
+    if (!query.data) return;
+    query.data.slice(0, TOP_CONVERSATIONS_TO_PREFETCH).forEach((conv) => {
+      prefetchMessages(qc, conv.id);
+    });
+  // Only run when the conversation list first loads or changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.dataUpdatedAt]);
+
+  return query;
 }
 
 export function useConversation(id: string) {

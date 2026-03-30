@@ -11,6 +11,10 @@ import { useAuthStore } from "@/stores/authStore";
 
 export type MessagesInfiniteData = InfiniteData<MessagePage>;
 
+/** Number of messages per page and max pages to keep in cache (3 × 30 = 90 messages). */
+export const MESSAGE_PAGE_SIZE = 30;
+export const MAX_MESSAGE_PAGES = 3;
+
 export function useMessages(conversationId: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   return useInfiniteQuery<MessagePage, Error, MessagesInfiniteData, ReturnType<typeof queryKeys.messages.list>, number | undefined>({
@@ -19,13 +23,31 @@ export function useMessages(conversationId: string) {
       getMessages({
         conversationId,
         before: pageParam,
-        limit: 50,
+        limit: MESSAGE_PAGE_SIZE,
       }),
     initialPageParam: undefined,
+    // Pages are prepended (oldest first via reverse in VirtualMessageList)
     getNextPageParam: (firstPage) =>
       firstPage?.meta?.hasMore ? firstPage.meta.oldestOffset : undefined,
+    maxPages: MAX_MESSAGE_PAGES,
     enabled: isAuthenticated && !!conversationId,
     staleTime: Infinity, // Messages are updated via WS, not polling
+  });
+}
+
+/**
+ * Prefetch the first page of messages for a conversation.
+ * Call this for the top-N conversations to warm the cache.
+ */
+export function prefetchMessages(
+  qc: ReturnType<typeof useQueryClient>,
+  conversationId: string
+) {
+  qc.prefetchInfiniteQuery<MessagePage, Error, MessagesInfiniteData, ReturnType<typeof queryKeys.messages.list>, number | undefined>({
+    queryKey: queryKeys.messages.list(conversationId),
+    queryFn: () => getMessages({ conversationId, limit: MESSAGE_PAGE_SIZE }),
+    initialPageParam: undefined,
+    staleTime: Infinity,
   });
 }
 

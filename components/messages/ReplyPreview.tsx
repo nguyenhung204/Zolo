@@ -31,7 +31,7 @@ export function ReplyPreview({ content, senderName, type, onClose, compact }: Re
         <p className="font-semibold text-cta truncate">{senderName}</p>
         <p className="text-muted truncate flex items-center gap-1 mt-0.5">
           {typeIcon[type] ?? null}
-          {type !== "TEXT" ? type.toLowerCase() : content}
+          {type !== "text" ? type : content}
         </p>
       </div>
       {!compact && (

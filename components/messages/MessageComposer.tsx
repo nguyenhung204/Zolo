@@ -44,7 +44,7 @@ export function MessageComposer({
     send({
       conversationId,
       content: text.trim(),
-      type: "TEXT",
+      type: "text",
       replyToMessageId: replyTo?.messageId,
     });
     setText("");
