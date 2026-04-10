@@ -1,13 +1,17 @@
 import axios from "axios";
+import { toApiError } from "@/lib/api/errors";
 import { useAuthStore } from "@/stores/authStore";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15_000,
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    "X-Client-Platform": "web",
+  },
 });
 
 // Inject Bearer token on every request
@@ -50,7 +54,7 @@ apiClient.interceptors.response.use(
         useAuthStore.getState().clearAuth();
       }
     }
-    return Promise.reject(error);
+    return Promise.reject(toApiError(error));
   }
 );
 
