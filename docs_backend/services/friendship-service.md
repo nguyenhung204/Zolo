@@ -276,7 +276,7 @@ All friendship operations create **two records** to enable efficient queries fro
 ```bash
 # TCP Server
 FRIENDSHIP_SERVICE_HOST=localhost
-FRIENDSHIP_SERVICE_PORT=3003
+FRIENDSHIP_SERVICE_PORT=3008
 
 # PostgreSQL
 POSTGRES_HOST=localhost

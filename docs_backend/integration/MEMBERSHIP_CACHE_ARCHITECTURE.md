@@ -2,202 +2,194 @@
 
 ## Problem
 ChatCore needs to validate membership quickly for every message:
--  **Before**: ChatCore queries Conversation Service via TCP (high latency)
--  **Before**: ChatCore caches membership with TTL (stale cache issue)
--  **Problem**: User kicked from group can still send messages during cache TTL
+- **Before**: ChatCore queried Conversation Service via TCP (high latency, ~10 ms per message)
+- **Before**: ChatCore cached membership with a 1-hour TTL (stale cache issue)
+- **Problem**: User kicked from group could still send messages until TTL expiry
+- **Problem**: Role was not cached — every role-based check required a TCP call
 
-## Solution: Event-Driven Redis Cache
+## Solution: Event-Driven Redis Cache (Cache-First)
 
 ### Architecture
+
 ```
 Conversation Service (Source of Truth)
-    ↓ (add/remove member in DB)
-    ↓ (publish MEMBER_ADDED/MEMBER_REMOVED event)
+    ↓ DB write + outbox event (same transaction)
     ↓
-Kafka (Event Bus)
+Kafka → MembershipCacheConsumer (CONVERSATION_CACHE_UPDATER group)
     ↓
-Conversation Service Consumer
-    ↓ (update Redis Set immediately)
-    ↓
-Redis: chat:conversation:{id}:members (Set)
-    ↑ (SISMEMBER check - O(1))
+Redis:
+  chat:conversation:{id}:members            (Set of userIds)
+  chat:conversation:{id}:members:{uid}:role (String with member role)
     ↑
-ChatCore (Validation)
+ChatCore MembershipValidatorService
+  1. redis.sismember(key, userId)     → O(1) membership
+  2. redis.get(roleKey)               → O(1) role (skips TCP if hit)
+  3. TCP fallback if Redis unavailable
 ```
 
-### Flow
+Additionally, to avoid a TCP call on every DIRECT-conversation block check:
 
-#### 1. Member Added
+```
+Friendship Service
+    ↓ publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED events
+    ↓
+Kafka → FriendshipBlockConsumer (CHAT_CORE_BLOCK_CACHE group, in Chat Core)
+    ↓
+Redis: chat:friendship:block:{blockerId}:{blockedId}  (String "1", TTL 24h)
+    ↑
+MessageSendOrchestrator (fast-path before TCP to Friendship Service)
+```
+
+---
+
+## Flows
+
+### 1. Member Added
+
 ```typescript
-// Conversation Service
-await conversationMemberRepo.save({conversationId, userId});
-await outbox.save({
-  eventType: 'member.added',
-  payload: { conversationId, userIds: [userId] }
+// Conversation Service — conversation.service.ts
+// DB write and outbox save in the same transaction:
+await entityManager.save(ConversationMember, { conversationId, userId, role });
+await outboxRepository.create(entityManager, {
+  topic: KAFKA_TOPICS.MEMBER_ADDED,
+  payload: JSON.stringify({ conversationId, userIds: [userId], roles: { [userId]: role } }),
 });
 
-// → Outbox Processor publishes to Kafka
-// → MembershipCacheConsumer receives event
-await redis.sadd(`chat:conversation:${conversationId}:members`, userId);
+// → OutboxProcessor publishes after commit
+// → MembershipCacheConsumer.handleMemberAdded():
+const key = `chat:conversation:${conversationId}:members`;
+await redis.sadd(key, userId);
+await redis.set(`${key}:${userId}:role`, role, 'EX', 604800); // 7 days
+await redis.expire(key, 604800);
+
+// Immediate bust also happens in-process (before Kafka round-trip):
+// conversation.service.ts removes SREM / DEL role key directly after the DB commit
 ```
 
-#### 2. Member Removed
-```typescript
-// Conversation Service
-await conversationMemberRepo.delete({conversationId, userId});
-await outbox.save({
-  eventType: 'member.removed',
-  payload: { conversationId, userIds: [userId] }
-});
+### 2. Member Removed
 
-// → Outbox Processor publishes to Kafka
-// → MembershipCacheConsumer receives event
-await redis.srem(`chat:conversation:${conversationId}:members`, userId);
+Two invalidation paths run in parallel (defense-in-depth):
+
+**Path A — Immediate (in-process, conversation.service.ts)**:
+```typescript
+// Runs right after the DB transaction commits, before Kafka event arrives
+const pipeline = redis.pipeline();
+pipeline.srem(membersKey, userId);
+pipeline.del(`${membersKey}:${userId}:role`);
+await pipeline.exec().catch(() => {}); // soft-fail
 ```
 
-#### 3. ChatCore Validation
+**Path B — Event-driven (MembershipCacheConsumer)**:
 ```typescript
-// Option A: Check Redis (fast path)
-const isMember = await redis.sismember(
-  `chat:conversation:${conversationId}:members`,
-  userId
-);
-
-// Option B: Fallback to Conversation Service (if Redis unavailable)
-const result = await conversationClient.send(IS_MEMBER, {...});
+// handleMemberRemoved() after MEMBER_REMOVED Kafka event
+const pipeline = redis.pipeline();
+pipeline.srem(key, ...userIds);
+for (const uid of userIds) pipeline.del(`${key}:${uid}:role`);
+await pipeline.exec();
 ```
 
-## Benefits
+Both paths are idempotent: `SREM` and `DEL` on a non-existent key are no-ops.
 
-### 1. Real-Time Updates
-- No TTL issues
-- Immediate cache invalidation
-- Kicked user cannot send messages after kick
+### 3. ChatCore Validation (implemented, cache-first)
 
-### 2. Performance
-- Redis SISMEMBER: O(1) operation
-- No TCP call to Conversation Service
-- Reduced load on Conversation Service
-
-### 3. Reliability
-- Circuit breaker can fallback to Conversation Service
-- Best-effort cache update (doesn't break flow if Redis down)
-- Automatic cache expiry (300 seconds / 5 minutes) for cleanup
-
-### 4. Separation of Concerns
-- Conversation Service owns membership data
-- Conversation Service updates cache
-- ChatCore only validates (read-only)
-
-## Implementation
-
-### Conversation Service
-**File**: `apps/conversation-service/src/consumers/membership-cache.consumer.ts`
-
-**Responsibilities**:
-- Listen to `MEMBER_ADDED` / `MEMBER_REMOVED` events
-- Update Redis Sets: `SADD` / `SREM`
-- Handle empty conversations (delete cache key)
-- Set TTL for cleanup (300 seconds / 5 minutes)
-
-**Consumer Group**: `CONVERSATION_CACHE_UPDATER`
-
-### ChatCore Service
-**Current**: Validates membership via TCP call to Conversation Service
-
-**Future Enhancement** (Optional):
 ```typescript
-// Try Redis first (fast path)
-const isMember = await redis.sismember(key, userId);
-if (!isMember) {
-  // Fallback to Conversation Service (authoritative)
-  const result = await conversationClient.send(IS_MEMBER, {...});
-  
-  // Update Redis if member (warm cache)
-  if (result.isMember) {
-    await redis.sadd(key, userId);
-  }
+// MembershipValidatorService
+const membersKey = REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(conversationId);
+const isMember = await redis.sismember(membersKey, userId);  // O(1)
+
+// Role lookup (avoids TCP on cache hit)
+const roleKey = `${membersKey}:${userId}:role`;
+const cachedRole = await redis.get(roleKey);
+if (cachedRole) return { isMember: true, role: cachedRole };
+
+// TCP fallback only when Redis misses
+const membership = await conversationServiceAdapter.getMembership(userId, conversationId);
+```
+
+### 4. Friendship Block Check (fast-path in MessageSendOrchestrator)
+
+```typescript
+// Before TCP call to Friendship Service:
+const [isBlocked, isBlockedBy] = await redis
+  .mget(
+    REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(senderId, receiverId),
+    REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(receiverId, senderId),
+  )
+  .catch(() => [null, null]); // Redis failure → fall through to TCP
+
+if (isBlocked || isBlockedBy) {
+  throw new ForbiddenException('FORBIDDEN_BLOCKED_USER');
 }
+// TCP call only on cache miss:
+const status = await friendshipService.getFriendshipStatus(senderId, receiverId);
 ```
 
-## Redis Keys
+---
 
-### Structure
-```
-Key: chat:conversation:{conversationId}:members
-Type: Set
-Members: [userId1, userId2, userId3, ...]
-TTL: 300 seconds (5 minutes)
-```
+## Redis Keys Reference
+
+| Key Pattern | Type | TTL | Set by | Read by |
+|-------------|------|-----|--------|---------|
+| `chat:conversation:{id}:members` | Set | 7 days | `MembershipCacheConsumer` + `conversation.service.ts` | `MembershipValidatorService` |
+| `chat:conversation:{id}:members:{uid}:role` | String | 7 days | `MembershipCacheConsumer` + `membership-validator.service.ts` | `MembershipValidatorService` |
+| `chat:friendship:block:{blockerId}:{blockedId}` | String | 24 hours | `FriendshipBlockConsumer` (Chat Core) | `MessageSendOrchestrator` |
 
 ### Operations
-- **Add member**: `SADD chat:conversation:123:members user456`
-- **Remove member**: `SREM chat:conversation:123:members user456`
-- **Check member**: `SISMEMBER chat:conversation:123:members user456`
-- **Count members**: `SCARD chat:conversation:123:members`
-- **List members**: `SMEMBERS chat:conversation:123:members`
+- **Check membership**: `SISMEMBER chat:conversation:123:members user456` → O(1)
+- **Get role**: `GET chat:conversation:123:members:user456:role` → O(1)
+- **Check block**: `MGET chat:friendship:block:A:B chat:friendship:block:B:A` → O(1)
+- **Remove member**: `SREM` + `DEL role key` in pipeline → O(1)
+
+---
+
+## Consumer Groups
+
+| Consumer | Group ID | Topics | Service |
+|----------|----------|--------|---------|
+| `MembershipCacheConsumer` | `nest-chat.conversation-service.cache-updater` | `MEMBER_ADDED`, `MEMBER_REMOVED` | Conversation Service |
+| `FriendshipBlockConsumer` | `nest-chat.chat-core.block-cache` | `FRIENDSHIP.BLOCKED`, `FRIENDSHIP.UNBLOCKED` | Chat Core |
+
+---
+
+## TTL Policy
+
+| Key family | TTL | Rationale |
+|------------|-----|-----------|
+| Members Set | 7 days | Long enough to survive weekend Kafka lag; event-driven invalidation is primary |
+| Role String | 7 days | Same as members set for consistency (also written by TCP fallback path) |
+| Role key written by TCP fallback | 7 days | Previously 1 hour — fixed to prevent TTL mismatch overwriting event cache |
+| Block key | 24 hours | Block/unblock cycles are infrequent; 24h cap prevents unbounded growth |
+
+---
 
 ## Error Handling
 
-### Consumer Failures
-- Best-effort update (don't throw exceptions)
-- Log errors but continue processing
-- ChatCore fallback ensures correctness
+| Scenario | Behaviour |
+|----------|-----------|
+| Consumer crash on `MEMBER_ADDED` | DLQ routing; TCP fallback in Chat Core remains authoritative |
+| Redis unavailable (read) | `catch(() => [null, null])` → fall through to TCP; system degrades gracefully |
+| Redis unavailable (write in consumer) | Log + swallow error; TCP fallback handles correctness |
+| Kafka lag > outbox interval | Immediate in-process bust guarantees timely invalidation for `removeMembers()` |
+| Block key expired before UNBLOCKED arrives | Safe: expired key = cache miss → TCP fallback re-checks Friendship Service |
 
-### Redis Unavailable
-- Consumer logs error and continues
-- ChatCore uses circuit breaker fallback
-- System remains functional (degraded performance)
+---
 
-### Event Order
-- Kafka ensures event ordering per partition
-- Idempotent operations: `SADD` / `SREM` can be retried
+## Security Notes
 
-## Monitoring
+- **Fail-closed on membership**: cache miss falls back to authoritative TCP. A Redis outage cannot grant access.
+- **Fail-closed on block**: same pattern. Cache miss → TCP → block enforced.
+- **Immediate invalidation on remove**: the in-process `redis.pipeline()` bust in `conversation.service.ts` prevents the window where a kicked user sends messages before the Kafka event propagates (reduces stale window from ≤30 s to near-zero).
+- **Two-direction block check**: `MGET` checks both `A→B` and `B→A` simultaneously, ensuring `isBlockedBy` is also cached.
 
-### Metrics to Track
-1. **Cache Hit Rate**: Redis checks vs TCP fallbacks
-2. **Consumer Lag**: Kafka consumer lag for cache updates
-3. **Update Latency**: Time from event publish to cache update
-4. **Fallback Rate**: How often ChatCore falls back to TCP
-
-### Alerts
-- Consumer lag > 1000 messages
-- Redis unavailable
-- High fallback rate (>10%)
-
-## Migration Path
-
-### Phase 1: Dual Write (Current)
-- Conversation Service updates Redis via consumer
-- ChatCore validates via TCP call (authoritative)
-- Monitor cache consistency
-
-### Phase 2: Cache-First (Future)
-- ChatCore checks Redis first
-- Fallback to TCP on cache miss
-- Warm cache on TCP hit
-
-### Phase 3: Cache-Only (Optional)
-- ChatCore only checks Redis
-- Circuit breaker fails closed if Redis down
-- 99.9% cache hit rate expected
+---
 
 ## Comparison
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **TCP Call** | Always authoritative | High latency, TCP overhead |
-| **Cache with TTL** | Fast | Stale data, kicked user can send |
-| **Event-Driven Cache** | Fast + Real-time | Requires Kafka + Redis |
-
-**Winner**: Event-Driven Cache (current implementation) 
-
-## Security Note
-
-**Fail-Closed Strategy**:
-- Cache update is best-effort (fail-open)
-- Validation is fail-closed (circuit breaker throws 503)
+| Approach | Latency | Stale risk | Implementation complexity |
+|----------|---------|-----------|--------------------------|
+| Pure TCP call | ~10 ms | None | Low |
+| TTL cache (old) | < 1 ms | Yes (up to TTL) | Low |
+| Event-driven cache (current) | < 1 ms | Near-zero (dual invalidation) | Medium |
 - If both Redis and Conversation Service down → messages rejected (correct behavior)
 
 This ensures security: **Cannot bypass membership validation** even during service failures.

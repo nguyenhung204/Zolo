@@ -11,6 +11,9 @@ import { queryKeys } from "@/lib/query/keys";
 import type { WsMessage } from "@/lib/socket/events";
 import { appendMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
 import { getMessages } from "@/lib/api/messages";
+import { getMediaSignedUrl } from "@/lib/api/media";
+import { getFriendsPresence } from "@/lib/api/presence";
+import { getConversation } from "@/lib/api/conversations";
 
 /**
  * Initialise the Socket.IO event listeners and keep them alive.
@@ -19,7 +22,7 @@ import { getMessages } from "@/lib/api/messages";
 export function useSocket() {
   const token = useAuthStore((s) => s.token);
   const { setConnected } = useSocketStore();
-  const { setPresence } = usePresenceStore();
+  const { setPresence, setUserProfile } = usePresenceStore();
   const { setTyping, clearTyping } = useTypingStore();
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Per-user typing auto-clear timers
@@ -41,6 +44,18 @@ export function useSocket() {
       heartbeatRef.current = setInterval(() => {
         socket.emit("heartbeat");
       }, 30_000);
+      // Seed initial presence state — do this after every (re)connect
+      getFriendsPresence()
+        .then((entries) => {
+          usePresenceStore.getState().bulkSetPresence(
+            entries.map(({ userId, status, lastSeen }) => ({
+              userId,
+              status,
+              lastSeen: lastSeen ?? undefined,
+            }))
+          );
+        })
+        .catch(() => {});
     });
 
     socket.on("connect_error", (err) => {
@@ -209,6 +224,15 @@ export function useSocket() {
       );
     });
 
+    // ─── Presence ───────────────────────────────────────────────────────────
+    socket.on("user:online", ({ userId }) => {
+      setPresence(userId, "online");
+    });
+
+    socket.on("user:offline", ({ userId, lastSeen }) => {
+      setPresence(userId, "offline", lastSeen ?? undefined);
+    });
+
     // ─── Typing ────────────────────────────────────────────────────────────
     socket.on("typing:started", ({ conversationId, userId }) => {
       setTyping(conversationId, userId);
@@ -230,7 +254,33 @@ export function useSocket() {
       const t = typingTimers.current.get(key);
       if (t) { clearTimeout(t); typingTimers.current.delete(key); }
     });
+    // ─── User profile ──────────────────────────────────────────────────────────
+    socket.on("user:profile-updated", async ({ userId, changedFields, snapshot }) => {
+      // Preserve the existing resolved URL if avatar didn't change
+      const existing = usePresenceStore.getState().profileMap[userId];
+      let avatarUrl: string | null = existing?.avatarUrl ?? null;
 
+      if (changedFields.includes("avatarMediaId")) {
+        avatarUrl = null; // clear stale URL while we resolve the new one
+        if (snapshot.avatarMediaId) {
+          try {
+            avatarUrl = await getMediaSignedUrl(snapshot.avatarMediaId, "OPTIMIZED");
+          } catch {
+            // Swallow — UI falls back to the conversation-cache value
+          }
+        }
+      }
+
+      setUserProfile(userId, {
+        displayName: snapshot.displayName,
+        avatarMediaId: snapshot.avatarMediaId,
+        avatarUrl,
+      });
+
+      // Re-fetch conversation list so embedded otherUser / participant URLs refresh
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      qc.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
+    });
     // ─── Membership ────────────────────────────────────────────────────────
     socket.on("member:added", ({ conversationId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
@@ -238,10 +288,42 @@ export function useSocket() {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     });
 
-    socket.on("member:removed", ({ conversationId }) => {
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+    socket.on("member:removed", ({ conversationId, removedUserIds }) => {
+      const selfId = useAuthStore.getState().user?.id;
+      if (selfId && removedUserIds.includes(selfId)) {
+        // Current user was removed — evict conversation from the list cache
+        qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+          queryKeys.conversations.list(),
+          (old) => old?.filter((c) => c.id !== conversationId) ?? []
+        );
+        qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      } else {
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      }
+    });
+
+    // ─── Conversation info changes ─────────────────────────────────────────
+    socket.on("conversation:updated", ({ conversationId }: { conversationId: string }) => {
+      // Re-fetch the detail to get the new presigned avatarUrl (it is never
+      // included in the WebSocket payload), then propagate it into the list.
+      getConversation(conversationId)
+        .then((fresh) => {
+          qc.setQueryData(queryKeys.conversations.detail(conversationId), fresh);
+          if (fresh.avatarUrl) {
+            qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+              queryKeys.conversations.list(),
+              (old) => old?.map((c) => (c.id === conversationId ? { ...c, ...fresh } : c))
+            );
+          } else {
+            qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+          }
+        })
+        .catch(() => {
+          qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+          qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+        });
     });
 
     // ─── Call events ───────────────────────────────────────────────────────

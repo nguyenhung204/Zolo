@@ -16,9 +16,15 @@ import {
   connectCallSocket,
   disconnectChatSocket,
   disconnectCallSocket,
+  getChatSocket,
 } from "@/lib/socket/socket";
 
-const PUBLIC_PATHS = ["/login"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/forgot-password",
+  "/reset-password",
+  "/register",
+];
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -59,6 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
 
+  // ── Initial auth bootstrap ──────────────────────────────────────────────────
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -66,7 +73,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const storedRefresh = loadRefreshToken();
     if (!storedRefresh) {
       setInitialized();
-      if (!PUBLIC_PATHS.includes(pathname)) router.push("/login");
+      if (!PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+        router.push("/login");
+      }
       return;
     }
 
@@ -84,12 +93,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         document.cookie = "zolo-auth=; path=/; max-age=0";
         disconnectChatSocket();
         disconnectCallSocket();
-        if (!PUBLIC_PATHS.includes(pathname)) router.push("/login");
       })
       .finally(() => {
         setInitialized();
       });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Disconnect & redirect when server revokes the session ──────────────────
+  useEffect(() => {
+    const socket = getChatSocket();
+    const onRevoked = () => {
+      clearRefreshToken();
+      clearAuth();
+      document.cookie = "zolo-auth=; path=/; max-age=0";
+      disconnectChatSocket();
+      disconnectCallSocket();
+      router.push("/login");
+    };
+    socket.on("session_revoked", onRevoked);
+    return () => {
+      socket.off("session_revoked", onRevoked);
+    };
+  }, [clearAuth, router]);
 
   return <>{children}</>;
 }

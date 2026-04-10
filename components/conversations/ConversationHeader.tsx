@@ -6,31 +6,22 @@ import { UserAvatar } from "@/components/presence/UserAvatar";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
 import { useRouter } from "next/navigation";
 import { useCall } from "@/hooks/useCall";
+import { useAuthStore } from "@/stores/authStore";
 import type { ConversationType } from "@/lib/api/conversations";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
+import type { ConversationKind } from "@/lib/api/conversations";
 
-// Lower-case variants for API responses that may not be normalised
-const typeLabel: Record<string, string> = {
+const kindLabel: Record<ConversationKind, string> = {
   DIRECT: "Direct",
-  DEPARTMENT: "Department",
-  PROJECT: "Project",
-  ANNOUNCEMENT: "Announcement",
-  direct: "Direct",
-  department: "Department",
-  project: "Project",
-  announcement: "Announcement",
+  GROUP: "Group",
+  COMMUNITY: "Community",
 };
 
-const typeColor: Record<string, string> = {
+const kindColor: Record<ConversationKind, string> = {
   DIRECT: "bg-secondary/10 text-secondary",
-  DEPARTMENT: "bg-cta/10 text-cta",
-  PROJECT: "bg-success/10 text-success",
-  ANNOUNCEMENT: "bg-warning/10 text-warning",
-  direct: "bg-secondary/10 text-secondary",
-  department: "bg-cta/10 text-cta",
-  project: "bg-success/10 text-success",
-  announcement: "bg-warning/10 text-warning",
+  GROUP: "bg-cta/10 text-cta",
+  COMMUNITY: "bg-warning/10 text-warning",
 };
 
 interface ConversationHeaderProps {
@@ -43,6 +34,7 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
   const router = useRouter();
   const { startMeeting } = useCall();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const currentUserId = useAuthStore((s) => s.user?.id ?? "");
 
   if (!conv) {
     return (
@@ -53,18 +45,32 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
     );
   }
 
-  const isDirect = conv.type.toUpperCase() === "DIRECT";
-  const isAnnouncement = conv.type.toUpperCase() === "ANNOUNCEMENT";
+  const isDirect = conv.kind === "DIRECT";
+  const isCommunity = conv.kind === "COMMUNITY";
+
+  // GET /conversations/:id returns participants but not otherUser — derive from participants as fallback
+  const otherParticipant = isDirect && !conv.otherUser
+    ? conv.participants?.find((p) => p.userId !== currentUserId)
+    : null;
+
+  const resolvedOtherUser = conv.otherUser ?? (
+    otherParticipant ? {
+      id: otherParticipant.userId,
+      username: otherParticipant.username ?? "",
+      displayName: otherParticipant.displayName ?? "",
+      avatarUrl: otherParticipant.avatarUrl,
+    } : null
+  );
 
   const displayName =
     isDirect
-      ? conv.otherUser?.displayName ?? conv.otherUser?.username ?? "Direct Message"
+      ? resolvedOtherUser?.displayName || resolvedOtherUser?.username || "Direct Message"
       : conv.name ?? "Unnamed";
 
   const handleStartCall = async () => {
     if (!conv) return;
     try {
-      const meeting = await startMeeting(conversationId, conv.orgId, false);
+      const meeting = await startMeeting(conversationId, "", false);
       router.push(`/calls/${meeting.meetingId}`);
     } catch {
       // TODO: toast error
@@ -76,9 +82,9 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
       {/* Avatar / icon */}
       {isDirect ? (
         <UserAvatar
-          userId={conv.otherUser?.id ?? conv.id}
+          userId={resolvedOtherUser?.id ?? conv.id}
           name={displayName}
-          avatarUrl={conv.otherUser?.avatarUrl ?? undefined}
+          avatarUrl={resolvedOtherUser?.avatarUrl ?? undefined}
           size="sm"
         />
       ) : conv.avatarUrl ? (
@@ -90,7 +96,7 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
         />
       ) : (
         <div className="w-8 h-8 rounded-full bg-cta/10 flex items-center justify-center shrink-0">
-          {isAnnouncement ? (
+          {isCommunity ? (
             <Megaphone className="w-4 h-4 text-cta" />
           ) : (
             <Hash className="w-4 h-4 text-cta" />
@@ -104,16 +110,16 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
         <span
           className={cn(
             "text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0",
-            typeColor[conv.type]
+            kindColor[conv.kind]
           )}
         >
-          {typeLabel[conv.type]}
+          {kindLabel[conv.kind]}
         </span>
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
-        {!isAnnouncement && (
+        {!isCommunity && (
           <ActionButton onClick={handleStartCall} title="Start call">
             <Phone className="w-4 h-4" />
           </ActionButton>

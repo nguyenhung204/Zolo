@@ -2,26 +2,25 @@ import { apiClient } from "@/lib/api/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ConversationType = "DIRECT" | "DEPARTMENT" | "PROJECT" | "ANNOUNCEMENT" | "direct" | "department" | "project" | "announcement";
-export type MemberRole = "OWNER" | "ADMIN" | "MODERATOR" | "MEMBER" | "GUEST" | "READONLY" | "owner" | "admin" | "moderator" | "member" | "guest" | "readonly";
+export type ConversationKind = "DIRECT" | "GROUP" | "COMMUNITY";
+export type MemberRole = "owner" | "admin" | "moderator" | "member" | "guest";
+
+/** @deprecated Use ConversationKind */
+export type ConversationType = ConversationKind;
 
 export interface Conversation {
   id: string;
-  type: ConversationType;
+  kind: ConversationKind;
   name: string | null;
   description: string | null;
   avatarMediaId: string | null;
   avatarUrl: string | null;
   memberCount: number;
   maxOffset: number | string;
-  orgId: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
   metadata?: {
-    kind?: string;
-    departmentId?: string;
-    projectId?: string;
     seeded?: boolean;
     [key: string]: unknown;
   };
@@ -51,12 +50,11 @@ export interface ConversationMember {
 }
 
 export interface CreateConversationPayload {
-  type: ConversationType;
+  kind: ConversationKind;
   memberIds: string[];
   name?: string;
   description?: string;
   avatarMediaId?: string;
-  metadata?: { departmentId?: string };
 }
 
 export interface UpdateConversationInfoPayload {
@@ -94,7 +92,6 @@ export async function createConversation(
 ): Promise<Conversation> {
   const res = await apiClient.post("/conversations", {
     ...payload,
-    type: payload.type.toLowerCase(),
   });
   return res.data.data;
 }
@@ -121,11 +118,11 @@ export async function addConversationMembers(
   await apiClient.post(`/conversations/${id}/members`, { userIds });
 }
 
-export async function removeConversationMembers(
+export async function removeConversationMember(
   id: string,
-  userIds: string[]
+  userId: string
 ): Promise<void> {
-  await apiClient.delete(`/conversations/${id}/members`, { data: { userIds } });
+  await apiClient.delete(`/conversations/${id}/members/${userId}`);
 }
 
 export async function setConversationMemberRole(
@@ -134,7 +131,7 @@ export async function setConversationMemberRole(
   role: MemberRole
 ): Promise<void> {
   await apiClient.patch(
-    `/conversations/${conversationId}/members/${userId}/role`,
-    { role: role.toLowerCase() }
+    `/conversations/${conversationId}/members/${userId}`,
+    { role }
   );
 }

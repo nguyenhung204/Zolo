@@ -20,7 +20,7 @@ graph TB
 
     subgraph "Database Layer"
         UsersDB[(users-db<br/>host: 5434<br/>users + friendship tables)]
-        ChatDB[(chat-db<br/>host: 5433<br/>conversations + messages<br/>+ policy_rules)]
+        ChatDB[(chat-db<br/>host: 5433<br/>conversations + messages)]
     end
 
     Users -->|OWNS| UsersDB
@@ -34,9 +34,9 @@ graph TB
 
     class Users,Friendship,Conversation,MsgStore,ChatCore service
     class UsersDB,ChatDB database
-| **chat-db** | Conversation Service + Message Store + Chat Core (read) | 5433 (host) | Conversation lifecycle, messages, ACL rules | conversations, conversation_members, messages, message_edit_history, pinned_messages, outbox_events, policy_rules |
+| **chat-db** | Conversation Service + Message Store + Chat Core (no tables) | 5433 (host) | Conversation lifecycle, messages | conversations, conversation_members, messages, message_edit_history, pinned_messages, outbox_events |
 
-**Note**: Users Service and Friendship Service share the `users-db` container (host port 5434). Conversation Service and Message Store share the `chat-db` container (host port 5433). Chat Core reads `policy_rules` from `chat-db` but does not write to it. In production, each service should have its own dedicated PostgreSQL instance.
+**Note**: Users Service and Friendship Service share the `users-db` container (host port 5434). Conversation Service and Message Store share the `chat-db` container (host port 5433). Chat Core does **not** own any database tables — all validation data is fetched at runtime via TCP. In production, each service should have its own dedicated PostgreSQL instance.
 
 ---
 
@@ -52,51 +52,35 @@ Host port: **5434** → container 5432
 erDiagram
     users {
         VARCHAR id PK "Keycloak ID from JWT sub"
-        VARCHAR email UK "User email"
-        VARCHAR username UK "Display name"
-        VARCHAR firstName
-        VARCHAR lastName
-        VARCHAR avatarUrl
-        VARCHAR orgId "Organization ID"
-        VARCHAR title "Job title"
-        VARCHAR departmentId "Department reference"
-        VARCHAR accountStatus "ACTIVE|SUSPENDED|OFFBOARDED"
-        BOOLEAN isActive
+        VARCHAR email UK "User email (unique)"
+      VARCHAR username "Display username (non-unique)"
+        VARCHAR firstName "nullable"
+        VARCHAR lastName "nullable"
+        VARCHAR phone "nullable"
+        VARCHAR cccdNumber "nullable (9 or 12 digits)"
+        VARCHAR avatarUrl "nullable (legacy, deprecated)"
+        VARCHAR avatarMediaId "nullable (Media Service UUID ref)"
+        JSONB settings "User preferences (statusMessage, theme, messageDensity, enterToSend, notifications)"
+        BOOLEAN isActive "default true"
         TIMESTAMP createdAt
         TIMESTAMP updatedAt
     }
-    
-    user_settings {
-        UUID id PK
-        VARCHAR userId FK "Keycloak ID"
-        JSONB preferences "UI preferences"
-        VARCHAR language "en, es, fr, etc."
-        VARCHAR timezone
-        BOOLEAN notificationsEnabled
-        TIMESTAMP createdAt
-        TIMESTAMP updatedAt
-    }
-    
-    users ||--o| user_settings : "has"
 ```
 
 #### Table Details
 
 **users**
-- **Purpose**: User profile information synchronized from Keycloak
-- **Primary Key**: `id` (VARCHAR 255, Keycloak ID from JWT sub)
-- **Unique Constraints**: `email`, `username`
+- **Purpose**: User profile information; `id` is the Keycloak sub claim (primary source of identity)
+- **Primary Key**: `id` (VARCHAR 255)
+- **Unique Constraints**: `email`
 - **Indexes**:
   - `idx_users_email` on `email`
-  - `idx_users_username` on `username` (for search)
-  - `idx_users_org_id` on `orgId`
-  - `idx_users_account_status` on `accountStatus`
-
-**user_settings**
-- **Purpose**: User preferences and configuration
-- **Primary Key**: `id` (UUID)
-- **Foreign Key**: `userId` → `users(id)` ON DELETE CASCADE
-- **Unique Constraint**: `userId` (one setting record per user)
+  - `idx_users_is_active` on `is_active`
+- **Notable columns**:
+  - `avatar_url`: legacy column (still in schema, deprecated — use `avatar_media_id`)
+  - `avatar_media_id`: UUID reference to Media Service record; presigned URL resolved at Gateway
+  - `settings`: JSONB storing `{ statusMessage, theme, messageDensity, enterToSend, notifications }` — no separate `user_settings` table
+  - `is_active`: BOOLEAN account gate (`true` = active, `false` = banned)
 
 #### No Cross-Database Joins
 
@@ -246,31 +230,25 @@ Host port: **5433** → container 5432
 erDiagram
     conversations {
         UUID id PK
-        ENUM type "DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT"
-        VARCHAR name "NULL for DIRECT"
+        VARCHAR type "direct | group | community"
+        VARCHAR name "NULL for direct"
         TEXT description
+        VARCHAR avatarMediaId "UUID ref to media record (nullable)"
         INT memberCount "denormalized"
         BIGINT maxOffset "monotonic counter"
-        VARCHAR createdBy
-        VARCHAR orgId "tenant boundary"
-        JSONB metadata "kind, departmentId?, projectId?"
-        TIMESTAMP createdAt
-        TIMESTAMP updatedAt
-    }        TEXT description
-        INTEGER memberCount "Denormalized for performance"
-        BIGINT maxOffset "Latest message offset"
-        UUID createdBy FK "Creator user ID"
+        VARCHAR createdBy "Keycloak ID"
+        JSONB metadata "settings?"
         TIMESTAMP createdAt
         TIMESTAMP updatedAt
     }
     
     conversation_members {
-        UUID id PK
-        UUID conversationId FK
-        UUID userId FK "Member user ID"
+        UUID conversationId PK
+        VARCHAR userId PK "Keycloak ID; composite PK with conversationId"
+        VARCHAR role "owner|admin|moderator|member|guest"
         BIGINT lastSeenOffset "Last message seen"
+        BIGINT lastDeliveredOffset "Last delivered offset"
         TIMESTAMP joinedAt
-        TIMESTAMP leftAt "NULL if still member"
     }
     
     conversations ||--|{ conversation_members : "has"
@@ -286,23 +264,26 @@ erDiagram
   - `idx_conversations_created_by` on `createdBy` (find user's created conversations)
 
 **Fields Explained**:
-- `type`: DIRECT (2 members), DEPARTMENT (auto-sync membership), PROJECT (manual membership), ANNOUNCEMENT (read-only)
+- `type`: `direct` (2 members), `group` (manual membership), `community` (OWNER/ADMIN/MODERATOR post, MEMBER/GUEST react)
+- `avatarMediaId`: UUID reference to the media record in Media Service (nullable). Raw URL is never stored — presigned URLs are resolved at the Gateway layer on every list/detail request.
 - `memberCount`: Denormalized counter for performance (no COUNT query)
 - `maxOffset`: Atomic counter for message ordering (incremented per message)
+- Conversations are user-scoped — no tenant-level isolation at the DB level
 
 **conversation_members**
 - **Purpose**: Membership roster and read status
-- **Primary Key**: `id` (UUID)
-- **Foreign Key**: `conversationId` → `conversations(id)` ON DELETE CASCADE
-- **Unique Constraint**: `(conversationId, userId)` - user can't join twice
+- **Primary Key**: composite `(conversation_id, user_id)` — no separate UUID id column
+- **Foreign Key**: `conversation_id` → `conversations(id)` ON DELETE CASCADE
 - **Indexes**:
-  - `idx_conversation_members_user_id` on `userId` where `leftAt IS NULL` (get active conversations)
-  - `idx_conversation_members_conversation_id` on `conversationId` (get all members)
+  - `idx_conversation_members_user_id` on `user_id` (get user’s conversations)
+  - `idx_conversation_members_conversation_id` on `conversation_id` (get all members)
+  - `idx_conversation_members_role` on `(conversation_id, role)` (permission checks)
 
 **Fields Explained**:
+- `role`: CHECK IN (`owner`, `admin`, `moderator`, `member`, `guest`) — lowercase; no `readonly`
 - `lastSeenOffset`: Highest message offset user has seen (for unread count)
-- `joinedAt`: When user joined conversation
-- `leftAt`: NULL if active member, timestamp if left
+- `lastDeliveredOffset`: Highest message offset delivered to user’s device
+- `joinedAt`: When user joined; no `leftAt` column (members are removed from the table on leave)
 
 #### Offset-Based Message Ordering
 
@@ -358,32 +339,28 @@ async getUnreadCount(conversationId: string, userId: string): Promise<number> {
 ```mermaid
 stateDiagram-v2
     [*] --> DIRECT: Create 1-on-1
-    [*] --> DEPARTMENT: Create department channel
-    [*] --> PROJECT: Create project channel
-    [*] --> ANNOUNCEMENT: Create announcement channel
+    [*] --> GROUP: Create group chat
+    [*] --> COMMUNITY: Create community channel
     DIRECT --> [*]: Delete
-    DEPARTMENT --> [*]: Archive or delete
-    PROJECT --> [*]: Archive or delete
-    ANNOUNCEMENT --> [*]: Archive or delete
+    GROUP --> [*]: Archive or delete
+    COMMUNITY --> [*]: Archive or delete
 
     note right of DIRECT
         memberCount = 2
         Cannot add more members
     end note
 
-    note right of DEPARTMENT
-        Membership auto-synced from department
-        Manual GUEST invites allowed
-    end note
-
-    note right of PROJECT
+    note right of GROUP
         Manual membership management
         OWNER/ADMIN can add/remove
     end note
 
-    note right of ANNOUNCEMENT
-        Read-only for MEMBER/GUEST/READONLY
+    note right of COMMUNITY
+        Read-only for MEMBER/GUEST
         Only OWNER/ADMIN/MODERATOR can post
+    end note
+```
+
 ### 4. message tables (in chat-db)
 
 #### Entity-Relationship Diagram
@@ -393,26 +370,42 @@ erDiagram
     messages {
         UUID id PK
         UUID conversationId FK
-        UUID senderId FK "User who sent"
+        UUID senderId "User who sent"
         TEXT content
-        ENUM type "TEXT, IMAGE, FILE, SYSTEM"
-        JSONB metadata "File URLs, dimensions, etc."
+        VARCHAR type "text, image, file, audio, video"
+        JSONB metadata "Extra data"
+        JSONB attachment "Media attachment info"
         BIGINT offset "Sequential per conversation"
+        BOOLEAN isMessageRequest
+        BOOLEAN isEdited
+        TIMESTAMP editedAt
+        BOOLEAN isDeleted
+        TIMESTAMP deletedAt "Soft delete"
         TIMESTAMP createdAt
         TIMESTAMP updatedAt
-        TIMESTAMP deletedAt "Soft delete"
     }
-    
-    message_receipts {
+
+    message_edit_history {
         UUID id PK
         UUID messageId FK
-        UUID userId FK "Recipient"
-        ENUM status "DELIVERED, READ"
-        TIMESTAMP deliveredAt
-        TIMESTAMP readAt
+        TEXT previousContent
+        JSONB previousMetadata
+        VARCHAR editedBy
+        TIMESTAMP editedAt
+        TIMESTAMP createdAt
     }
-    
-    messages ||--|{ message_receipts : "has"
+
+    pinned_messages {
+        UUID id PK
+        UUID conversationId FK
+        UUID messageId FK
+        VARCHAR pinnedBy
+        TIMESTAMP pinnedAt
+        TIMESTAMP createdAt
+    }
+
+    messages ||--|{ message_edit_history : "edits"
+    messages ||--o{ pinned_messages : "may be pinned"
 ```
 
 #### Table Details
@@ -429,25 +422,37 @@ erDiagram
 
 **Fields Explained**:
 - `offset`: Sequential number per conversation (1, 2, 3, ...)
-- `type`: TEXT (plain text), IMAGE (image URL), FILE (document), SYSTEM (join/leave notifications)
-- `metadata`: JSON for rich content (image dimensions, file size, thumbnails)
-- `deletedAt`: Soft delete (message hidden, but not removed)
+- `type`: `text`, `image`, `file`, `audio`, `video`
+- `metadata`: JSON for extra data (thumbnails, alt-text, etc.)
+- `attachment`: JSONB with `{ mediaId, url, mimeType, size, ... }` for media messages
+- `isMessageRequest`: `true` for DIRECT messages from strangers not yet replied to
+- `isEdited` / `editedAt`: Set when message is edited within 1-hour window
+- `isDeleted` / `deletedAt`: Soft delete — content hidden but row retained
 
-**message_receipts**
-- **Purpose**: Track delivery and read status per recipient
+**message_edit_history**
+- **Purpose**: Audit trail for message edits
 - **Primary Key**: `id` (UUID)
-- **Foreign Key**: `messageId` → `messages(id)` ON DELETE CASCADE
-- **Unique Constraint**: `(messageId, userId)` - one receipt per message per user
-- **Indexes**:
-  - `idx_message_receipts_message_id` on `messageId` (get all receipts for message)
-  - `idx_message_receipts_user_id` on `userId` (get all receipts for user)
-  - `idx_message_receipts_status` on `status` (filter by status)
+- **Indexes**: `idx_message_edit_history_message_id_edited_at` on `(messageId, editedAt)`
 
-**Receipt Lifecycle**:
+**Edit Lifecycle**:
 ```
-1. Message sent → No receipts yet
-2. Message persisted → Create receipts with status = DELIVERED for all members
-3. User reads message → Update receipt status = READ, set readAt
+1. User edits within 1 hour window
+2. MessageStore saves previousContent + previousMetadata to message_edit_history
+3. Messages row: isEdited = true, editedAt = NOW()
+4. Edit history is immutable (audit trail)
+```
+
+**pinned_messages**
+- **Purpose**: Track pinned messages per conversation (max 3, enforced by Chat Core)
+- **Primary Key**: `id` (UUID)
+- **Unique Constraint**: `(conversationId, messageId)` — same message pinned once only
+
+**Read Tracking** (cursor-based, in `conversation_members`):
+```
+No message_receipts table. Read status is tracked via cursors:
+- lastDeliveredOffset: user's device received message (set on delivery)
+- lastSeenOffset:      user opened conversation and read (set on join/mark-read)
+- Unread count = conversations.maxOffset - conversation_members.lastSeenOffset
 ```
 
 #### Optimized Queries
@@ -455,43 +460,32 @@ erDiagram
 **Fetch Conversation Messages with Pagination**:
 ```sql
 -- Get 50 messages after offset 100
-SELECT m.*, 
-       (SELECT status FROM message_receipts 
-        WHERE messageId = m.id AND userId = $2 LIMIT 1) as myStatus
-FROM messages m
-WHERE m.conversationId = $1
-  AND m.offset > 100
-  AND m.deletedAt IS NULL
-ORDER BY m.offset ASC
+SELECT * FROM messages
+WHERE conversation_id = $1
+  AND offset > 100
+  AND is_deleted = false
+ORDER BY offset ASC
 LIMIT 50;
 ```
 
 **Get Unread Message Count**:
 ```sql
--- Count messages after user's lastSeenOffset
--- Both messages and conversation_members are in chat-db (same container)
-SELECT COUNT(*)
-FROM messages m
-WHERE m.conversationId = $1
-  AND m.offset > (
-    SELECT lastSeenOffset
-    FROM conversation_members
-  AND m.deletedAt IS NULL;
+-- Uses cursor from conversation_members (no receipts table)
+SELECT (c.max_offset - cm.last_seen_offset) AS unread_count
+FROM conversations c
+JOIN conversation_members cm
+  ON cm.conversation_id = c.id
+  AND cm.user_id = $2
+WHERE c.id = $1;
 ```
 
-**Batch Update Read Receipts**:
+**Mark Conversation as Read** (update cursor):
 ```sql
--- Mark all messages up to offset 42 as read
-UPDATE message_receipts
-SET status = 'READ', readAt = NOW()
-WHERE messageId IN (
-  SELECT id FROM messages
-  WHERE conversationId = $1
-    AND offset <= 42
-    AND senderId != $3  -- Don't update sender's own receipts
-)
-  AND userId = $2
-  AND status != 'READ';  -- Only update unread receipts
+UPDATE conversation_members
+SET last_seen_offset = $3
+WHERE conversation_id = $1
+  AND user_id = $2
+  AND last_seen_offset < $3;
 ```
 
 #### Partitioning Strategy (Future)

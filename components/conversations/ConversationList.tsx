@@ -17,13 +17,14 @@ export function ConversationList() {
   const [searchQuery, setSearchQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
 
-  const filtered = conversations.filter((c) =>
-    searchQuery
-      ? (c.name ?? "Direct Message")
-          .toLowerCase()
-          .includes(searchQuery.toLowerCase())
-      : true
-  );
+  const filtered = conversations.filter((c) => {
+    if (!searchQuery) return true;
+    const name =
+      c.kind === "DIRECT"
+        ? (c.otherUser?.displayName ?? c.otherUser?.username ?? "Direct Message")
+        : (c.name ?? "Unnamed");
+    return name.toLowerCase().includes(searchQuery.toLowerCase());
+  });
 
   return (
     <aside className="flex flex-col h-full w-72 bg-surface border-r border-border shrink-0">

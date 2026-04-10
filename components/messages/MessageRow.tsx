@@ -45,8 +45,8 @@ export function MessageRow({
       className={cn(
         "group flex items-end gap-2",
         isMine ? "flex-row-reverse pr-3 pl-8" : "flex-row pl-3 pr-8",
-        isGroupEnd ? "mb-2.5" : "mb-1"
       )}
+      style={{ marginBottom: isGroupEnd ? "var(--msg-gap-end, 0.625rem)" : "var(--msg-gap-mid, 0.25rem)" }}
     >
       {/* Avatar slot — always reserve space so bubbles align */}
       <div className="w-8 shrink-0 self-end">

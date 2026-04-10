@@ -84,7 +84,6 @@ The Call Service manages the full lifecycle of in-conversation video/audio meeti
 |--------|------|-------|
 | `id` | UUID | Primary key |
 | `conversationId` | UUID | FK to conversations table (logical) |
-| `orgId` | varchar(255) | Tenant boundary |
 | `hostId` | varchar(255) | UserId of the meeting creator / current host |
 | `status` | varchar(20) | `ACTIVE` or `ENDED` (default `ACTIVE`) |
 | `allowWaitingRoom` | boolean | Whether new joiners enter waiting room first (default `true`) |
@@ -128,7 +127,6 @@ The Call Service manages the full lifecycle of in-conversation video/audio meeti
 | `id` | UUID | Primary key |
 | `meetingId` | UUID | FK (logical) to `meetings.id` |
 | `conversationId` | UUID | Denormalized for fast query without joining meetings |
-| `orgId` | varchar(255) | Tenant boundary |
 | `status` | varchar(20) | `RECORDING`, `PAUSED`, `STOPPED`, or `FAILED` |
 | `startedBy` | varchar(255) | UserId who initiated recording |
 | `egressId` | varchar(255) | Nullable; LiveKit egress job ID for pause/resume/stop |
@@ -145,7 +143,6 @@ The Call Service manages the full lifecycle of in-conversation video/audio meeti
 | `id` | UUID | Primary key |
 | `meetingId` | UUID | Unique — one summary per meeting |
 | `conversationId` | UUID | Fast query by conversation |
-| `orgId` | varchar(255) | Tenant boundary |
 | `startedAt` | timestamptz | Meeting start time (copied from meeting) |
 | `endedAt` | timestamptz | Meeting end time |
 | `durationMs` | int | `endedAt - startedAt` in milliseconds |
@@ -167,7 +164,7 @@ Gateway forwards all call operations to this service via TCP using NestJS `Clien
 ### Meeting Management
 
 **`CALL_PATTERNS.START_MEETING`**
-- Payload: `{ conversationId, orgId, hostId, allowWaitingRoom? }`
+- Payload: `{ conversationId, hostId, allowWaitingRoom? }`
 - Response: `MeetingDto`
 - Requires: `CALL.START` permission
 - Creates a new `MeetingEntity` (status `ACTIVE`), adds host as first participant with role `HOST`, publishes `call.event.started` via Outbox
@@ -183,7 +180,7 @@ Gateway forwards all call operations to this service via TCP using NestJS `Clien
 - Returns the active meeting that the user is currently participating in (across all conversations)
 
 **`CALL_PATTERNS.REQUEST_JOIN_MEETING`**
-- Payload: `{ conversationId, userId, orgId }`
+- Payload: `{ conversationId, userId }`
 - Response: `MeetingDto`
 - Requires: `CALL.JOIN` permission
 - If `allowWaitingRoom = true`: creates a `WaitingParticipantEntity` (status `WAITING`), publishes `call.event.join_requested`
@@ -220,7 +217,7 @@ Gateway forwards all call operations to this service via TCP using NestJS `Clien
 ### Media
 
 **`CALL_PATTERNS.ISSUE_MEDIA_TOKEN`**
-- Payload: `{ meetingId, userId, orgId }`
+- Payload: `{ meetingId, userId }`
 - Response: `{ token: string, livekitUrl: string }`
 - Validates active meeting membership, calls `LiveKitService.createToken(userId, meetingId, role)`, returns signed JWT for LiveKit connection
 
@@ -242,7 +239,7 @@ Gateway forwards all call operations to this service via TCP using NestJS `Clien
 ### Recording
 
 **`CALL_PATTERNS.START_RECORDING`**
-- Payload: `{ meetingId, userId, orgId }`
+- Payload: `{ meetingId, userId }`
 - Response: `RecordingDto`
 - Requires: `CALL.RECORD` permission
 - Calls LiveKit egress API to start room composite recording
@@ -271,14 +268,14 @@ Gateway forwards all call operations to this service via TCP using NestJS `Clien
 - Publishes `call.event.recording_state_updated`
 
 **`CALL_PATTERNS.LIST_RECORDINGS`**
-- Payload: `{ conversationId, orgId, limit?, offset? }`
+- Payload: `{ conversationId, limit?, offset? }`
 - Response: `RecordingDto[]`
 - Returns recordings for a conversation, ordered by `startedAt DESC`
 
 ### History and Snapshots
 
 **`CALL_PATTERNS.LIST_MEETING_HISTORY`**
-- Payload: `{ conversationId, orgId, limit?, offset? }`
+- Payload: `{ conversationId, limit?, offset? }`
 - Response: `MeetingDto[]`
 - Returns past meetings (status `ENDED`) for a conversation, ordered by `startedAt DESC`
 
@@ -309,7 +306,7 @@ All events are written to the `outbox` table in the same PostgreSQL transaction 
 
 | Topic | Trigger | Partition Key | Payload |
 |-------|---------|---------------|---------|
-| `call.event.started` | `startMeeting` | `conversationId` | `{ meetingId, conversationId, orgId, hostId, startedAt }` |
+| `call.event.started` | `startMeeting` | `conversationId` | `{ meetingId, conversationId, hostId, startedAt }` |
 | `call.event.join_requested` | `requestJoinMeeting` (waiting room) | `conversationId` | `{ meetingId, conversationId, userId, requestedAt }` |
 | `call.event.participant_joined` | `requestJoinMeeting` / `approveWaitingParticipant` | `conversationId` | `{ meetingId, conversationId, userId, role, joinedAt }` |
 | `call.event.participant_left` | `leaveMeeting` | `conversationId` | `{ meetingId, conversationId, userId, leftAt, durationMs }` |

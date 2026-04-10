@@ -74,7 +74,7 @@ Manages tables in the `chat-db` PostgreSQL container (`chat_db` database), shari
 
 **Chat Core Service**
 
-Has read access to the `chat-db` PostgreSQL container for querying the `policy_rules` table (ACL policy matrix). Chat Core does not own or write to this database — policy rules are seeded by migrations.
+Does **not** own any database tables. All ACL validation is performed at runtime using data fetched via TCP and Redis (membership sets, role cache). Permission logic per conversation kind is embedded in Strategy classes — there is no `policy_rules` table.
 
 The system uses 2 PostgreSQL containers (`users-db` on host port 5434, `chat-db` on host port 5433) plus Keycloak's own PostgreSQL container. Services sharing a container cannot access other services' tables directly without coordination.
 

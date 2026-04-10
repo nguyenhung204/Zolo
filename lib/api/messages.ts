@@ -70,7 +70,6 @@ export async function getMessages(params: {
   const res = await apiClient.get(
     `/conversations/${conversationId}/messages?${query}`
   );
-  // Actual envelope: { statusCode, message, data: RawMessage[], metadata: { hasMore, oldestOffset, newestOffset } }
   const rawMessages: RawMessage[] = res.data.data;
   const metadata: { hasMore: boolean; oldestOffset: string | number; newestOffset: string | number } =
     res.data.metadata ?? {};

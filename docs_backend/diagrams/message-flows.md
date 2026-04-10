@@ -156,135 +156,10 @@ sequenceDiagram
 
 ---
 
-## Read Receipt Flow
-
-### Description
-Flow when a user opens a conversation and marks messages as read, updating read receipts and notifying the sender.
-
-### Flow Diagram
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant RealtimeGW as Realtime Gateway
-    participant MsgStore as Message Store
-    participant ConvSvc as Conversation Service
-    participant Kafka
-    participant ChatDB as Chat DB
-    participant ConvDB as Conversation DB
-    participant Sender as Sender's Client
-
-    %% User opens conversation
-    Client->>RealtimeGW: WS: conversation:join<br/>{conversationId}
-    RealtimeGW->>RealtimeGW: Join Socket.IO room<br/>"conversation:{id}"
-    
-    %% Fetch messages
-    Client->>RealtimeGW: WS: message:fetch<br/>{conversationId, after: 0, limit: 50}
-    RealtimeGW->>MsgStore: TCP: GET_MESSAGES<br/>{conversationId, after, limit}
-    MsgStore->>ChatDB: SELECT messages<br/>WHERE conversationId = ?<br/>AND offset > ?<br/>LIMIT 50
-    ChatDB-->>MsgStore: Message list + receipts
-    MsgStore-->>RealtimeGW: Messages with read status
-    RealtimeGW-->>Client: message:list<br/>[{...messages}]
-    
-    %% User scrolls to bottom (reads messages)
-    Note over Client: User sees messages<br/>Auto-mark as read
-    
-    Client->>RealtimeGW: WS: message:mark_read<br/>{conversationId, upToOffset: 42}
-    RealtimeGW->>MsgStore: TCP: MARK_AS_READ<br/>{conversationId, userId, upToOffset}
-    
-    %% Update receipts
-    MsgStore->>ChatDB: BEGIN TRANSACTION
-    MsgStore->>ChatDB: UPDATE message_receipts<br/>SET status = 'read',<br/>    readAt = NOW()<br/>WHERE messageId IN (<br/>  SELECT id FROM messages<br/>  WHERE conversationId = ?<br/>  AND offset <= 42<br/>  AND senderId != ?<br/>)<br/>AND userId = ?<br/>AND status != 'read'
-    
-    %% Update conversation's lastSeenOffset
-    MsgStore->>ConvSvc: TCP: UPDATE_LAST_SEEN_OFFSET<br/>{conversationId, userId, offset: 42}
-    ConvSvc->>ConvDB: UPDATE conversation_members<br/>SET lastSeenOffset = 42<br/>WHERE conversationId = ?<br/>AND userId = ?
-    ConvDB-->>ConvSvc: Success
-    ConvSvc-->>MsgStore: Success
-    
-    MsgStore->>ChatDB: COMMIT TRANSACTION
-    
-    %% Publish read event
-    MsgStore->>Kafka: Publish: MESSAGE_READ<br/>{conversationId, userId,<br/>upToOffset: 42, readAt}
-    
-    MsgStore-->>RealtimeGW: Success
-    RealtimeGW-->>Client: message:read_confirmed
-    
-    %% Notify sender
-    Kafka->>RealtimeGW: Consume: MESSAGE_READ
-    RealtimeGW->>RealtimeGW: Get affected senders<br/>(messages offset <= 42)
-    RealtimeGW->>Sender: Broadcast to conversation:{id}<br/>message:read<br/>{userId, upToOffset: 42}
-    
-    Note over Sender: Shows "Read" status<br/>with user avatar
-```
-
-### Key Steps Explained
-
-1. **Join Conversation** - Client emits `conversation:join`, joins Socket.IO room
-2. **Fetch Messages** - Client requests messages with pagination
-3. **Query Database** - Message Store fetches messages with current receipt status
-4. **Return Messages** - Client displays messages with read/delivered indicators
-5. **Mark as Read** - User scrolls to bottom, client emits `message:mark_read`
-6. **Update Receipts** - Batch update all receipts up to specified offset
-7. **Update LastSeenOffset** - Update user's conversation membership record
-8. **Commit Transaction** - Ensure atomicity of receipt and offset updates
-9. **Publish Event** - Kafka receives MESSAGE_READ event
-10. **Confirm to User** - Client receives confirmation
-11. **Consume Event** - Realtime Gateway picks up MESSAGE_READ
-12. **Notify Sender** - Broadcast to conversation room so sender sees "Read" status
-
-### Receipt Status Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Sent: Message created
-    Sent --> Delivered: Message persisted
-    Delivered --> Read: Recipient marks as read
-    Read --> [*]
-    
-    note right of Sent
-        Status set by Chat Core
-        when MESSAGE_ACCEPTED
-    end note
-    
-    note right of Delivered
-        Status set by Message Store
-        when MESSAGE_SAVED
-    end note
-    
-    note right of Read
-        Status set by recipient
-        when message:mark_read
-    end note
-```
-
-### Batch Read Optimization
-
-**Problem**: Updating receipts for 50 messages = 50 UPDATE queries
-
-**Solution**: Single batch UPDATE query
-```sql
-UPDATE message_receipts
-SET status = 'read', readAt = NOW()
-WHERE messageId IN (
-  SELECT id FROM messages
-  WHERE conversationId = 'conv-123'
-  AND offset <= 42
-  AND senderId != 'current-user'
-)
-AND userId = 'current-user'
-AND status != 'read';
-```
-
-**Result**: O(1) query regardless of message count
-
----
-
 ## Typing Indicator Flow
 
 ### Description
-Real-time typing indicators for DIRECT, DEPARTMENT, and PROJECT conversations. Not supported for ANNOUNCEMENT channels (members cannot post, so typing is irrelevant).
+Real-time typing indicators for DIRECT and GROUP conversations. Not supported for COMMUNITY channels (members cannot post, so typing is irrelevant).
 
 ### Flow Diagram
 
@@ -308,11 +183,11 @@ sequenceDiagram
 
     %% Check conversation kind
     RealtimeGW->>ConvSvc: TCP: GET_CONVERSATION<br/>{conversationId}
-    ConvSvc-->>RealtimeGW: {kind: PROJECT, memberCount: 8}
+    ConvSvc-->>RealtimeGW: {kind: GROUP, memberCount: 8}
 
-    alt kind = ANNOUNCEMENT
-        RealtimeGW-->>UserA: error: Not supported for ANNOUNCEMENT
-    else kind = DIRECT, DEPARTMENT or PROJECT
+    alt kind = COMMUNITY
+        RealtimeGW-->>UserA: error: Not supported for COMMUNITY
+    else kind = DIRECT or GROUP
         %% Publish typing event to Kafka
         RealtimeGW->>Kafka: Publish: TYPING_STARTED<br/>{conversationId, userId, timestamp}
 
@@ -362,7 +237,7 @@ sequenceDiagram
 
 1. **Start Typing** - User A begins typing, client emits `typing:start`
 2. **Validate Membership** - Ensure user is member of conversation
-3. **Check Kind** - Verify conversation kind is DIRECT, DEPARTMENT, or PROJECT (not ANNOUNCEMENT)
+3. **Check Kind** - Verify conversation kind is DIRECT or GROUP (not COMMUNITY)
 4. **Publish to Kafka** - TYPING_STARTED event published
 5. **Consume Event** - Realtime Gateway consumes event
 6. **Broadcast to Room** - Notify all members in conversation room (except sender)
@@ -392,8 +267,8 @@ sequenceDiagram
 - Handles tab switches, network hiccups
 - Prevents "stuck" typing indicators
 
-**Why Not ANNOUNCEMENT?**
-- ANNOUNCEMENT channels are read-only for members
+**Why Not COMMUNITY?**
+- COMMUNITY channels are read-only for members
 - Members cannot send messages, so typing indicators are irrelevant
 
 ### Client Implementation
@@ -423,19 +298,19 @@ setInterval(() => {
 
 ### Performance Considerations
 
-**DIRECT or PROJECT Conversation (10 members)**:
+**DIRECT or GROUP Conversation (10 members)**:
 - 1 typing event -> 9 broadcasts (exclude sender)
 - Kafka throughput: ~10,000 messages/sec
 - Redis ops: ~100,000 ops/sec
 - **Result**: No bottleneck
 
-**Large PROJECT (100 members)**:
+**Large GROUP (100 members)**:
 - 1 typing event -> 99 broadcasts
 - Still within capacity
 
-**ANNOUNCEMENT Channel (many members)**:
+**COMMUNITY Channel (many members)**:
 - Typing not supported; members are read-only
-- **Result**: Disabled for ANNOUNCEMENT kind
+- **Result**: Disabled for COMMUNITY kind
 
 ---
 
@@ -459,7 +334,7 @@ sequenceDiagram
 
     %% Phase 1: Start meeting
     Host->>Gateway: POST /calls/{conversationId}/start
-    Gateway->>CallSvc: TCP: START_MEETING<br/>{conversationId, orgId, hostId}
+    Gateway->>CallSvc: TCP: START_MEETING<br/>{conversationId, hostId}
     CallSvc->>CallSvc: Create MeetingEntity (status=ACTIVE)
     CallSvc->>CallSvc: Create MeetingParticipant (role=HOST)
     CallSvc->>CallSvc: Write outbox: call.event.started
@@ -544,10 +419,576 @@ sequenceDiagram
 
 ---
 
+## Authentication & WebSocket Connection Flow
+
+### Description
+How a client authenticates with Keycloak, obtains a JWT, and establishes an authenticated WebSocket connection to receive real-time events.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Keycloak
+    participant Gateway as API Gateway
+    participant RealtimeGW as Realtime Gateway
+    participant Redis
+
+    %% Phase 1: Obtain JWT
+    Client->>Keycloak: POST /realms/nest-realm/protocol/openid-connect/token<br/>{username, password, client_id}
+    Keycloak-->>Client: {access_token (JWT RS256), refresh_token, expires_in}
+
+    %% Phase 2: (Optional) HTTP REST call
+    Client->>Gateway: GET /users/me<br/>Authorization: Bearer {JWT}
+    Gateway->>Keycloak: GET /realms/nest-realm/protocol/openid-connect/certs (JWKS)
+    Keycloak-->>Gateway: JWKS (public keys, cached in Redis 1h)
+    Gateway->>Gateway: Verify JWT signature + expiry
+    Gateway-->>Client: 200 UserProfile
+
+    %% Phase 3: Establish WebSocket
+    Client->>RealtimeGW: WS connect wss://host/chat
+    RealtimeGW-->>Client: connected (unauthenticated, 30s auth timeout)
+
+    Client->>RealtimeGW: WS event: authenticate {token: JWT}
+    RealtimeGW->>Keycloak: GET JWKS (cached in Redis)
+    RealtimeGW->>RealtimeGW: Verify JWT + extract userId
+    RealtimeGW->>Redis: SET online:{userId} + add socket to connection map
+
+    %% Phase 4: Join personal room & friend rooms
+    RealtimeGW->>RealtimeGW: Join room user:{userId}
+    RealtimeGW->>RealtimeGW: Join room user:{friendId} for each friend
+    RealtimeGW-->>Client: WS event: authenticated {userId}
+
+    Note over Client: Client is now authenticated<br/>and receiving real-time events
+```
+
+---
+
+## Edit Message Flow
+
+### Description
+Flow when a user edits a previously sent message. Chat Core enforces the 1-hour edit window and saves an audit trail.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway as API Gateway
+    participant ChatCore as Chat Core
+    participant MsgStore as Message Store
+    participant ConvSvc as Conversation Service
+    participant Kafka
+    participant ChatDB as chat_db
+    participant Recipients as Other Clients
+    participant RealtimeGW as Realtime Gateway
+
+    %% Phase 1: Client requests edit
+    Client->>Gateway: POST /chat/messages/{messageId}/edit<br/>{content: "updated text"}
+    Gateway->>ChatCore: TCP: EDIT_MESSAGE<br/>{messageId, senderId, content}
+
+    %% Phase 2: Fetch current message for validation
+    ChatCore->>MsgStore: TCP: GET_MESSAGE_BY_ID {messageId}
+    MsgStore-->>ChatCore: {id, conversationId, senderId, createdAt, content}
+
+    %% Phase 3: Validate edit rules
+    ChatCore->>ChatCore: Check senderId == message.senderId
+    ChatCore->>ChatCore: Check (now - createdAt) <= 60 minutes
+
+    alt Edit window expired (> 1 hour)
+        ChatCore-->>Gateway: RpcException: MESSAGE_EDIT_WINDOW_EXPIRED
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    alt Not message owner
+        ChatCore-->>Gateway: RpcException: FORBIDDEN_ROLE_REQUIRED
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    %% Phase 4: Validate membership
+    ChatCore->>ConvSvc: TCP: IS_MEMBER {conversationId, userId}
+    ConvSvc-->>ChatCore: {isMember: true}
+
+    %% Phase 5: Publish edit event
+    ChatCore->>Kafka: Publish chat.event.message_edited<br/>{messageId, senderId, newContent, conversationId}
+    ChatCore-->>Gateway: {messageId, status: "edited"}
+    Gateway-->>Client: 200 {messageId}
+
+    %% Phase 6: Message Store persists edit
+    Kafka->>MsgStore: Consume chat.event.message_edited
+    MsgStore->>ChatDB: BEGIN TRANSACTION
+    MsgStore->>ChatDB: INSERT INTO message_edit_history<br/>(messageId, previousContent, editedBy, editedAt)
+    MsgStore->>ChatDB: UPDATE messages SET<br/>content = newContent,<br/>isEdited = true, editedAt = NOW()
+    MsgStore->>ChatDB: COMMIT
+
+    %% Phase 7: Broadcast edit to conversation
+    MsgStore->>Kafka: Publish chat.event.message_updated<br/>{messageId, conversationId, newContent, editedAt}
+    Kafka->>RealtimeGW: Consume chat.event.message_updated
+    RealtimeGW->>Recipients: Broadcast to conversation:{id}<br/>message:edited {messageId, newContent, editedAt}
+```
+
+### Key Rules
+
+- **Edit window**: 1 hour from `createdAt` (enforced by Chat Core using `MESSAGE_LIMITS.EDIT_WINDOW_MS`)
+- **Ownership**: Only the original sender can edit (no ADMIN override for edit)
+- **Audit trail**: Previous content always saved to `message_edit_history` before updating
+- **`isEdited` flag**: Message row shows edit indicator in UI
+
+---
+
+## Delete Message Flow
+
+### Description
+Soft-delete flow. Own messages within 24 h, ADMIN can delete any within 24 h (plus audit log).
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway as API Gateway
+    participant ChatCore as Chat Core
+    participant MsgStore as Message Store
+    participant ConvSvc as Conversation Service
+    participant Kafka
+    participant ChatDB as chat_db
+    participant Recipients as Other Clients
+    participant RealtimeGW as Realtime Gateway
+
+    Client->>Gateway: DELETE /chat/messages/{messageId}
+    Gateway->>ChatCore: TCP: DELETE_MESSAGE {messageId, deletedBy}
+
+    ChatCore->>MsgStore: TCP: GET_MESSAGE_BY_ID {messageId}
+    MsgStore-->>ChatCore: {id, conversationId, senderId, createdAt}
+
+    ChatCore->>ConvSvc: TCP: GET_MEMBERS_WITH_ROLES {conversationId}
+    ConvSvc-->>ChatCore: [{userId, role}]
+
+    ChatCore->>ChatCore: Resolve actor role from membership list
+
+    alt Own message AND within 24 h (MSG.DELETE_OWN)
+        ChatCore->>ChatCore: OK - proceed
+    else ADMIN/OWNER AND within 24 h (MSG.DELETE_ANY)
+        ChatCore->>ChatCore: OK - audit log required
+    else Violation
+        ChatCore-->>Gateway: RpcException: FORBIDDEN_TIME_WINDOW or FORBIDDEN_ROLE_REQUIRED
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    ChatCore->>Kafka: Publish chat.event.deleted<br/>{messageId, conversationId, deletedBy, isAdminDelete}
+    ChatCore-->>Gateway: {messageId, deleted: true}
+    Gateway-->>Client: 200
+
+    Kafka->>MsgStore: Consume chat.event.deleted
+    MsgStore->>ChatDB: UPDATE messages<br/>SET isDeleted = true, deletedAt = NOW()
+    MsgStore->>Kafka: Publish chat.event.message_updated (isDeleted: true)
+
+    Kafka->>RealtimeGW: Consume chat.event.message_updated
+    RealtimeGW->>Recipients: Broadcast conversation:{id}<br/>message:deleted {messageId}
+
+    Note over Recipients: "This message was deleted"<br/>shown in UI; content hidden
+```
+
+### Key Rules
+
+- **Soft delete only**: `isDeleted = true`, `deletedAt = NOW()` — row is never removed
+- **Own delete**: `MSG.DELETE_OWN` — sender only, within 24 h
+- **Admin delete**: `MSG.DELETE_ANY` — OWNER/ADMIN only, within 24 h, all actions are logged
+- **Content hidden**: Deleted messages return `{isDeleted: true, content: null}` from API
+
+---
+
+## Pin / Unpin Message Flow
+
+### Description
+Pin/unpin messages in a conversation. Max 3 pinned messages per conversation, OWNER/ADMIN/MODERATOR only.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway as API Gateway
+    participant ChatCore as Chat Core
+    participant MsgStore as Message Store
+    participant ConvSvc as Conversation Service
+    participant Kafka
+    participant ChatDB as chat_db
+    participant Recipients as Other Clients
+    participant RealtimeGW as Realtime Gateway
+
+    Client->>Gateway: POST /chat/conversations/{conversationId}/pin<br/>{messageId}
+    Gateway->>ChatCore: TCP: PIN_MESSAGE<br/>{conversationId, messageId, pinnedBy}
+
+    %% Validate membership and role
+    ChatCore->>ConvSvc: TCP: GET_MEMBERS_WITH_ROLES {conversationId}
+    ConvSvc-->>ChatCore: [{userId, role}]
+    ChatCore->>ChatCore: Verify pinnedBy role is OWNER/ADMIN/MODERATOR
+
+    alt Insufficient role
+        ChatCore-->>Gateway: RpcException: FORBIDDEN_ROLE_REQUIRED
+        Gateway-->>Client: 403 Forbidden
+    end
+
+    %% Check max pins
+    ChatCore->>MsgStore: TCP: GET_PINNED_MESSAGES {conversationId}
+    MsgStore-->>ChatCore: [{messageId, ...}] (0-3 items)
+
+    alt Already 3 pinned messages
+        ChatCore-->>Gateway: RpcException with code PIN_LIMIT_EXCEEDED
+        Gateway-->>Client: 422 Unprocessable Entity
+    end
+
+    %% Publish pin event
+    ChatCore->>Kafka: Publish chat.event.message_pinned<br/>{conversationId, messageId, pinnedBy}
+    ChatCore-->>Gateway: {messageId, pinned: true}
+    Gateway-->>Client: 200
+
+    Kafka->>MsgStore: Consume chat.event.message_pinned
+    MsgStore->>ChatDB: INSERT INTO pinned_messages<br/>(conversationId, messageId, pinnedBy, pinnedAt)
+
+    MsgStore->>Kafka: Publish chat.event.message_updated (pinned state)
+    Kafka->>RealtimeGW: Consume
+    RealtimeGW->>Recipients: Broadcast conversation:{id}<br/>message:pinned {messageId, pinnedBy}
+```
+
+### Unpin Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Gateway as API Gateway
+    participant ChatCore as Chat Core
+    participant Kafka
+    participant MsgStore as Message Store
+    participant ChatDB as chat_db
+    participant RealtimeGW as Realtime Gateway
+    participant Recipients as Other Clients
+
+    Client->>Gateway: DELETE /chat/conversations/{conversationId}/pin/{messageId}
+    Gateway->>ChatCore: TCP: UNPIN_MESSAGE {conversationId, messageId, unpinnedBy}
+    ChatCore->>ChatCore: Validate role (OWNER/ADMIN/MODERATOR)
+    ChatCore->>Kafka: Publish chat.event.message_unpinned
+    ChatCore-->>Gateway: {messageId, pinned: false}
+    Gateway-->>Client: 200
+
+    Kafka->>MsgStore: Consume chat.event.message_unpinned
+    MsgStore->>ChatDB: DELETE FROM pinned_messages WHERE messageId = ?
+    MsgStore->>Kafka: Publish chat.event.message_updated
+    Kafka->>RealtimeGW: Consume
+    RealtimeGW->>Recipients: Broadcast message:unpinned {messageId}
+```
+
+---
+
+## Media Upload Flow (2-Phase Pre-signed URL)
+
+### Description
+Two-phase upload: pre-check before upload, then finalize after direct MinIO upload. Prevents uploading media that will be rejected.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway as API Gateway
+    participant ChatCore as Chat Core
+    participant MediaSvc as Media Service
+    participant MinIO
+    participant MongoDB
+    participant Kafka
+    participant MediaWorker as Media Worker
+
+    %% Phase 1: Pre-check (validate BEFORE uploading)
+    Client->>Gateway: POST /chat/pre-check-media<br/>{conversationId, mimeType, fileSize}
+    Gateway->>ChatCore: TCP: PRE_CHECK_MEDIA<br/>{conversationId, userId, mimeType, fileSize}
+    ChatCore->>ChatCore: Validate MIME type against allowlist
+    ChatCore->>ChatCore: Validate fileSize <= org.maxFileSize
+    ChatCore->>ChatCore: Validate membership + MSG.SEND_MEDIA permission
+
+    alt Not allowed
+        ChatCore-->>Gateway: RpcException: MEDIA_TYPE_NOT_ALLOWED
+        Gateway-->>Client: 400 Bad Request
+    end
+
+    ChatCore-->>Gateway: {approved: true, uploadToken}
+    Gateway-->>Client: 200 {approved: true}
+
+    %% Phase 2: Create upload session
+    Client->>Gateway: POST /media/upload<br/>{conversationId, mimeType, fileName, fileSize}
+    Gateway->>MediaSvc: HTTP POST /upload<br/>(JWT forwarded)
+    MediaSvc->>MongoDB: INSERT media_objects (status=CREATED)
+    MediaSvc->>MinIO: Generate pre-signed PUT URL (15 min expiry)
+    MediaSvc-->>Gateway: {mediaId, uploadUrl, expiresAt}
+    Gateway-->>Client: 200 {mediaId, uploadUrl}
+
+    %% Phase 3: Direct upload to MinIO (no Gateway involved)
+    Client->>MinIO: PUT {uploadUrl} (binary file, direct)
+    MinIO-->>Client: 200 ETag
+
+    %% Phase 4: Finalize upload
+    Client->>Gateway: POST /media/finalize/{mediaId}
+    Gateway->>MediaSvc: HTTP POST /finalize/{mediaId}
+    MediaSvc->>MinIO: HEAD object (verify file exists + size)
+    MediaSvc->>MongoDB: UPDATE media_objects SET status=UPLOADED
+    MediaSvc->>Kafka: Publish media.uploaded {mediaId, ownerId, type, ...}
+    MediaSvc-->>Gateway: {mediaId, status: "UPLOADED"}
+    Gateway-->>Client: 200 {mediaId, status: "UPLOADED"}
+
+    %% Phase 5: Background processing by Media Worker
+    Kafka->>MediaWorker: Consume media.uploaded
+    MediaWorker->>MinIO: Download original file
+    MediaWorker->>MediaWorker: Generate thumbnail (Sharp) or transcode (ffmpeg)
+    MediaWorker->>MinIO: Upload variants (thumbnail, compressed)
+    MediaWorker->>MongoDB: UPDATE media_objects SET status=READY, variants=[...]
+    MediaWorker->>Kafka: Publish media.ready {mediaId, variants}
+
+    %% Phase 6: Attach media to message
+    Note over Client: Client can now send message<br/>with mediaId (status: READY or UPLOADED)
+    Client->>Gateway: POST /chat/messages<br/>{conversationId, mediaId, type: "image"}
+    Note over Gateway: Normal SEND_MESSAGE flow<br/>Chat Core validates media status<br/>and classification
+```
+
+### Media States
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED: Create upload session
+    CREATED --> UPLOADED: Client finalized (file in MinIO)
+    UPLOADED --> PROCESSING: Media Worker picks up
+    PROCESSING --> READY: Thumbnails generated, variants uploaded
+    PROCESSING --> FAILED: Processing error (antivirus, corrupt file)
+    FAILED --> UPLOADED: Client retries finalize
+    READY --> [*]: Media used in message
+
+    note right of CREATED
+        Pre-signed URL generated
+        15 min expiry
+    end note
+
+    note right of UPLOADED
+        File in MinIO
+        Can be attached to message
+        as placeholder
+    end note
+
+    note right of READY
+        All variants available
+        Thumbnail, compressed
+    end note
+```
+
+---
+
+## Friend Request Flow (with Auto-create DIRECT Conversation)
+
+### Description
+Complete friendship lifecycle from friend request to auto-created DIRECT conversation, using transactional outbox and Kafka events.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UserA
+    participant Gateway as API Gateway
+    participant FriendSvc as Friendship Service
+    participant UsersSvc as Users Service
+    participant UsersDB as users_db
+    participant Kafka
+    participant ConvSvc as Conversation Service
+    participant ChatDB as chat_db
+    participant RealtimeGW as Realtime Gateway
+    participant UserB
+
+    %% Phase 1: Send friend request
+    UserA->>Gateway: POST /friends/request<br/>{toUserId: userB}
+    Gateway->>FriendSvc: TCP: SEND_FRIEND_REQUEST<br/>{fromUserId: userA, toUserId: userB}
+
+    FriendSvc->>UsersSvc: TCP: FIND_BY_ID {userId: userB}
+    UsersSvc-->>FriendSvc: UserProfile (validate exists)
+
+    FriendSvc->>UsersDB: BEGIN TRANSACTION
+    FriendSvc->>UsersDB: INSERT INTO friend_requests<br/>(fromUserId, toUserId, status=PENDING)
+    FriendSvc->>UsersDB: INSERT INTO outbox_events<br/>(type=FRIENDSHIP_REQUEST_SENT, payload)
+    FriendSvc->>UsersDB: COMMIT
+
+    FriendSvc-->>Gateway: {requestId, status: "PENDING"}
+    Gateway-->>UserA: 201 {requestId}
+
+    Note over FriendSvc: OutboxProcessor (~30s)
+    FriendSvc->>Kafka: Publish friendship.request.sent<br/>{fromUserId, toUserId}
+    Kafka->>RealtimeGW: Consume friendship.request.sent
+    RealtimeGW->>UserB: WS broadcast to user:{userB}<br/>friend:request_received {fromUserId, fromUser}
+
+    %% Phase 2: Accept friend request
+    UserB->>Gateway: POST /friends/accept<br/>{fromUserId: userA}
+    Gateway->>FriendSvc: TCP: ACCEPT_FRIEND_REQUEST<br/>{userId: userB, fromUserId: userA}
+
+    FriendSvc->>UsersDB: BEGIN TRANSACTION
+    FriendSvc->>UsersDB: UPDATE friend_requests SET status=ACCEPTED
+    FriendSvc->>UsersDB: INSERT INTO friendships (userA, userB, FRIEND)
+    FriendSvc->>UsersDB: INSERT INTO friendships (userB, userA, FRIEND)
+    FriendSvc->>UsersDB: INSERT INTO outbox_events (type=FRIENDSHIP_ACCEPTED)
+    FriendSvc->>UsersDB: COMMIT
+
+    FriendSvc-->>Gateway: {status: "FRIEND"}
+    Gateway-->>UserB: 200
+
+    Note over FriendSvc: OutboxProcessor (~30s)
+    FriendSvc->>Kafka: Publish friendship.request.accepted<br/>{userId: userB, friendId: userA}
+
+    %% Phase 3: Auto-create DIRECT conversation
+    Kafka->>ConvSvc: Consume friendship.request.accepted
+    ConvSvc->>ChatDB: BEGIN TRANSACTION
+    ConvSvc->>ChatDB: INSERT INTO conversations<br/>(type=DIRECT, memberCount=2)
+    ConvSvc->>ChatDB: INSERT INTO conversation_members<br/>(conversationId, userA, role=MEMBER)
+    ConvSvc->>ChatDB: INSERT INTO conversation_members<br/>(conversationId, userB, role=MEMBER)
+    ConvSvc->>ChatDB: INSERT INTO outbox_events<br/>(type=CONVERSATION_CREATED)
+    ConvSvc->>ChatDB: COMMIT
+
+    Note over ConvSvc: OutboxProcessor (~30s)
+    ConvSvc->>Kafka: Publish chat.event.conversation_created<br/>{conversationId, type: DIRECT, memberIds}
+
+    Kafka->>RealtimeGW: Consume conversation_created
+    RealtimeGW->>UserA: WS broadcast to user:{userA}<br/>conversation:new {conversationId, type: DIRECT}
+    RealtimeGW->>UserB: WS broadcast to user:{userB}<br/>conversation:new {conversationId, type: DIRECT}
+
+    Note over UserA,UserB: Both users now see<br/>the DIRECT conversation<br/>in their chat list
+```
+
+---
+
+## Member Add / Remove Flow
+
+### Description
+Adding or removing a member from a GROUP or COMMUNITY conversation, with cache invalidation and real-time notifications.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Admin
+    participant Gateway as API Gateway
+    participant ConvSvc as Conversation Service
+    participant ChatDB as chat_db
+    participant Redis
+    participant Kafka
+    participant RealtimeGW as Realtime Gateway
+    participant NewMember
+
+    %% Add member
+    Admin->>Gateway: POST /conversations/{id}/members<br/>{userIds: [userId], role: "member"}
+    Gateway->>ConvSvc: TCP: ADD_MEMBERS<br/>{conversationId, requesterId, userIds, role}
+
+    ConvSvc->>ConvSvc: Validate requester is OWNER or ADMIN
+    ConvSvc->>ChatDB: BEGIN TRANSACTION
+    ConvSvc->>ChatDB: INSERT INTO conversation_members<br/>(conversationId, userId, role=MEMBER)
+    ConvSvc->>ChatDB: UPDATE conversations SET memberCount = memberCount + 1
+    ConvSvc->>ChatDB: INSERT INTO outbox_events (MEMBER_ADDED)
+    ConvSvc->>ChatDB: COMMIT
+
+    ConvSvc-->>Gateway: {success: true, memberCount}
+    Gateway-->>Admin: 200
+
+    Note over ConvSvc: OutboxProcessor (~30s)
+    ConvSvc->>Kafka: Publish chat.event.member_added<br/>{conversationId, userId, role}
+
+    %% Cache invalidation
+    Kafka->>ConvSvc: Consume chat.event.member_added (cache-updater group)
+    ConvSvc->>Redis: SADD membership:{conversationId} userId
+
+    %% Realtime notification
+    Kafka->>RealtimeGW: Consume chat.event.member_added
+    RealtimeGW->>NewMember: WS broadcast to user:{userId}<br/>conversation:added {conversationId, role}
+    RealtimeGW->>Admin: WS broadcast to conversation:{id}<br/>member:added {userId}
+
+    Note over NewMember: New member joins<br/>conversation room automatically
+
+    %% Remove member flow
+    Admin->>Gateway: DELETE /conversations/{id}/members/{userId}
+    Gateway->>ConvSvc: TCP: REMOVE_MEMBERS<br/>{conversationId, requesterId, userIds}
+
+    ConvSvc->>ConvSvc: Validate requester is OWNER or ADMIN
+    ConvSvc->>ChatDB: BEGIN TRANSACTION
+    ConvSvc->>ChatDB: DELETE FROM conversation_members WHERE userId = ?
+    ConvSvc->>ChatDB: UPDATE conversations SET memberCount = memberCount - 1
+    ConvSvc->>ChatDB: INSERT INTO outbox_events (MEMBER_REMOVED)
+    ConvSvc->>ChatDB: COMMIT
+
+    Note over ConvSvc: OutboxProcessor (~30s)
+    ConvSvc->>Kafka: Publish chat.event.member_removed<br/>{conversationId, userId}
+
+    Kafka->>ConvSvc: Consume chat.event.member_removed (cache-updater group)
+    ConvSvc->>Redis: SREM membership:{conversationId} userId
+
+    Kafka->>RealtimeGW: Consume chat.event.member_removed
+    RealtimeGW->>NewMember: WS broadcast to user:{userId}<br/>conversation:removed {conversationId, reason}
+```
+
+---
+
+## Read Receipt / Mark as Read Flow
+
+### Description
+How the client marks a conversation as read, updating the cursor-based read tracking without a separate receipts table.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant RealtimeGW as Realtime Gateway
+    participant MsgStore as Message Store
+    participant ConvSvc as Conversation Service
+    participant ChatDB as chat_db
+    participant Kafka
+    participant Sender as Message Sender
+
+    %% User opens conversation
+    Client->>RealtimeGW: WS: conversation:join {conversationId}
+    RealtimeGW->>RealtimeGW: Join Socket.IO room conversation:{conversationId}
+    RealtimeGW-->>Client: joined
+
+    %% Fetch messages
+    Client->>RealtimeGW: WS: message:fetch {conversationId, after: 0, limit: 50}
+    RealtimeGW->>MsgStore: TCP: GET_MESSAGES {conversationId, after, limit}
+    MsgStore-->>RealtimeGW: [{id, content, offset, isEdited, ...}]
+    RealtimeGW-->>Client: message:list [{...messages}]
+
+    %% Auto-mark as read (user sees messages)
+    Note over Client: User scrolls to bottom, sees messages
+    Client->>RealtimeGW: WS: message:mark_read {conversationId, upToOffset: 42}
+    RealtimeGW->>MsgStore: TCP: UPDATE_LAST_SEEN_OFFSET<br/>{conversationId, userId, offset: 42}
+    MsgStore->>ConvSvc: TCP: UPDATE_SEEN_CURSOR<br/>{conversationId, userId, offset: 42}
+    ConvSvc->>ChatDB: UPDATE conversation_members<br/>SET last_seen_offset = 42<br/>WHERE conversation_id = ? AND user_id = ?<br/>AND last_seen_offset < 42
+
+    ConvSvc-->>MsgStore: {updated: true}
+    MsgStore-->>RealtimeGW: {success: true}
+    RealtimeGW-->>Client: message:read_confirmed {upToOffset: 42}
+
+    %% Publish read event for sender's UI
+    RealtimeGW->>Kafka: Publish chat.event.read<br/>{conversationId, userId, upToOffset: 42}
+    Kafka->>RealtimeGW: Consume chat.event.read
+    RealtimeGW->>Sender: Broadcast to conversation:{id}<br/>message:read {userId, upToOffset: 42}
+
+    Note over Sender: Shows double checkmark<br/>or "Read by X" indicator
+```
+
+---
+
 ## References
 
-- [DATA_FLOW_PATTERNS.md](../integration/DATA_FLOW_PATTERNS.md) - Complete end-to-end flows with detailed explanations
+- [DATA_FLOW_PATTERNS.md](../integration/DATA_FLOW_PATTERNS.md) - Additional end-to-end flows
 - [SERVICE_COMMUNICATION.md](../integration/SERVICE_COMMUNICATION.md) - Service-to-service communication patterns
 - [system-architecture.md](./system-architecture.md) - Overall system architecture
 - [kafka-topology.md](./kafka-topology.md) - Kafka topic and partition details
 - [call-service.md](../services/call-service.md) - Call Service detailed documentation
+- [database-relations.md](./database-relations.md) - Database schemas and entity relationships

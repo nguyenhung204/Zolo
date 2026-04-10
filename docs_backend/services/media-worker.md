@@ -55,8 +55,10 @@ Background worker that processes uploaded media (images, videos) asynchronously 
    - `thumb`: 320px, WebP 70% quality → Set as thumbnailUrl
    - `preview`: 1280px, WebP 75% quality
 6. **Upload** variants to MinIO
-7. **Update** MongoDB: `status=READY`, variants array, thumbnailUrl, metadata (width/height/format)
+7. **Update** MongoDB: `status=READY`, variants array (`name`, `key`, `objectKey`, `width`, `height`, `sizeBytes`), thumbnailUrl, metadata (width/height/format)
 8. **Publish** `media.ready` event to Kafka
+
+> Note: Each variant now includes both `key` and `objectKey` fields (same value). `objectKey` was added for compatibility with `MediaService.getAccessUrl` which reads `variant.objectKey`. Older records may only have `key`.
 
 ### Video Processing
 1. **Idempotency Check**: Skip if media status is `READY`
@@ -162,7 +164,10 @@ IMAGE_PREVIEW_FORMAT=webp
   ```json
   { "pending": 2, "size": 15, "isPaused": false, "totalJobs": 17 }
   ```
-- **Recovery**: `RecoveryService` scheduled to retry stuck jobs
+- **Recovery**: `RecoveryService` scheduled cron job retries stuck media. Handles three categories:
+  - **PROCESSING** (> 10 min): re-enqueued for media processing
+  - **FAILED**: re-enqueued for media processing
+  - **DELETION_PENDING** (> 5 min back-off): MinIO delete is retried directly by RecoveryService using `MinioService.deleteObject`; on success, status is set to `DELETED`; on failure, item stays in `DELETION_PENDING` for the next cron cycle
 
 ---
 
@@ -203,8 +208,8 @@ IMAGE_PREVIEW_FORMAT=webp
     ProcessingJobService,    // In-memory job queue (p-queue)
     MediaProcessorService,   // Actual processing logic
     
-    // Recovery for stuck/failed media
-    RecoveryService,
+    // Recovery for stuck/failed/deletion-pending media
+    MediaRecoveryService,    // MinioService injected for DELETION_PENDING retries
     
     // Format-specific processors
     ImageProcessor,          // Sharp-based image processing

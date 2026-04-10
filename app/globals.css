@@ -60,6 +60,43 @@ body {
   background: var(--color-muted);
 }
 
+/* ─── Dark theme ───────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --color-bg:        #0F172A;
+  --color-surface:   #1E293B;
+  --color-primary:   #F1F5F9;
+  --color-text:      #F1F5F9;
+  --color-secondary: #94A3B8;
+  --color-border:    #334155;
+  --color-muted:     #475569;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="system"] {
+    --color-bg:        #0F172A;
+    --color-surface:   #1E293B;
+    --color-primary:   #F1F5F9;
+    --color-text:      #F1F5F9;
+    --color-secondary: #94A3B8;
+    --color-border:    #334155;
+    --color-muted:     #475569;
+  }
+}
+
+/* ─── Message density ──────────────────────────────────────────── */
+/* Default = COMFORTABLE (mb-2.5 / mb-1 stay as-is via Tailwind) */
+[data-density="compact"] {
+  --msg-gap-end:   0.5rem;   /* replaces mb-2.5 */
+  --msg-gap-mid:   0.125rem; /* replaces mb-1   */
+  --msg-py:        0.25rem;  /* bubble vertical padding */
+}
+[data-density="comfortable"],
+:root:not([data-density]) {
+  --msg-gap-end:   0.625rem;
+  --msg-gap-mid:   0.25rem;
+  --msg-py:        0.5rem;
+}
+
 /* ─── Reduced motion ───────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -2,8 +2,8 @@
 
 **Port**: 3004 (TCP Microservice)
 **Technology**: NestJS + TCP Transport
-**Database**: PostgreSQL (chat_db, read-only: `policy_rules` table)
-**Cache**: Redis (membership sets, policy cache, idempotency, rate limiting)
+**Database**: None — Chat Core does not own any database tables
+**Cache**: Redis (membership sets, role cache, idempotency, rate limiting)
 
 ---
 
@@ -13,7 +13,7 @@ Chat Core is the business validation engine for all message operations. It enfor
 
 ---
 
-## Architecture: Phase 5 — DB-Backed ACL Chain
+## Architecture: ACL Rule Chain
 
 The service implements a layered validation architecture built on three patterns:
 
@@ -29,7 +29,7 @@ Each message operation flows through an orchestrator that assembles context and 
 Request (TCP)
   → Orchestrator (assemble PermissionContext)
     → Validators (fetch user, membership, media from cache/TCP)
-      → ACL Rule Chain (execute 6 rules, fail-fast)
+      → ACL Rule Chain (execute 4 rules, fail-fast)
         → If OK: publish to Kafka
         → If Error: throw RpcException with specific error code
 ```
@@ -38,37 +38,30 @@ Request (TCP)
 
 ## ACL Rule Chain
 
-Six rules execute in priority order (highest first). Execution stops at the first failure:
+Four rules execute in priority order (highest first). Execution stops at the first failure:
 
-| Priority | Rule | Error Code |
-|----------|------|------------|
-| CRITICAL | `TenantIsolationRule` | `FORBIDDEN_TENANT_MISMATCH` |
-| CRITICAL | `AccountStatusRule` | `FORBIDDEN_ACCOUNT_STATUS` |
-| HIGH | `MembershipRule` | `FORBIDDEN_NOT_MEMBER` |
-| HIGH | `TimeWindowRule` | `FORBIDDEN_TIME_WINDOW`, `MESSAGE_EDIT_WINDOW_EXPIRED` |
-| HIGH | `MediaValidationRule` | `FORBIDDEN_MEDIA_NOT_READY`, `FORBIDDEN_MEDIA_CLASSIFICATION`, `FORBIDDEN_MEDIA_OWNERSHIP` |
-| MEDIUM | `PolicyMatrixRule` | `FORBIDDEN_ROLE_REQUIRED` |
+| Priority | Rule | File | Error Codes |
+|----------|------|------|-------------|
+| CRITICAL | `AccountStatusRule` | `rules/account-status.rule.ts` | `FORBIDDEN_ACCOUNT_BANNED` |
+| HIGH | `MembershipRule` | `rules/membership.rule.ts` | `FORBIDDEN_NOT_MEMBER` |
+| HIGH | `TimeWindowRule` | `rules/time-window.rule.ts` | `FORBIDDEN_EDIT_WINDOW_EXPIRED`, `FORBIDDEN_NOT_MESSAGE_SENDER`, `INVALID_CONTEXT` |
+| HIGH | `MediaValidationRule` | `rules/media-validation.rule.ts` | `FORBIDDEN_MEDIA_FAILED` |
 
-### PolicyMatrixRule — DB-Backed
+**Applies-to filters**: `TimeWindowRule` only fires for `MSG.EDIT_OWN`, `MSG.DELETE_OWN`, `MSG.DELETE_ANY` actions. `MediaValidationRule` only fires for `MSG.SEND_MEDIA`, `DOC.UPLOAD`, `DOC.SHARE_EXISTING` actions and only when `context.media` is present.
 
-The `policy_rules` table in `chat_db` stores 202 rules across 4 conversation kinds × 6 roles. Each row maps `(conversationKind, memberRole, permission)` to an allowed flag.
-
-- **Cold path**: Query `policy_rules` via `PolicyRepository`, cache result in Redis
-- **Warm path** (subsequent lookups): Redis cache hit, response < 1 ms
-- **Indexed query**: 0.086 ms average per PostgreSQL benchmark
+Error codes are defined in `libs/common/src/constants/permissions.constants.ts` (`ACLErrorCode` enum). Per-conversation-kind permission checks are handled by the **Strategy Pattern** (see below).
 
 ---
 
 ## Strategy Pattern
 
-A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy class that implements kind-specific validation logic:
+A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy class that implements kind-specific permission and validation logic:
 
 | Strategy | Kind | Special Logic |
 |----------|------|---------------|
-| `DirectConversationStrategy` | `DIRECT` | Friendship check, block check, rate-limit for strangers |
-| `DepartmentConversationStrategy` | `DEPARTMENT` | Department membership sync validation |
-| `ProjectConversationStrategy` | `PROJECT` | Project membership rules |
-| `AnnouncementConversationStrategy` | `ANNOUNCEMENT` | MEMBER/GUEST/READONLY cannot post (MSG.SEND_TEXT requires MODERATOR+) |
+| `DirectConversationStrategy` | `direct` | Friendship check, block check, rate-limit for strangers; all members have equal permissions |
+| `GroupConversationStrategy` | `group` | Role-based permissions; OWNER/ADMIN/MODERATOR get elevated capabilities; MEMBER gets standard messaging |
+| `CommunityConversationStrategy` | `community` | Only OWNER/ADMIN/MODERATOR can post (`MSG.SEND_TEXT`/`MSG.SEND_MEDIA`); MEMBER/GUEST can only `MSG.REACT` |
 
 ---
 
@@ -87,8 +80,8 @@ A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy clas
 1. Validate user account status (`UserValidatorService` → Users TCP)
 2. Fetch conversation from `ConversationService` (TCP)
 3. Fetch membership + role from Redis (`SISMEMBER`) or TCP fallback to Conversation Service
-4. For `DIRECT`: check friendship and block status via Friendship Service (TCP)
-5. For non-friend `DIRECT`: check `HAS_REPLIED` via Message Store (TCP) for stranger rate-limiting
+4. For `direct` kind: check friendship and block status via Friendship Service (TCP)
+5. For non-friend `direct` conversation: check `HAS_REPLIED` via Message Store (TCP) for stranger rate-limiting
 6. If `mediaId` present: validate via `MediaValidatorService` (Media Service TCP)
 7. Build immutable `PermissionContext`
 8. Execute ACL Rule Chain
@@ -100,43 +93,47 @@ A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy clas
 
 ---
 
-## PermissionContext
+## AclContext (Permission Context)
 
 ```typescript
-interface PermissionContext {
-  orgId: string;
-  conversation: {
-    id: string;
-    kind: 'DIRECT' | 'DEPARTMENT' | 'PROJECT' | 'ANNOUNCEMENT';
-    orgId: string;
-    settings?: { restrictedAllowed?: boolean };
-    departmentId?: string;
-    projectId?: string;
-  };
+export interface AclContext {
+  /** Actor performing the action */
   actor: {
     userId: string;
-    orgId: string;
-    accountStatus: 'ACTIVE' | 'SUSPENDED' | 'OFFBOARDED';
-    role: MemberRole;
-    isMember: boolean;
+    isActive: boolean;       // false = banned; AccountStatusRule blocks all actions
+    isMember: boolean;       // MembershipRule checks this
+    role?: string;           // MemberRole ('owner'|'admin'|'moderator'|'member'|'guest')
   };
+
+  /** Conversation context */
+  conversation: {
+    id: string;
+    kind?: string;           // 'direct' | 'group' | 'community'
+    settings?: Record<string, any>;
+  };
+
+  /** Message context — required for edit/delete operations */
   message?: {
     id: string;
     senderId: string;
-    createdAtMs: number;
+    createdAtMs: number;     // epoch ms; used by TimeWindowRule
+    conversationId: string;
   };
+
+  /** Media context — present only when mediaId is in message metadata */
   media?: {
     id: string;
-    ownerId: string;
-    orgId: string;
-    status: MediaStatus;
-    classification: 'PUBLIC_INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED';
-    sizeBytes: number;
+    status: MediaStatus;     // FAILED status is rejected; all others allowed
     mimeType: string;
+    sizeBytes: number;
   };
+
+  /** Current timestamp in epoch ms */
   nowMs: number;
 }
 ```
+
+`AclContext` is assembled by each orchestrator from cache/TCP lookups before the rule chain executes.
 
 ---
 
@@ -163,6 +160,22 @@ interface PermissionContext {
 |-------|---------|
 | `chat.event.message_accepted` | Message passed all validation; consumed by Message Store |
 
+`MESSAGE_ACCEPTED` payload**:
+```json
+{
+  "messageId": "uuid",
+  "conversationId": "uuid",
+  "conversationType": "direct | group | community",
+  "senderId": "keycloak-id",
+  "content": "...",
+  "type": "text | image | file | audio | video",
+  "timestamp": "2026-04-02T10:00:00.000Z",
+  "metadata": { "replyToMessageId?": "...", "mediaId?": "..." }
+}
+```
+
+`conversationType` and `timestamp` allow Message Store and downstream consumers to apply conversation-specific logic without an extra round-trip to Conversation Service.
+
 Message Store consumes `MESSAGE_ACCEPTED`, increments conversation offset, persists the message, then publishes `MESSAGE_SAVED` for Realtime Gateway.
 
 ---
@@ -172,7 +185,7 @@ Message Store consumes `MESSAGE_ACCEPTED`, increments conversation offset, persi
 | Service | Usage | Pattern |
 |---------|-------|---------|
 | Conversation Service | Fetch conversation, membership, member IDs | TCP |
-| Friendship Service | Friend status, block status (DIRECT only) | TCP |
+| Friendship Service | Friend status, block status (direct conversations only) | TCP |
 | Message Store | `HAS_REPLIED` check for stranger rate-limiting | TCP |
 | Media Service | Validate media metadata, ownership, classification | TCP |
 | Users Service | Validate account status | TCP |
@@ -185,29 +198,15 @@ All integrations use `IConversationService`, `IFriendshipService`, etc. interfac
 
 | Key Pattern | Purpose | TTL |
 |-------------|---------|-----|
-| `chat:conversation:{id}:members` | Membership Set (`SISMEMBER`) | Event-driven (no TTL expiry) |
-| `policy:cache:{kind}:{role}` | Cached permission set from `policy_rules` | Warm: cache on demand |
+| `chat:conversation:{id}:members` | Membership Set (`SISMEMBER`) | Event-driven (no TTL expiry; updated by Conversation Service consumers) |
 | `idempotency:message:{clientMessageId}` | Deduplication for sent messages | 24 hours |
-| `ratelimit:{userId}:{conversationId}` | Atomic rate limit counter (Lua) | Configurable window |
+| `ratelimit:{userId}:{conversationId}` | Atomic rate limit counter (Lua script) | Configurable window |
 
 ---
 
 ## Database
 
-Chat Core reads from the `policy_rules` table in `chat_db` (shared PostgreSQL container `chat-db`, host port 5433). It does not write to any database. Message persistence is delegated to Message Store.
-
-`policy_rules` schema:
-
-```sql
-id               UUID PK
-conversation_kind ENUM('DIRECT','DEPARTMENT','PROJECT','ANNOUNCEMENT')
-member_role       ENUM('OWNER','ADMIN','MODERATOR','MEMBER','GUEST','READONLY')
-permission        VARCHAR    -- e.g. 'MSG.SEND_TEXT', 'CH.UPDATE_INFO'
-allowed           BOOLEAN
-description       VARCHAR
-```
-
-202 rows total. Indexed on `(conversation_kind, member_role)` for O(1) bulk fetch.
+Chat Core does **NOT** own any database tables. All validation is done using data fetched at runtime via TCP calls (conversation metadata, membership, media status, user account status). The `policy_rules` table **does not exist** — per-conversation-kind permission logic is embedded in the Strategy classes (`DirectConversationStrategy`, `GroupConversationStrategy`, `CommunityConversationStrategy`).
 
 ---
 

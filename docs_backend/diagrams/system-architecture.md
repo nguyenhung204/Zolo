@@ -24,14 +24,16 @@ C4Context
         Container(chatcore, "Chat Core", "NestJS TCP", "Message validation, rate limiting")
         Container(msgstore, "Message Store", "NestJS TCP", "Message persistence")
         Container(presence, "Presence Service", "NestJS TCP", "Online/offline status")
-        Container(media, "Media Service", "NestJS HTTP", "File uploads, MinIO storage")
+        Container(media, "Media Service", "NestJS TCP", "File uploads, MinIO storage")
         Container(mediaworker, "Media Worker", "NestJS Worker", "Background media processing")
         Container(callsvc, "Call Service", "NestJS TCP", "Meeting lifecycle, LiveKit token issuance, recording")
+        Container(notification, "Notification Service", "NestJS TCP", "Push notifications, transactional email")
     }
     
     System_Ext(keycloak, "Keycloak", "Authentication & authorization server")
     System_Ext(livekit, "LiveKit SFU", "WebRTC media plane, ports 7880-7882")
     System_Ext(coturn, "coturn TURN", "TURN relay for NAT traversal, port 3478")
+    System_Ext(nginx, "Nginx", "Reverse proxy — routes auth.bcn.id.vn, storage.bcn.id.vn, minio.bcn.id.vn + TLS termination")
     
     System_Boundary(infrastructure, "Infrastructure") {
         ContainerDb(postgres, "PostgreSQL", "Relational DB", "3 databases (keycloak, users+friendship, chat+conversation)")
@@ -44,7 +46,6 @@ C4Context
     Rel(client, gateway, "HTTP/REST", "HTTPS")
     Rel(client, realtime, "WebSocket", "Socket.IO")
     Rel(client, keycloak, "OAuth 2.0", "Get JWT token")
-    Rel(client, media, "HTTP", "File upload/download")
     
     Rel(gateway, users, "RPC", "TCP")
     Rel(gateway, friendship, "RPC", "TCP")
@@ -52,8 +53,9 @@ C4Context
     Rel(gateway, chatcore, "RPC", "TCP")
     Rel(gateway, msgstore, "RPC", "TCP")
     Rel(gateway, presence, "RPC", "TCP")
-    Rel(gateway, media, "HTTP", "Proxy")
+    Rel(gateway, media, "RPC", "TCP")
     Rel(gateway, callsvc, "RPC", "TCP")
+    Rel(gateway, notification, "RPC", "TCP")
     
     Rel(realtime, chatcore, "RPC", "TCP")
     Rel(realtime, conversation, "RPC", "TCP")
@@ -61,12 +63,11 @@ C4Context
     
     Rel(chatcore, conversation, "RPC", "TCP")
     Rel(chatcore, friendship, "RPC", "TCP")
-    Rel(chatcore, media, "HTTP", "Validate media")
+    Rel(chatcore, media, "RPC", "TCP")
     Rel(msgstore, conversation, "RPC", "TCP")
     
     Rel(gateway, keycloak, "Verify JWT", "JWKS endpoint")
     Rel(realtime, keycloak, "Verify JWT", "JWKS endpoint")
-    Rel(media, keycloak, "Verify JWT", "JWKS endpoint")
     
     Rel(chatcore, kafka, "Publish", "MESSAGE_ACCEPTED")
     Rel(friendship, kafka, "Publish", "FRIENDSHIP events")
@@ -118,8 +119,9 @@ graph TB
         ChatCore[Chat Core Service<br/>TCP Port 3004]
         MsgStore[Message Store<br/>TCP Port 3005]
         Presence[Presence Service<br/>TCP Port 3003]
-        Media[Media Service<br/>HTTP Port 3009]
+        Media[Media Service<br/>TCP Port 3009]
         CallSvc[Call Service<br/>TCP Port 3011]
+        NotificationSvc[Notification Service<br/>TCP Port 3006]
     end
 
     subgraph "External Media Plane"
@@ -132,6 +134,8 @@ graph TB
         ZK[ZooKeeper<br/>Port 2181]
 
         ZK -.->|Coordinates| Kafka1
+    end
+
     subgraph "Data Layer"
         PG_Keycloak[(PostgreSQL<br/>keycloak DB)]
         PG_Users[(PostgreSQL<br/>users+friendship DB)]
@@ -145,7 +149,6 @@ graph TB
     Client -->|HTTPS REST| Gateway
     Client -->|WebSocket| RealtimeGW
     Client -->|OAuth 2.0| Keycloak
-    Client -->|HTTP Upload/Download| Media
     
     %% Gateway to Services (TCP)
     Gateway -->|TCP| Users
@@ -154,8 +157,9 @@ graph TB
     Gateway -->|TCP| ChatCore
     Gateway -->|TCP| MsgStore
     Gateway -->|TCP| Presence
-    Gateway -->|HTTP Proxy| Media
+    Gateway -->|TCP| Media
     Gateway -->|TCP| CallSvc
+    Gateway -->|TCP| NotificationSvc
     
     %% Realtime Gateway connections
     RealtimeGW -->|TCP| ChatCore
@@ -173,7 +177,6 @@ graph TB
     %% Auth verification
     Gateway -.->|Verify JWT<br/>JWKS| Keycloak
     RealtimeGW -.->|Verify JWT<br/>JWKS| Keycloak
-    Media -.->|Verify JWT<br/>JWKS| Keycloak
     
     %% Kafka producers/consumers
     ChatCore ==>|Publish| Kafka1
@@ -183,6 +186,7 @@ graph TB
     Media ==>|Consume| Kafka1
     RealtimeGW ==>|Consume| Kafka1
     CallSvc ==>|Consume/Publish| Kafka1
+    NotificationSvc ==>|Consume| Kafka1
     
     %% Database connections
     Users -->|Own| PG_Users
@@ -214,17 +218,18 @@ graph TB
 
 ## Service Communication Matrix
 
-| Caller ↓ / Callee → | Gateway | Realtime GW | Users | Friendship | Conversation | Chat Core | Message Store | Presence | Media | Call Service | Kafka | Keycloak |
-|---------------------|---------|-------------|-------|------------|--------------|-----------|---------------|----------|-------|--------------|-------|----------|
-| **Client** | HTTP | WS | - | - | - | - | - | - | HTTP | - | - | OAuth |
-| **Gateway** | - | - | TCP | TCP | TCP | TCP | TCP | TCP | HTTP | TCP | - | JWKS |
-| **Realtime GW** | - | - | - | - | TCP | TCP | - | TCP | - | - | Consume | JWKS |
-| **Chat Core** | - | - | - | TCP | TCP | - | TCP | - | HTTP | - | Publish | - |
-| **Message Store** | - | - | - | - | TCP | - | - | - | - | - | Consume/Publish | - |
-| **Friendship** | - | - | - | - | - | - | - | - | - | - | Publish | - |
-| **Conversation** | - | - | - | - | - | - | - | - | - | - | Consume/Publish | - |
-| **Media** | - | - | - | - | - | - | - | - | - | - | Consume | JWKS |
-| **Call Service** | - | - | - | - | - | - | - | - | - | - | Consume/Publish | - |
+| Caller ↓ / Callee → | Gateway | Realtime GW | Users | Friendship | Conversation | Chat Core | Message Store | Presence | Media | Call Service | Notification | Kafka | Keycloak |
+|---------------------|---------|-------------|-------|------------|--------------|-----------|---------------|----------|-------|--------------|-------------|-------|----------|
+| **Client** | HTTP | WS | - | - | - | - | - | - | - | - | - | - | OAuth |
+| **Gateway** | - | - | TCP | TCP | TCP | TCP | TCP | TCP | TCP | TCP | TCP | - | JWKS |
+| **Realtime GW** | - | - | - | - | TCP | TCP | - | TCP | - | - | - | Consume | JWKS |
+| **Chat Core** | - | - | - | TCP | TCP | - | TCP | - | TCP | - | - | Publish | - |
+| **Message Store** | - | - | - | - | TCP | - | - | - | - | - | - | Consume/Publish | - |
+| **Friendship** | - | - | - | - | - | - | - | - | - | - | - | Publish | - |
+| **Conversation** | - | - | - | - | - | - | - | - | - | - | - | Consume/Publish | - |
+| **Media** | - | - | - | - | - | - | - | - | - | - | - | Consume | - |
+| **Call Service** | - | - | - | - | - | - | - | - | - | - | - | Consume/Publish | - |
+| **Notification** | - | - | - | - | - | - | - | - | - | - | - | Consume | - |
 
 ## Port Allocation
 
@@ -233,13 +238,14 @@ graph TB
 |---------|------|----------|---------|
 | Gateway | 3000 | HTTP | External REST API |
 | Realtime Gateway | 3002 | WebSocket | Socket.IO connections |
-| Media Service | 3009 | HTTP | Internal only (expose, no host port mapping) |
 | Keycloak | 8080 | HTTP | Authentication server |
 | Kafka Broker 1 | 9092 | TCP | Kafka client connections |
-| Redis | 6380 | TCP | Redis (mapped from container 6379) || LiveKit SFU | 7880 | HTTP/WebRTC | LiveKit API and WebRTC signaling |
+| Redis | 6380 | TCP | Redis (mapped from container 6379) |
+| LiveKit SFU | 7880 | HTTP/WebRTC | LiveKit API and WebRTC signaling |
 | LiveKit TURN | 7881 | TCP | LiveKit TURN relay |
 | LiveKit RTC | 7882 | UDP | LiveKit RTC media traffic |
-| coturn TURN | 3478 | UDP/TCP | TURN relay for WebRTC || Kafdrop | 9000 | HTTP | Kafka UI monitoring |
+| coturn TURN | 3478 | UDP/TCP | TURN relay for WebRTC |
+| Kafdrop | 9000 | HTTP | Kafka UI monitoring |
 | MinIO API | 9010 | HTTP | S3-compatible API |
 | MinIO Console | 9011 | HTTP | Basic console |
 | MinIO Admin Console | 9012 | HTTP | Full-featured admin UI |
@@ -252,13 +258,15 @@ graph TB
 | Presence Service | 3003 | TCP | NestJS microservice |
 | Chat Core | 3004 | TCP | NestJS microservice |
 | Message Store | 3005 | TCP | NestJS microservice |
+| Notification Service | 3006 | TCP | NestJS microservice |
 | Conversation Service | 3007 | TCP | NestJS microservice |
 | Friendship Service | 3008 | TCP | NestJS microservice |
+| Media Service | 3009 | TCP | NestJS microservice |
 | Call Service | 3011 | TCP | NestJS microservice |
 | ZooKeeper | 2181 | TCP | Kafka coordination |
 | PostgreSQL (Keycloak) | 5432 | TCP | Keycloak database (internal only) |
 | PostgreSQL (Users + Friendship) | 5434 | TCP | users_db — users and friendship tables |
-| PostgreSQL (Chat) | 5433 | TCP | chat_db — conversations, messages, policy_rules |
+| PostgreSQL (Chat) | 5433 | TCP | chat_db — conversations, messages |
 | MongoDB | 27017 | TCP | Media metadata database |
 | MinIO Internal | 9000 | HTTP | Internal S3 API |
 | Redis | 6379 | TCP | Cache + Presence |
@@ -271,6 +279,7 @@ graph TB
 - **Flow**: OAuth 2.0 / OpenID Connect
 - **Token Type**: RS256 JWT
 - **Services verify tokens via JWKS endpoint** (no auth microservice needed)
+- **Production reverse proxy**: Keycloak is placed behind Nginx. The instance is configured with `KC_PROXY_HEADERS=xforwarded` (trust X-Forwarded-* headers from proxy) and `KC_HOSTNAME` set to the public auth URL (e.g. `https://auth.bcn.id.vn`). Without this, Keycloak generates HTTP URLs in token `iss` and JWKS responses, causing verification failures from HTTPS clients.
 
 ### Kafka Cluster
 - **Purpose**: Event streaming, asynchronous messaging
@@ -292,8 +301,8 @@ graph TB
 - **keycloak_db**: Owned by Keycloak
 - **users_db**: Owned by Users Service + Friendship Service
   - User profiles, settings, friendships, friend requests, blocks
-- **chat_db**: Owned by Conversation Service, Message Store, Call Service (Chat Core reads `policy_rules`)
-  - Conversations, members, offsets, messages, policy_rules
+- **chat_db**: Owned by Conversation Service, Message Store, Call Service (Chat Core has no tables — permission logic is embedded in Strategy classes)
+  - Conversations, members, offsets, messages
   - Meetings, participants, waiting_participants, recordings, meeting_summaries
 
 ### LiveKit SFU (External media plane)
@@ -305,6 +314,11 @@ graph TB
 - **Purpose**: TURN relay for WebRTC clients behind restrictive NAT
 - **Port**: 3478 (UDP/TCP)
 - **Usage**: LiveKit references coturn for clients that cannot reach SFU directly
+
+### Nginx Reverse Proxy
+- **Purpose**: TLS termination, virtual-host routing, X-Forwarded-* header injection
+- **Routes**: `auth.bcn.id.vn` → Keycloak, `storage.bcn.id.vn` → MinIO S3 API, `minio.bcn.id.vn` → MinIO Console
+- **MinIO configuration**: `MINIO_SERVER_URL=https://storage.bcn.id.vn` ensures presigned URLs generated by Media Service use the publicly reachable hostname. `MINIO_BROWSER_REDIRECT_URL=https://minio.bcn.id.vn` prevents the MinIO Console from redirecting to `localhost`.
 
 ## Communication Patterns
 

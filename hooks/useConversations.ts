@@ -6,7 +6,7 @@ import {
   createConversation,
   updateConversationInfo,
   addConversationMembers,
-  removeConversationMembers,
+  removeConversationMember,
   setConversationMemberRole,
   type ConversationMember,
   type MemberRole,
@@ -45,11 +45,26 @@ export function useConversations() {
 
 export function useConversation(id: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({
+  const qc = useQueryClient();
+  const result = useQuery({
     queryKey: queryKeys.conversations.detail(id),
     queryFn: () => getConversation(id),
     enabled: isAuthenticated && !!id,
   });
+
+  // The detail response resolves avatarUrl via presigned URL while the list
+  // response may not always include it. Sync it back so ConversationItem shows
+  // the avatar without an extra fetch.
+  const resolvedAvatarUrl = result.data?.avatarUrl;
+  useEffect(() => {
+    if (!resolvedAvatarUrl) return;
+    qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+      queryKeys.conversations.list(),
+      (old) => old?.map((c) => (c.id === id ? { ...c, avatarUrl: resolvedAvatarUrl } : c))
+    );
+  }, [resolvedAvatarUrl, id, qc]);
+
+  return result;
 }
 
 export function useConversationMembers(id: string) {
@@ -60,7 +75,7 @@ export function useConversationMembers(id: string) {
       id: p.userId,
       conversationId: id,
       userId: p.userId,
-      role: p.role.toUpperCase() as MemberRole,
+      role: p.role as MemberRole,
       lastSeenOffset: 0,
       lastDeliveredOffset: 0,
       joinedAt: conversation?.createdAt ?? "",
@@ -97,8 +112,21 @@ export function useUpdateConversationInfo() {
   return useMutation({
     mutationFn: ({ id, ...payload }: { id: string } & UpdateConversationInfoPayload) =>
       updateConversationInfo(id, payload),
-    onSuccess: (_data, { id }) => {
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(id) });
+    onSuccess: async (_data, { id }) => {
+      // PATCH response doesn't include a resolved avatarUrl — fetch the detail
+      // explicitly so the list immediately shows the new avatar.
+      const fresh = await getConversation(id).catch(() => null);
+      if (fresh) {
+        qc.setQueryData(queryKeys.conversations.detail(id), fresh);
+        if (fresh.avatarUrl) {
+          qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+            queryKeys.conversations.list(),
+            (old) => old?.map((c) => (c.id === id ? { ...c, avatarUrl: fresh.avatarUrl } : c))
+          );
+        }
+      } else {
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(id) });
+      }
       qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     },
   });
@@ -119,7 +147,7 @@ export function useRemoveConversationMember() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ conversationId, userId }: { conversationId: string; userId: string }) =>
-      removeConversationMembers(conversationId, [userId]),
+      removeConversationMember(conversationId, userId),
     onSuccess: (_data, { conversationId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
     },

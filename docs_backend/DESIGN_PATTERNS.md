@@ -146,26 +146,41 @@ export interface IConversationService {
 }
 ```
 
-The adapter implements this interface over TCP:
+The adapter implements this interface over TCP with an optional Circuit Breaker:
 
 ```typescript
 @Injectable()
 export class ConversationServiceAdapter implements IConversationService {
-  constructor(@Inject(SERVICES.CONVERSATION) private readonly client: ClientProxy) {}
+  constructor(
+    @Inject(SERVICES.CONVERSATION) private readonly client: ClientProxy,
+    @Optional() private readonly circuitBreaker?: CircuitBreakerService,
+  ) {}
+
+  // Generic helper: uses CB when available, plain timeout otherwise
+  private async call<T = any>(pattern: object, payload: any): Promise<T> {
+    try {
+      if (this.circuitBreaker) {
+        return await this.circuitBreaker.execute(() =>
+          firstValueFrom(this.client.send(pattern, payload).pipe(timeout(5000))),
+        );
+      }
+      return await firstValueFrom(this.client.send(pattern, payload).pipe(timeout(5000)));
+    } catch (error: any) {
+      if (error?.name === 'BrokenCircuitError' || error?.name === 'TaskCancelledError') {
+        throw new ServiceUnavailableException('conversation-service circuit open');
+      }
+      if (isServiceUnavailable(error)) throw new ServiceUnavailableException('conversation-service unavailable');
+      throw error;
+    }
+  }
 
   async getMembership(userId: string, conversationId: string): Promise<MembershipResult> {
-    try {
-      return await firstValueFrom(
-        this.client.send(CONVERSATION_PATTERNS.GET_MEMBERSHIP, { userId, conversationId })
-          .pipe(timeout(5000)),
-      );
-    } catch (error) {
-      if (isServiceUnavailable(error)) throw new ServiceUnavailableException('conversation-service unavailable');
-      return null;
-    }
+    return this.call(CONVERSATION_PATTERNS.GET_MEMBERSHIP, { userId, conversationId });
   }
 }
 ```
+
+The `@Optional()` decorator makes the Circuit Breaker backward-compatible: services that do not register `CircuitBreakerService` as a provider fall back silently to plain RxJS `timeout(5000)`.
 
 Chat Core orchestrators import from `@app/service-contracts`, never from adapter files:
 
@@ -219,8 +234,8 @@ Any service that publishes a Kafka event after a DB write faces the **dual-write
 
 ```
 libs/database-postgres/src/outbox/
-  outbox.entity.ts          ← outbox DB row: topic, payload, status, createdAt
-  outbox.repository.ts      ← create() / createMany() inside a transaction
+  outbox.entity.ts          ← outbox DB row: topic, payload, status, idempotencyKey, nextRetryAt
+  outbox.repository.ts      ← create() / createMany() with idempotency; markAsFailed() with backoff
   outbox.processor.ts       ← @Cron polls + publishes via KafkaProducerService
 ```
 
@@ -230,19 +245,25 @@ Sequence for creating a conversation (Conversation Service):
 1. BEGIN TRANSACTION
 2. INSERT INTO conversations (...)
 3. INSERT INTO conversation_members (...)
-4. INSERT INTO outbox (topic='CONVERSATION_CREATED', payload={...}, status='PENDING')
+4. INSERT INTO outbox (topic='CONVERSATION_CREATED', payload={...}, status='PENDING',
+                       idempotency_key='conv-<id>-created')
 5. COMMIT
 6. [30s later] OutboxProcessor SELECT WHERE status='PENDING'
+                               AND (next_retry_at IS NULL OR next_retry_at <= NOW())
 7. kafkaProducer.publish('CONVERSATION_CREATED', payload)
 8. UPDATE outbox SET status='PUBLISHED'
 ```
 
-If step 7 fails, the row stays `PENDING` and is retried on the next poll cycle. Events are idempotent by design (consumers use `messageId` or `eventId` to deduplicate).
+If step 7 fails: `markAsFailed()` increments `retry_count` and sets `next_retry_at = NOW() + min(30s × 2^retryCount, 1h)`. The row is retried on the next poll cycle only after that backoff window elapses.
+
+Duplicate writes with the same `idempotencyKey` catch PostgreSQL error code `23505` (unique_violation) and silently return the existing row — making `create()` fully idempotent.
 
 ### What it Solves
 
 - **No lost events**: DB and Kafka either both succeed (eventually) or both fail
 - **Survives broker restarts**: pending rows wait in the DB until Kafka is healthy
+- **No duplicate rows**: `idempotencyKey` unique constraint prevents double-write under concurrent retries
+- **No retry storms**: exponential backoff (30 s base, 1 h cap) avoids hammering a degraded broker
 - **Audit trail**: outbox table serves as an event log for operational debugging
 
 ### How to Extend
@@ -254,6 +275,7 @@ If step 7 fails, the row stays `PENDING` and is retried on the next poll cycle. 
 await this.outboxRepository.create(entityManager, {
   topic: 'MEMBER_ROLE_CHANGED',
   payload: JSON.stringify({ conversationId, userId, oldRole, newRole }),
+  idempotencyKey: `role-change-${conversationId}-${userId}-${Date.now()}`,
 });
 // This runs inside the same BEGIN/COMMIT block as the DB update.
 ```
@@ -276,50 +298,65 @@ On every message, Chat Core must verify that the sender is a member of the targe
 
 ### Pattern Applied
 
-**Event-Driven Cache Invalidation using Redis Sets** — Conversation Service publishes `MEMBER_ADDED` / `MEMBER_REMOVED` Kafka events whenever membership changes. A `MembershipCacheConsumer` in Chat Core (or the cache layer) consumes these events and keeps a Redis Set up to date.
+**Event-Driven Cache Invalidation (cache-first, implemented)** — Conversation Service publishes `MEMBER_ADDED` / `MEMBER_REMOVED` Kafka events whenever membership changes. `MembershipCacheConsumer` keeps Redis up to date; Chat Core reads Redis first (O(1)) and falls back to TCP only on a cache miss.
 
 ```
-Redis key:  chat:conversation:{conversationId}:members
-Type:       Set of userId strings
-TTL:        300 seconds (5 min, refreshed on access)
+Redis keys:
+  chat:conversation:{id}:members          → Set of userId strings, TTL 7 days
+  chat:conversation:{id}:members:{uid}:role → String (role), TTL 7 days
 
-Chat Core membership check:
-  redis.sismember(key, userId)  → O(1), < 1 ms
+Chat Core membership check (MembershipValidatorService):
+  1. redis.sismember(key, userId)        → O(1), < 1 ms
+  2. redis.get(roleKey)                  → O(1), skips TCP on hit
+  3. TCP fallback if Redis miss/down
 
-Cache miss / Redis down:
-  TCP fallback → ConversationServiceAdapter.isMember()
+Friendship block check (MessageSendOrchestrator DIRECT path):
+  redis.mget(block:A:B, block:B:A)       → O(1) MGET both directions
+  TCP fallback if both keys are null
 ```
 
-Event flow:
+Event flows:
 
 ```
-ConversationService DB write
-  → outbox event MEMBER_ADDED
-    → OutboxProcessor publishes to Kafka
-      → MembershipCacheConsumer (in Chat Core)
-        → redis.sadd(key, userId)
+[Member Added]
+ConversationService DB write + outbox event (same tx)
+  → MembershipCacheConsumer
+    → redis.sadd(members-key, userId)
+    → pipeline: SET role-key EX 604800
+    → redis.expire(members-key, 604800)
+
+[Member Removed — dual path]
+Path A (immediate, same process):
+  → conversation.service.ts post-transaction:
+    redis.pipeline() → SREM + DEL role-key
+
+Path B (event-driven):
+  → MembershipCacheConsumer.handleMemberRemoved()
+    → pipeline: SREM + DEL role-keys
+
+[Block / Unblock]
+Friendship Service publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED
+  → FriendshipBlockConsumer (Chat Core, group: chat-core.block-cache)
+    → BLOCKED:   SET chat:friendship:block:A:B 1 EX 86400
+    → UNBLOCKED: DEL chat:friendship:block:A:B
 ```
-
-Removal follows the same path with `redis.srem`.
-
-Consumer group: `CONVERSATION_CACHE_UPDATER`
 
 ### What it Solves
 
-- **Hot-path latency**: membership check drops from ~10 ms (TCP) to < 1 ms (Redis SISMEMBER)
-- **No stale state after kick**: the Kafka event arrives within the outbox polling window (≤ 30 s), immediately invalidating the cache
-- **Graceful degradation**: if Redis is unavailable, Chat Core falls back to TCP; the system degrades slowly, not catastrophically
+- **Hot-path latency**: membership + role check drops from ~10 ms (TCP) to < 1 ms (Redis)
+- **No stale state after kick**: `removeMembers()` busts Redis immediately (Path A), before the Kafka event arrives
+- **Role available without TCP**: role String keys eliminate the TCP round-trip needed previously to get the member's role
+- **Block check without TCP**: `FriendshipBlockConsumer` caches block status so `MessageSendOrchestrator` skips the Friendship Service TCP call on the hot path
+- **TTL consistency**: both members Set and role String use 7 days (previously role TTL was 1 h, causing stale writes to overwrite the event cache)
+- **Graceful degradation**: Redis unavailability falls through safely to TCP
 
 ### How to Extend
 
-**Adding a new cached attribute** (e.g., caching member roles):
+**Caching member roles is already implemented** — `MemberAddedEventSchema` now carries `roles: Record<string, string>` and `MembershipCacheConsumer` pipelines `SET` calls for each role.
 
-1. Publish a `MEMBER_ROLE_CHANGED` Kafka event from Conversation Service (via outbox)
-2. Add a Redis Hash key: `chat:conversation:{id}:roles → {userId: role}`
-3. Add a new consumer case in `MembershipCacheConsumer` that calls `redis.hset(key, userId, role)`
-4. In Chat Core, replace the `getMembership()` TCP call with `redis.hget(key, userId)`
+**Adding a new block-type relationship to the cache:** follow the `FriendshipBlockConsumer` pattern — create a consumer in the target service, subscribe to the relevant Kafka topic, and write/delete the appropriate Redis key.
 
-**Adding a new service that needs membership data:** follow the same consumer pattern — subscribe to the existing `MEMBER_ADDED`/`MEMBER_REMOVED` events; no changes to Conversation Service needed.
+**Adding a new service that needs membership data:** subscribe to the existing `MEMBER_ADDED`/`MEMBER_REMOVED` events; no changes to Conversation Service needed.
 
 ---
 
@@ -340,18 +377,16 @@ apps/chat-core/src/acl/
   acl-rule-chain.factory.ts         ← builds the standard chain (wires DI)
   permission-context.interface.ts   ← AclContext: immutable snapshot of the request
   rules/
-    tenant-isolation.rule.ts        ← CRITICAL: orgId mismatch → FORBIDDEN_TENANT_MISMATCH
     account-status.rule.ts          ← CRITICAL: SUSPENDED/OFFBOARDED → FORBIDDEN_ACCOUNT_STATUS
     membership.rule.ts              ← HIGH:     not a member → FORBIDDEN_NOT_MEMBER
     time-window.rule.ts             ← HIGH:     edit > 10 min → FORBIDDEN_TIME_WINDOW
     media-validation.rule.ts        ← HIGH:     RESTRICTED file in wrong channel → FORBIDDEN_MEDIA_CLASSIFICATION
-    policy-matrix.rule.ts           ← MEDIUM:   role doesn't include action → FORBIDDEN_ROLE_REQUIRED
 ```
 
 Rule priority / ordering:
 
 ```
-TenantIsolation → AccountStatus → Membership → TimeWindow → MediaValidation → PolicyMatrix
+AccountStatus → Membership → TimeWindow → MediaValidation
 ```
 
 CRITICAL rules run first; if any reject, the chain stops immediately. The `AclContext` is built once (immutable) before the chain executes — no DB calls inside rules.
@@ -359,7 +394,7 @@ CRITICAL rules run first; if any reject, the chain stops immediately. The `AclCo
 ### What it Solves
 
 - **Single responsibility**: each file owns exactly one business rule; changes to the tenant check don't touch the rate-limit check
-- **Ordered short-circuit**: cheap/critical checks (tenant, status) run before expensive ones (policy matrix DB lookup)
+- **Ordered short-circuit**: cheap/critical checks (status) run before more targeted ones (membership, time window)
 - **Testability**: each rule is testable in isolation with a minimal `AclContext` mock
 - **Observability**: rejections carry the exact failing rule's error code (`FORBIDDEN_TENANT_MISMATCH`, etc.)
 
@@ -396,7 +431,7 @@ export class HourlyRateLimitRule implements IAclRule {
 
 ### Problem
 
-Each `ConversationKind` (`DIRECT`, `DEPARTMENT`, `PROJECT`, `ANNOUNCEMENT`) has its own permission matrix, membership rules, and post constraints. Without the Strategy pattern, this becomes one large class with a `switch(kind)` block duplicated across every operation. Adding a new channel kind means editing every switch block.
+Each `ConversationKind` (`direct`, `group`, `community`) has its own permission matrix, membership rules, and post constraints. Without the Strategy pattern, this becomes one large class with a `switch(kind)` block duplicated across every operation. Adding a new channel kind means editing every switch block.
 
 ### Pattern Applied
 
@@ -404,10 +439,9 @@ Each `ConversationKind` (`DIRECT`, `DEPARTMENT`, `PROJECT`, `ANNOUNCEMENT`) has 
 
 ```
 apps/chat-core/src/strategies/conversation/
-  direct-conversation.strategy.ts         ← DIRECT: symmetric perms for all roles
-  department-conversation.strategy.ts     ← DEPARTMENT: auto-sync, ADMIN-only bulk ops
-  project-conversation.strategy.ts        ← PROJECT: manual membership, cross-share policy
-  announcement-conversation.strategy.ts   ← ANNOUNCEMENT: MEMBER/GUEST = REACT-only
+  direct-conversation.strategy.ts         ← direct: symmetric perms for all members
+  group-conversation.strategy.ts          ← group: role-based perms (OWNER > ADMIN > MODERATOR > MEMBER > GUEST)
+  community-conversation.strategy.ts      ← community: only OWNER/ADMIN/MODERATOR post; MEMBER/GUEST react-only
   conversation-strategy.registry.ts       ← Map<ConversationKind, IConversationStrategy>
 ```
 
@@ -420,33 +454,31 @@ const allowed = strategy.canPerformAction(ctx.actor.role, action);
 
 Each strategy encapsulates:
 - Which `Permission` codes are available per `MemberRole`
-- Kind-specific pre-checks (e.g., DEPARTMENT blocks manual `MBR.INVITE`)
-- Metadata requirements (e.g., PROJECT requires `projectId`)
+- Kind-specific pre-checks (e.g., `community` blocks non-moderator `MSG.SEND_TEXT`)
+- Join policies (e.g., `direct` disallows join; `community` auto-assigns MEMBER role)
 
-Permission data is loaded from the `policy_rules` database table (202 rows) at startup and cached per strategy, not hardcoded.
+Permission sets are hardcoded per-strategy in `getPermissionsForRole()` — there is no database-backed `policy_rules` table.
 
 ### What it Solves
 
-- **Isolated per-kind logic**: changing ANNOUNCEMENT permissions doesn't risk breaking PROJECT logic
-- **Data-driven policies**: the 202-row `policy_rules` table can be updated without redeploying
-- **Extensibility**: adding `BROADCAST` as a new kind = one new strategy class + one registry entry
+- **Isolated per-kind logic**: changing `community` permissions doesn't risk breaking `group` logic
+- **Extensibility**: adding a new kind = one new strategy class + one registry entry
 
 ### How to Extend
 
 **Adding a new `ConversationKind`:**
 
-1. Add the literal to the `ConversationKind` union type in `@app/common`
-2. Add policy rows to the `policy_rules` table for the new kind + all relevant roles
-3. Create `apps/chat-core/src/strategies/conversation/<new-kind>-conversation.strategy.ts` implementing `IConversationStrategy`
-4. Register it in `conversation-strategy.registry.ts`:
+1. Add the literal to the `ConversationType` enum in `libs/common/src/enums/conversation.enum.ts`
+2. Create `apps/chat-core/src/strategies/conversation/<new-kind>-conversation.strategy.ts` implementing `IConversationStrategy` and defining `getPermissionsForRole()` for each `MemberRole`
+3. Register it in `conversation-strategy.registry.ts`:
 
 ```typescript
-this.strategies.set('BROADCAST', this.broadcastStrategy);
+this.strategies.set('broadcast', this.broadcastStrategy);
 ```
 
-5. No existing strategy files change.
+4. No existing strategy files change.
 
-**Changing permissions for an existing kind:** update the `policy_rules` table rows (no code change if the permission code already exists). If the permission code is new, add it to the `Permission` enum in `@app/common` first.
+**Changing permissions for an existing kind:** edit `getPermissionsForRole()` in the relevant strategy file. If the permission code is new, add it to the `Permission` enum in `libs/common/src/constants/permissions.constants.ts` first.
 
 ---
 
@@ -472,13 +504,14 @@ apps/chat-core/src/orchestrators/
 `MessageSendOrchestrator` coordination sequence:
 
 ```
-1. UserValidatorService.validate(senderId)           → account status
-2. MembershipValidatorService.validate(...)          → member + role (Redis first, TCP fallback)
-3. FriendshipService.isBlocked(...)                  → optional, only for DIRECT conversations
-4. MessageRateLimiterService.check(...)              → per-user throttle
-5. MediaValidatorService.validate(...)               → only if mediaId present
-6. AclRuleChainFactory.build() → chain.execute(ctx) → full authorization
-7. KafkaProducerService.publish('MESSAGE_ACCEPTED')  → hand off to Message Store
+1. UserValidatorService.validate(senderId)             → account status
+2. MembershipValidatorService.validate(...)            → member + role (Redis O(1) first, TCP fallback)
+3. [direct kind only] redis.mget(block:A:B, block:B:A)  → O(1) block check from Redis cache
+                  → TCP fallback to FriendshipService on cache miss
+4. MessageRateLimiterService.check(...)                → per-user throttle
+5. MediaValidatorService.validate(...)                 → only if mediaId present
+6. AclRuleChainFactory.build() → chain.execute(ctx)    → full authorization
+7. KafkaProducerService.publish('MESSAGE_ACCEPTED')    → hand off to Message Store
 ```
 
 The orchestrator imports all dependencies via `@app/service-contracts` interfaces — it never imports transport-specific classes.
@@ -535,9 +568,7 @@ HTTP Request (Client)
   
    [ AclRuleChain ]                       ← Pattern 5
              runs rules in order
-            [ PolicyMatrixRule ]
-                       selects strategy
-                     
+
                 [ ConversationStrategy ]     ← Pattern 6
   
    KafkaProducerService.publish()
@@ -563,7 +594,7 @@ HTTP Request (Client)
 | New service emits Kafka events | Transactional Outbox (import `OutboxModule`) |
 | Hot-path data read hammering another service | Event-Driven Cache (Redis Set + Kafka consumer) |
 | New business rule in Chat Core validation | Chain of Responsibility (add rule class, register in factory) |
-| New `ConversationKind` or permission change | Strategy (add strategy class, update `policy_rules` table) |
+| New `ConversationKind` or permission change | Strategy (add strategy class, update permission map in `getPermissionsForRole()`) |
 | New multi-step operation in Chat Core | Orchestrator (add orchestrator class, add controller handler) |
 
 ---

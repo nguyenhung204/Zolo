@@ -17,21 +17,31 @@ This service does not perform message validation or business rule enforcement. I
 - Providing paginated message retrieval by conversation ID
 - Calculating unread message counts for users in conversations (via Conversation Service cursors)
 - Checking if user has replied in a conversation (for smart notifications and rate limiting)
-- Proxying cursor operations to Conversation Service (UPDATE_SEEN_CURSOR, UPDATE_DELIVERED_CURSOR, GET_UNREAD_COUNT)
-- Status tracking via cursor-based approach (no per-message receipts)
+- Status tracking via cursor-based approach (no per-message receipts — callers use CONVERSATION_PATTERNS directly for cursor updates and unread count)
+
 - Handling idempotency for duplicate MESSAGE_ACCEPTED events
-- Supporting all conversation types (DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT) with unified message model
+- Supporting all conversation types (DIRECT, GROUP, COMMUNITY) with unified message model
+
+### What This Service IS Also Responsible For
+
+- Persisting edited messages and recording edit history (`message_edit_history` table)
+- Persisting soft-deleted messages (`is_deleted` flag, `deleted_at`, `deleted_by`)
+- Persisting pinned messages per conversation (`pinned_messages` table, max 3)
+- Consuming MESSAGE_EDITED, MESSAGE_DELETED, MESSAGE_PINNED, MESSAGE_UNPINNED events from Kafka
+- Updating attachment status when Media Worker reports MEDIA_READY or MEDIA_FAILED
+- Dead-letter queue (DLQ) consumer for failed event recovery
+- Scheduled cleanup job for orphaned messages in deleted conversations
 
 ### What This Service IS NOT Responsible For
 
 - Validating message content or sender permissions (handled by Chat Core Service)
+- Enforcing edit/delete time windows (handled by Chat Core Service)
 - Managing conversation state or membership (handled by Conversation Service)
 - Managing friendship relationships (handled by Friendship Service)
 - Broadcasting messages to clients (handled by Realtime Gateway)
-- Managing message editing or deletion (future feature)
 - Handling message reactions or thread replies (future feature)
 - Implementing message search or full-text indexing
-- Managing message attachments or media storage (handled by separate Media Service)
+- Managing file storage (handled by Media Service / MinIO)
 - Rate limiting or abuse detection
 
 ## Service Dependencies (from code)
@@ -42,7 +52,11 @@ This service does not perform message validation or business rule enforcement. I
 
 **Kafka Integration:**
 - **Consumes**: `chat.event.message_accepted` (from Chat Core)
+- **Consumes**: `chat.event.message_edited` / `chat.event.message_deleted` / `chat.event.message_pinned` / `chat.event.message_unpinned` (from Chat Core via `MessageOperationConsumer`)
+- **Consumes**: `media.ready` / `media.failed` (from Media Worker via `AttachmentSyncConsumer`)
+- **Consumes**: DLQ topics (via `DlqConsumer`)
 - **Publishes**: `chat.event.message_saved` (to Realtime Gateway)
+- **Publishes**: `chat.event.message_updated` (for edits/deletes/pins broadcast)
 
 ## External Communication
 
@@ -59,37 +73,26 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 - Response: Paginated message list with message entities (id, senderId, content, offset, timestamp, etc.)
 - Behavior: Returns messages in descending offset order (newest first)
 
-**Pattern: `CONVERSATION_PATTERNS.UPDATE_SEEN_CURSOR`**
-
-- Purpose: Update user's seen cursor (marks messages as read)
-- Payload: conversationId (UUID), userId (UUID), upToOffset (bigint)
-- Response: Success boolean
-- Side Effects: Updates last_seen_offset in conversation_members table via GREATEST() SQL function
-- WebSocket Event: `conversation:update_seen_cursor` → broadcasts `cursor:seen_updated`
-- Note: Cursor only increases, never decreases (monotonic)
-
-**Pattern: `CONVERSATION_PATTERNS.UPDATE_DELIVERED_CURSOR`**
-
-- Purpose: Update user's delivered cursor (marks messages as delivered)
-- Payload: conversationId (UUID), userId (UUID), upToOffset (bigint)
-- Response: Success boolean
-- Side Effects: Updates last_delivered_offset in conversation_members table via GREATEST() SQL function
-- WebSocket Event: `conversation:update_delivered_cursor` → broadcasts `cursor:delivered_updated`
-- Note: Cursor only increases, never decreases (monotonic)
-
-**Pattern: `MESSAGE_STORE_PATTERNS.GET_UNREAD_COUNT`**
-
-- Purpose: Calculate unread message count for user in conversation
-- Payload: conversationId (UUID), userId (UUID)
-- Response: Integer count
-- Behavior: Delegates to Conversation Service (maxOffset - lastSeenOffset)
+**Note on cursor updates and unread count**: `UPDATE_SEEN_CURSOR`, `UPDATE_DELIVERED_CURSOR`, and `GET_UNREAD_COUNT` are **not** handled by Message Store. These belong to `CONVERSATION_PATTERNS` and callers (e.g., Gateway) should send those requests directly to the Conversation Service.
 
 **Pattern: `MESSAGE_STORE_PATTERNS.HAS_REPLIED`**
 
 - Purpose: Check if user has sent any messages in a conversation
 - Payload: conversationId (UUID), userId (UUID)
 - Response: Boolean (true if user has sent at least one message)
-- Use Case: Smart notifications (don't notify if user hasn't engaged)
+- Use Case: Smart notifications and stranger rate-limiting in Chat Core
+
+**Pattern: `MESSAGE_STORE_PATTERNS.GET_PINNED_MESSAGES`**
+
+- Purpose: Retrieve pinned messages in a conversation
+- Payload: conversationId (UUID)
+- Response: Array of pinned message records (max 3)
+
+**Pattern: `MESSAGE_STORE_PATTERNS.GET_MESSAGE_BY_ID`**
+
+- Purpose: Retrieve a single message by ID (for edit window validation in Chat Core)
+- Payload: messageId (UUID)
+- Response: Message entity or NOT_FOUND exception
 
 ### Timeout and Retry Behavior
 
@@ -120,7 +123,7 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
   - conversationId (UUID) - Target conversation
   - senderId (UUID) - Message sender
   - offset (integer) - Assigned conversation-level offset
-  - conversationType (enum) - DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT
+  - conversationType (enum) - DIRECT, GROUP, COMMUNITY
   - timestamp (ISO 8601) - Message save timestamp
   - traceId (string) - Distributed tracing identifier
 - Important: Does NOT include message content for security and payload size optimization
@@ -142,7 +145,7 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
   - senderId (UUID) - Message sender
   - content (string) - Full message content
   - messageType (enum) - TEXT, IMAGE, FILE, AUDIO, VIDEO
-  - conversationType (enum) - DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT
+  - conversationType (enum) - DIRECT, GROUP, COMMUNITY
   - metadata (object) - Additional message metadata
   - timestamp (ISO 8601) - Message creation timestamp
   - traceId (string) - Distributed tracing identifier
@@ -191,7 +194,7 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 - **senderId** (UUID, Indexed) - Message sender user ID
 - **content** (TEXT) - Full message content
 - **messageType** (ENUM: TEXT, IMAGE, FILE, AUDIO, VIDEO, SYSTEM) - Message content type
-- **conversationType** (ENUM: DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT) - Conversation type at message creation
+- **conversationType** (ENUM: DIRECT, GROUP, COMMUNITY) - Conversation type at message creation
 - **offset** (BIGINT) - Sequential offset within conversation (1-indexed)
 - **metadata** (JSONB, Nullable) - Additional metadata (replies, mentions, attachments URLs, reactions)
 - **createdAt** (TIMESTAMP) - Message creation timestamp
@@ -436,7 +439,7 @@ Lightweight notifications improve WebSocket scalability and reduce bandwidth but
 - Implement message priority levels
 - Add message retention policies per conversation type
 - Support for message attachments with media storage integration
-- Implement message moderation queue for ANNOUNCEMENT conversations
+- Implement message moderation queue for COMMUNITY conversations
 - Add message translation capabilities
 - Support message scheduling (send at specific time)
 - Implement message status tracking (sent, delivered, read)

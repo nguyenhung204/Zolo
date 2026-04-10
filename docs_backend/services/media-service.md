@@ -2,27 +2,25 @@
 
 ## Overview
 
-The **Media Service** manages multimedia content (images, videos, files) for the chat system. It handles file uploads with integrity verification, storage in MinIO (S3-compatible object storage), metadata extraction, thumbnail generation, and lifecycle management.
+The **Media Service** manages multimedia content (images, videos, files) for the chat system. It handles pre-signed upload URL generation, checksum verification, metadata tracking, media binding, and lifecycle management. Actual file storage is delegated to MinIO; actual processing (thumbnail, transcode) is delegated to the Media Worker via Kafka.
 
-**CRITICAL**: Media Service is an **HTTP REST service** (not TCP microservice) because it handles client-facing file upload operations with authentication.
+**Transport**: Media Service is a **TCP microservice** (port 3009). All client access goes through the Gateway HTTP API, which proxies to the Media Service via NestJS TCP `ClientProxy`.
 
 ## Architecture
 
 ### Technology Stack
-- **Communication**: HTTP REST API on port 3009 (NOT TCP microservice)
+- **Communication**: TCP Microservice (port 3009) — accessed by Gateway, Chat Core, and Conversation Service via `ClientProxy`
 - **Storage**: MinIO (S3-compatible object storage)
 - **Database**: MongoDB (metadata only, not file content)
-- **Image Processing**: Sharp (resize, thumbnails, EXIF extraction)
-- **Event Bus**: Kafka (for cleanup events)
-- **HTTP Client**: @nestjs/axios + axios (timeout: 3000ms, maxRedirects: 0)
-- **Authentication**: KeycloakGuard on all endpoints
-- **Pattern**: Repository pattern with interface abstraction
+- **Event Bus**: Kafka (MEDIA_UPLOADED produced; MEDIA_READY/FAILED consumed)
+- **Authentication**: JWT extracted by Gateway before TCP call; `ownerId` passed in payload
+- **Pattern**: Repository pattern with interface abstraction (`IMediaRepository`, `IUploadSessionRepository`, `IMediaBindingRepository`)
 
 ### Key Design Principles
--  **HTTP Architecture**: REST service with JWT authentication (not TCP)
--  **Circuit Breaker**: HTTP timeout 3000ms, maxRedirects: 0 prevents cascading failures
+-  **TCP Architecture**: Internal microservice transport — clients never call Media Service directly
 -  **State Machine**: CREATED → UPLOADED → PROCESSING → READY → DELETED/FAILED
--  **Integrity Verification**: MD5/SHA256 checksum validation on upload finalization
+-  **Fail-safe deletion**: MinIO delete failure sets status to `DELETION_PENDING` for cron retry
+-  **Integrity Verification**: Checksum (MD5/SHA256) **always verified when client provides it**, regardless of strict mode. Strict mode (`MEDIA_CHECKSUM_STRICT=true`) makes checksum **required** — request without checksum returns 400.
 -  **Upload Finalization**: POST /media/upload/complete verifies file uploaded before processing
 -  **Separation of Concerns**: Files stored in object storage, metadata in MongoDB
 -  **Pre-signed URLs**: Client uploads directly to MinIO (no gateway bottleneck)
@@ -50,8 +48,9 @@ CREATED > UPLOADED > PROCESSING > READY > DELETED
 | **CREATED** | Initial state after `POST /media/upload`, awaiting file upload | UPLOADED, FAILED | User uploads to MinIO |
 | **UPLOADED** | File verified in MinIO, checksum validated | PROCESSING, FAILED | `POST /media/upload/complete` success |
 | **PROCESSING** | Extracting metadata, generating thumbnails | READY, FAILED | Background processing |
-| **READY** | Media ready for use in messages | DELETED | User action |
-| **DELETED** | Soft deleted (files remain in MinIO temporarily) | (terminal) | User deletion or cleanup |
+| **READY** | Media ready for use in messages | DELETED, DELETION_PENDING | User action or system deletion |
+| **DELETION_PENDING** | MinIO delete failed; queued for retry by RecoveryService (5 min back-off) | DELETED | RecoveryService cron |
+| **DELETED** | Soft deleted — metadata removed, MinIO object deleted | (terminal) | User deletion, RecoveryService retry, or cleanup |
 | **FAILED** | Upload/processing error | (terminal) | Checksum mismatch, processing error |
 
 ### State Validations
@@ -100,10 +99,9 @@ CREATED > UPLOADED > PROCESSING > READY > DELETED
 
 ---
 
-## API Endpoints (HTTP REST)
+## Gateway HTTP Endpoints (Client-facing)
 
-### Authentication
-All endpoints require `Authorization: Bearer {jwt_token}` header. KeycloakGuard validates JWT signature, expiration, and issuer.
+All client-facing endpoints are exposed by the **Gateway** (`http://localhost:3000`). The Gateway authenticates the JWT, extracts `userId`, and forwards to Media Service via **TCP**.
 
 ### 1. Create Upload
 **POST** `/media/upload`
@@ -133,14 +131,14 @@ Authorization: Bearer {jwt_token}
 ```
 
 **Flow**:
-1. Client calls `POST /media/upload` → Gateway → Media Service (HTTP)
+1. Client calls `POST /media/upload` → Gateway (HTTP) → Media Service (TCP: `CREATE_UPLOAD`)
 2. Media Service creates DB record with **status=CREATED** (not PROCESSING)
 3. Returns pre-signed PUT URL (15 min TTL)
 4. Client uploads file directly to MinIO using PUT URL
 
 ---
 
-### 2. Finalize Upload (NEW)
+### 2. Finalize Upload
 **POST** `/media/upload/complete`
 
 **Headers**:
@@ -157,6 +155,16 @@ Authorization: Bearer {jwt_token}
 }
 ```
 
+> `checksum` is **optional by default** (`MEDIA_CHECKSUM_STRICT=false`). When omitted, file existence is still verified in MinIO but content integrity is skipped.
+> When `MEDIA_CHECKSUM_STRICT=true`, checksum is **required** — omitting it returns `400`.
+> When provided (regardless of strict mode), checksum is **always verified** via streaming hash — no silent skips.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `mediaId` | Yes | UUID returned from `POST /media/upload` |
+| `checksum` | Optional* | Client-computed hash of the uploaded file |
+| `checksumAlgorithm` | No | `md5` (default) or `sha256` |
+
 **Response** (200 OK):
 ```json
 {
@@ -166,16 +174,17 @@ Authorization: Bearer {jwt_token}
 ```
 
 **Flow**:
-1. Verifies file exists in MinIO (HEAD request)
-2. Compares client checksum with server-calculated checksum
-3. If match: Updates status CREATED → UPLOADED
-4. If mismatch: Updates status to FAILED, throws BadRequestException
-5. Triggers background processing (metadata extraction, thumbnail generation)
+1. Verifies file exists in MinIO (`HEAD` request)
+2. If `MEDIA_CHECKSUM_STRICT=true` and no checksum → **400** immediately
+3. If checksum provided → stream file from MinIO, compute hash, compare with client value
+4. Hash mismatch → status set to `FAILED`, **400 Checksum mismatch**
+5. Hash match (or no checksum provided) → status transitions `CREATED → UPLOADED`
+6. Publishes `media.uploaded` Kafka event → Media Worker picks up for processing
 
 **Errors**:
-- `400 Bad Request`: Checksum mismatch, file not found in MinIO
+- `400 Bad Request`: Checksum mismatch, checksum missing in strict mode, file not found in MinIO
 - `404 Not Found`: Invalid mediaId
-- `409 Conflict`: Already finalized (status != CREATED)
+- `409 Conflict`: Already finalized (status ≠ CREATED)
 
 ---
 
@@ -257,130 +266,118 @@ Authorization: Bearer {jwt_token}
 
 ---
 
-## HTTP Client Configuration
+## TCP Patterns (Gateway Communication)
 
-### Gateway Module
-**File**: `apps/gateway/src/modules/media/media.module.ts`
+The Gateway communicates with Media Service via **TCP** using `ClientProxy` (NestJS microservices). The `MediaGatewayService` extends `BaseGatewayService` and wraps all patterns as facade methods.
 
-```typescript
-@Module({
-  imports: [
-    HttpModule.register({
-      timeout: 3000,        // 3 second timeout
-      maxRedirects: 0,      // No redirects (prevent SSRF)
-    }),
-  ],
-  providers: [MediaGatewayService],
-  controllers: [MediaController],
-})
-```
+| Pattern | Cmd | Description |
+|---------|-----|-------------|
+| `LIST_MEDIA` | `list_media` | List media owned by user |
+| `CREATE_UPLOAD` | `create_upload` | Create upload session (presigned PUT URL) |
+| `FINALIZE_UPLOAD` | `finalize_upload` | Verify checksum and transition CREATED → UPLOADED |
+| `VALIDATE_MEDIA` | `validate_media` | Validate media for access |
+| `GET_MEDIA_URL` | `get_media_url` | Get presigned GET URL for a media item |
+| `DELETE_MEDIA` | `delete_media` | Soft delete owned media |
+| `VALIDATE_FOR_SEND` | `validate_for_send` | Pre-check before message send |
+| `BIND_TO_MESSAGE` | `bind_to_message` | Bind media to a message (ownership transfer) |
+| `GET_ACCESS_URL` | `get_access_url` | Get access URL with optional thumbnail |
+| `CROSS_SHARE` | `cross_share` | Share media across projects (ADMIN only) |
+| `GET_AVATARS_BATCH` | `get_avatars_batch` | Batch presigned URL resolution for avatars |
+| `DELETE_AVATAR_SYSTEM` | `delete_avatar_system` | System-level avatar deletion (no owner check) |
 
-### Gateway Service
+### GET_AVATARS_BATCH
+
+Called by `ConversationGatewayService` to resolve presigned avatar URLs for a batch of `mediaId` values in a single round-trip.
+
+**Request**: `{ mediaIds: string[]; variant?: 'thumb' | 'original' }`
+
+**Response**: `{ urls: Record<string, { url: string; expiresAt: number }> }`
+- `expiresAt` is Unix milliseconds when the presigned URL expires
+- Missing, DELETED, or DELETION_PENDING media entries are silently omitted
+- Auth model: ownership check skipped for avatar batch resolution (public assets)
+
+**Gateway caching**: Results are stored in Redis with TTL = `expiresAt - now - 5 min buffer`. Key: `media:avatar_url:{mediaId}`.
+
+### DELETE_AVATAR_SYSTEM
+
+Called by `ConversationManagementGatewayService` when a conversation replaces its avatar.
+
+**Request**: `{ mediaId: string }`
+
+**Response**: `boolean` (true = deleted, false = not found)
+
+**Behavior**:
+- Bypasses owner check — caller is trusted (internal system call)
+- Idempotent: DELETED or DELETION_PENDING returns true immediately
+- MinIO failure marks media as `DELETION_PENDING` for retry by RecoveryService (cron, 5 min back-off)
+
+---
+
+## Gateway Integration
+
+The Gateway uses `MediaGatewayService` (extends `BaseGatewayService`) to proxy all media operations via TCP `ClientProxy`.
+
 **File**: `apps/gateway/src/modules/media/media.gateway.ts`
 
 ```typescript
 @Injectable()
-export class MediaGatewayService {
+export class MediaGatewayService extends BaseGatewayService {
   constructor(
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
+    @Inject(SERVICES.MEDIA) client: ClientProxy,
+    cbService: CircuitBreakerService,
   ) {
-    const host = configService.get('MEDIA_SERVICE_HOST', 'media-service');
-    const port = configService.get('MEDIA_SERVICE_PORT', '3009');
-    this.mediaServiceUrl = `http://${host}:${port}/media`;
+    super(client, cbService, 'media-service');
   }
 
-  async createUpload(dto: CreateUploadDto, token: string) {
-    const response = await firstValueFrom(
-      this.httpService.post(`${this.mediaServiceUrl}/upload`, dto, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    );
-    return response.data;
+  createUpload(dto: CreateMediaUploadDto & { ownerId: string }) {
+    return this.proxy.send(MEDIA_PATTERNS.CREATE_UPLOAD, dto);
   }
 
-  async validateMedia(mediaId: string, ownerId?: string, token?: string) {
-    const response = await firstValueFrom(
-      this.httpService.get(
-        `${this.mediaServiceUrl}/validate/${mediaId}`,
-        {
-          params: { ownerId },
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        },
-      ),
-    );
-    return response.data;
+  validateForSend(params: { mediaId: string; conversationId: string; senderId: string }) {
+    return this.proxy.send(MEDIA_PATTERNS.VALIDATE_FOR_SEND, params);
   }
+  // ... other methods
 }
 ```
 
 **Key Points**:
-- Uses `HttpService` from `@nestjs/axios`, NOT `ClientProxy` (TCP)
-- Forwards JWT token in Authorization header
-- Constructs HTTP URL: `http://media-service:3009/media`
-- Timeout 3000ms prevents hanging on slow responses
+- Uses `ClientProxy` (TCP), NOT HttpService
+- JWT is validated by Gateway; `ownerId` extracted and passed in the TCP payload
+- The Media Service does NOT receive raw JWT tokens — only structured payloads
 
 ---
 
 ## ChatCore Integration
 
-### Message Validation
-**File**: `apps/chat-core/src/chat-core.service.ts`
+Chat Core validates media attachments using the `IMediaService` interface resolved from `ServiceRegistry` (Dependency Inversion). The underlying adapter (`MediaServiceAdapter`) calls the Media Service via **TCP**.
+
+**File**: `apps/chat-core/src/validators/media-validator.service.ts`
 
 ```typescript
-async sendMessage(data: SendMessageDto) {
-  // ... user/conversation/membership validation
-  
-  // Validate media attachment if present
-  if (data.metadata?.mediaId) {
-    await this.validateMediaAttachment(data.metadata.mediaId, data.senderId);
-    //  Verifies media exists and status=READY
-    //  Verifies owner matches sender
-    //  Throws BadRequestException if invalid
-  }
-  
-  // Publish MESSAGE_ACCEPTED event
-}
+@Injectable()
+export class MediaValidatorService {
+  constructor(private readonly registry: ServiceRegistry) {}
 
-private async validateMediaAttachment(mediaId: string, senderId: string) {
-  try {
-    const response = await firstValueFrom(
-      this.httpService.get(
-        `${this.mediaServiceUrl}/validate/${mediaId}`,
-        { params: { ownerId: senderId } },
-      ),
-    );
-
-    if (!response.data.valid) {
-      throw new BadRequestException('Invalid media attachment');
-    }
-  } catch (error) {
-    this.logger.error(`Media validation failed: ${error.message}`);
-    throw new BadRequestException('Media validation failed');
+  async validateMedia(context: MediaValidationContext): Promise<MediaValidationResult> {
+    const mediaService = this.registry.resolve<IMediaService>(SERVICE_NAMES.MEDIA);
+    // IMediaService.validateForSend() → TCP: VALIDATE_FOR_SEND → Media Service
+    const media = await mediaService.validateForSend({
+      mediaId: context.mediaId,
+      senderId: context.senderId,
+      conversationId: context.conversationId,
+    });
+    // ... classification, status, ownership checks
   }
 }
-```
-
-**ChatCore Module HTTP Config**:
-**File**: `apps/chat-core/src/chat-core.module.ts`
-
-```typescript
-@Module({
-  imports: [
-    HttpModule.register({
-      timeout: 3000,
-      maxRedirects: 0,
-    }),
-  ],
-})
 ```
 
 **Flow**:
 1. User uploads media → gets `mediaId`
 2. User sends message with `metadata: { mediaId }`
-3. ChatCore makes HTTP GET to Media Service `/validate/{mediaId}?ownerId={senderId}`
-4. If valid (status=READY, ownership match) → publish `MESSAGE_ACCEPTED`
-5. If invalid → reject message with 400 error
+3. ChatCore calls `MediaValidatorService.validateMedia()` → TCP `VALIDATE_FOR_SEND`
+4. Media Service confirms status=READY, ownership match, classification allowed
+5. If valid → publish `MESSAGE_ACCEPTED`
+6. If invalid → throw `RpcException` with specific error code (e.g. `FORBIDDEN_MEDIA_NOT_READY`)
 
 ---
 
@@ -531,14 +528,12 @@ KEYCLOAK_URL_INTERNAL=http://keycloak:8080
 KEYCLOAK_REALM=nest-realm
 KEYCLOAK_CLIENT_ID=nest-client
 
-# Media Processing
-MAX_FILE_SIZE=104857600                          # 100MB
-ALLOWED_IMAGE_TYPES=image/jpeg,image/png,image/gif,image/webp
-ALLOWED_VIDEO_TYPES=video/mp4,video/webm,video/quicktime
-ALLOWED_FILE_TYPES=application/pdf,application/zip
-GENERATE_THUMBNAILS=true
-THUMBNAIL_WIDTH=320
-THUMBNAIL_HEIGHT=240
+# Media Upload Configuration
+MEDIA_MAX_FILE_SIZE=2147483648         # 2 GB (bytes)
+MEDIA_PRESIGNED_PUT_URL_EXPIRY=900    # seconds (15 min)
+MEDIA_PRESIGNED_GET_URL_EXPIRY=300    # seconds (5 min)
+MEDIA_CHECKSUM_ALGORITHM=md5          # md5 | sha256
+MEDIA_CHECKSUM_STRICT=false           # true = checksum required on /upload/complete
 
 # Service
 MEDIA_SERVICE_HOST=media-service
@@ -614,12 +609,12 @@ KAFKA_BROKERS=kafka-1:29092
                     <
 ```
 
-**Key Changes**:
+**Key Points**:
 1. Initial status is CREATED (not PROCESSING)
-2. New step: `POST /media/upload/complete` with checksum
-3. State transitions: CREATED → UPLOADED → PROCESSING → READY
-4. HTTP communication throughout (not TCP)
-5. Timeout protection: 3 seconds for validation call
+2. Client must call `POST /media/upload/complete` with optional checksum after direct MinIO upload
+3. State transitions: CREATED → UPLOADED → PROCESSING → READY (async via Media Worker)
+4. All Gateway → Media Service communication is **TCP** (not HTTP)
+5. Chat Core validates via `VALIDATE_FOR_SEND` TCP pattern (not HTTP)
 
 ---
 
@@ -630,19 +625,19 @@ When a user sends a message with media attachment:
 
 **Flow**:
 1. Client uploads media → gets `mediaId` (status=CREATED)
-2. Client uploads file to MinIO → calls `/upload/complete` → status=UPLOADED
-3. Media Service processes in background → status=READY
+2. Client uploads file to MinIO → calls `POST /media/upload/complete` → status=UPLOADED
+3. Media Worker processes asynchronously → status=READY (via Kafka `MEDIA_READY` event)
 4. Client sends message with `metadata: { mediaId }`
-5. ChatCore makes HTTP GET `/validate/{mediaId}?ownerId={senderId}` (timeout: 3s)
-6. Media Service returns `{ valid: true }` only if status=READY and owner matches
+5. ChatCore calls `VALIDATE_FOR_SEND` TCP pattern → Media Service checks status, ownership, classification
+6. Media Service returns validation result
 7. If valid → ChatCore publishes `MESSAGE_ACCEPTED`
-8. If invalid → ChatCore rejects with 400 error
+8. If invalid → ChatCore throws `RpcException` with error code (e.g. `FORBIDDEN_MEDIA_NOT_READY`)
 
 **Security**:
--  Ownership verified (JWT sub must match media.ownerId)
+-  Ownership verified (`ownerId` from payload must match `media.ownerId`)
 -  Status checked (only READY media accepted)
--  Timeout protection (3s prevents hanging)
--  Checksum validated (file integrity guaranteed)
+-  Classification check (RESTRICTED files only in allowed channels)
+-  Checksum validated (file integrity guaranteed at FINALIZE_UPLOAD stage)
 
 ### 2. User Profile Avatar
 **User Entity** has `avatarUrl` field (nullable string)
@@ -653,9 +648,22 @@ When a user sends a message with media attachment:
 3. Update profile: `PATCH /users/profile` with `{ avatarUrl: url }`
 
 ### 3. Group/Conversation Avatar
-**Conversation Entity** has `avatarUrl` field (nullable string)
+**Conversation Entity** has `avatarMediaId` field (VARCHAR 36, nullable UUID)
 
-**Usage**: Same as user avatar flow
+The Conversation Service stores only the `mediaId` reference; presigned URLs are **never** stored in the DB. The Gateway resolves them on demand.
+
+**Upload flow**:
+1. Upload avatar: `POST /media/upload` → `PUT to MinIO` → `POST /upload/complete` → get `mediaId`
+2. Update conversation: `PATCH /conversations/:id/info` with `{ avatarMediaId: mediaId }`
+3. Gateway calls `GET_AVATARS_BATCH` via TCP to Media Service when serving conversation list/detail
+
+**Batch URL resolution** (`GET_AVATARS_BATCH` TCP pattern):
+- Auth model: ownership check skipped for avatar batch resolution (public assets)
+- Returns `{ urls: { [mediaId]: { url: string; expiresAt: number } } }` — missing/DELETED entries silently omitted
+- Gateway caches results in Redis with smart TTL = `expiresAt - now - 5 min buffer`
+- On avatar replacement, Gateway calls `DELETE_AVATAR_SYSTEM` to remove the old file:
+  - Bypasses owner check — caller is trusted (internal system call)
+  - MinIO failure marks media as `DELETION_PENDING` for retry by RecoveryService
 
 ---
 

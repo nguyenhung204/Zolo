@@ -5,6 +5,7 @@ import { ConversationList } from "@/components/conversations/ConversationList";
 import { usePathname } from "next/navigation";
 import { useSocket } from "@/hooks/useSocket";
 import { useCallSocket } from "@/hooks/useCallSocket";
+import { useMyProfile } from "@/hooks/useUser";
 import { useCallStore } from "@/stores/callStore";
 import { CallBar } from "@/components/calls/CallBar";
 
@@ -22,6 +23,8 @@ export function AppShell({ children }: AppShellProps) {
   // Initialise socket event listeners
   useSocket();
   useCallSocket();
+  // Fetch profile once on mount and keep authStore (avatar, name) in sync
+  useMyProfile();
 
   const showSidebar = SIDEBAR_ROUTES.some((r) => pathname.startsWith(r));
 

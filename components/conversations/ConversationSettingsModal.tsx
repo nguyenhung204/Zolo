@@ -32,30 +32,27 @@ import type { UserSearchResult } from "@/lib/api/friends";
 
 // ─── Role helpers ─────────────────────────────────────────────────────────────
 
-const ROLE_ICON: Record<string, React.ReactNode> = {
-  OWNER: <Crown className="w-3 h-3 text-warning" />,
-  ADMIN: <Shield className="w-3 h-3 text-cta" />,
-  MODERATOR: <Shield className="w-3 h-3 text-success" />,
-  MEMBER: <User className="w-3 h-3 text-muted" />,
-  GUEST: <User className="w-3 h-3 text-muted/60" />,
-  READONLY: <User className="w-3 h-3 text-muted/40" />,
+const ROLE_ICON: Record<MemberRole, React.ReactNode> = {
+  owner: <Crown className="w-3 h-3 text-warning" />,
+  admin: <Shield className="w-3 h-3 text-cta" />,
+  moderator: <Shield className="w-3 h-3 text-success" />,
+  member: <User className="w-3 h-3 text-muted" />,
+  guest: <User className="w-3 h-3 text-muted/60" />,
 };
 
-const ROLE_LABEL: Record<string, string> = {
-  OWNER: "Owner",
-  ADMIN: "Admin",
-  MODERATOR: "Mod",
-  MEMBER: "Member",
-  GUEST: "Guest",
-  READONLY: "Read-only",
+const ROLE_LABEL: Record<MemberRole, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  moderator: "Mod",
+  member: "Member",
+  guest: "Guest",
 };
 
 const ASSIGNABLE_ROLES: MemberRole[] = [
-  "ADMIN",
-  "MODERATOR",
-  "MEMBER",
-  "GUEST",
-  "READONLY",
+  "admin",
+  "moderator",
+  "member",
+  "guest",
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -87,8 +84,8 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const { data: members = [] } = useConversationMembers(conversationId);
   const myRole = useMyConversationRole(conversationId);
 
-  const canEdit = myRole === "OWNER" || myRole === "ADMIN";
-  const isOwner = myRole === "OWNER";
+  const canEdit = myRole === "owner" || myRole === "admin";
+  const isOwner = myRole === "owner";
 
   const updateInfo = useUpdateConversationInfo();
   const addMembers = useAddConversationMembers();
@@ -98,9 +95,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
   const { data: searchResults = [] } = useUserSearch(addQuery);
 
-  const isDirect = (conv?.type ?? "").toUpperCase() === "DIRECT";
-  const isAnnouncement = (conv?.type ?? "").toUpperCase() === "ANNOUNCEMENT";
-  const ownerCount = members.filter((m) => m.role.toUpperCase() === "OWNER").length;
+  const isDirect = conv?.kind === "DIRECT";
+  const isAnnouncement = conv?.kind === "COMMUNITY";
+  const ownerCount = members.filter((m) => m.role === "owner").length;
   const isUploading =
     avatarUpload.status === "uploading" ||
     avatarUpload.status === "finalizing";
@@ -271,7 +268,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                         {conv.name ?? "Unnamed"}
                       </p>
                       <p className="text-xs text-muted mt-0.5 capitalize">
-                        {conv.type.toLowerCase()} · {conv.memberCount} members
+                        {conv.kind.toLowerCase()} · {conv.memberCount} members
                       </p>
                       {canEdit && (
                         <p className="text-xs text-cta mt-1">Click avatar to change</p>
@@ -474,11 +471,11 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                 {/* Member list */}
                 <div className="p-3 space-y-0.5">
                   {members.map((member) => {
-                    const mRole = member.role.toUpperCase() as MemberRole;
+                    const mRole = member.role as MemberRole;
                     const isSelf = member.userId === currentUserId;
-                    const isLastOwner = mRole === "OWNER" && ownerCount <= 1;
+                    const isLastOwner = mRole === "owner" && ownerCount <= 1;
                     const canRemove = canEdit && !isSelf && !isLastOwner;
-                    const canChangeRole = isOwner && !isSelf && mRole !== "OWNER";
+                    const canChangeRole = isOwner && !isSelf && mRole !== "owner";
 
                     const displayName =
                       (member as { displayName?: string }).displayName ??

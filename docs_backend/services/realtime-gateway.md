@@ -16,7 +16,7 @@ This service does not perform business validation or data persistence. Instead, 
 - Consuming Kafka events and broadcasting them to relevant connected clients
 - Broadcasting MESSAGE_SAVED notifications to conversation members for all conversation types
 - Broadcasting MEMBER_ADDED and MEMBER_REMOVED events for membership changes
-- Handling typing indicators for DIRECT, DEPARTMENT, and PROJECT conversations (not ANNOUNCEMENT)
+- Handling typing indicators for DIRECT and GROUP conversations (not COMMUNITY)
 - Integrating with Presence Service for automatic online/offline status management
 - Providing real-time mark-as-read functionality via Message Store Service
 - Validating conversation membership before allowing typing broadcasts or message receipt
@@ -54,17 +54,23 @@ This service does not perform business validation or data persistence. Instead, 
    - Purpose: Notify when members added to or removed from a conversation
    - Events emitted: `member:added`, `member:removed`
 
-4. **`chat.event.community_notify`** (CommunityNotifyConsumer)
+5. **`chat.event.conversation_updated`** (ConversationUpdatedConsumer)
+   - Purpose: Broadcast conversation info changes (name, description, avatar) to all members
+   - Strategy: **refetch** — raw `{ conversationId, changes, updatedBy, timestamp }` payload forwarded as-is; client calls `GET /conversations/:id` for fresh details
+   - Caching: Member list cached in Redis, TTL 10 min (same pattern as MessageSavedConsumer)
+   - Events emitted: `conversation:updated`
+
+6. **`chat.event.community_notify`** (CommunityNotifyConsumer)
    - Purpose: Lightweight notification for large-channel messages
-None. This service is purely WebSocket-based and does not expose HTTP REST endpoints.
+   - Events emitted: `community:notify`
 
 ### WebSocket Events
 
 **Incoming Events from Clients:**
 
 - `message:send` - Client sends a message to a conversation
-- `typing:start` - Client starts typing (DIRECT/DEPARTMENT/PROJECT only)
-- `typing:stop` - Client stops typing (DIRECT/DEPARTMENT/PROJECT only)
+- `typing:start` - Client starts typing (DIRECT/GROUP only)
+- `typing:stop` - Client stops typing (DIRECT/GROUP only)
 - `message:read` - Client marks messages as read
 - `authenticate` - Client authenticates with JWT token
 
@@ -75,21 +81,13 @@ None. This service is purely WebSocket-based and does not expose HTTP REST endpo
 - `community:notify` - Lightweight large-channel new message indicator
 - `typing:start` - User started typing
 - `typing:stop` - User stopped typing
+- `member:added` - New member added to conversation
+- `member:removed` - Member removed from conversation
+- `conversation:updated` - Conversation info changed (name/description/avatar); payload: `{ conversationId, changes, updatedBy?, timestamp? }`; client should refetch `GET /conversations/:id` to get updated `avatarUrl`
+- `user:profile-updated` - User profile changed (name or avatar); payload: `{ userId, changedFields, snapshot: { displayName, avatarMediaId }, timestamp }`; client should invalidate cached avatar URL and refetch presigned URL via `GET /media/avatar/:mediaId` when `changedFields` includes `avatarMediaId`
+- `message:saved` - Sent to message sender only (confirmation)
 - `error` - Error notification
 - `authenticated` - Authentication success confirmation
-- `typing:stop` - Client stops typing (DIRECT/DEPARTMENT/PROJECT only)
-- Connection event handlers for authentication and presence updates
-
-**Outgoing Events to Clients:**
-
-- `message:new` - New message available notification (broadcast to conversation members)
-- `typing:start` - User started typing (broadcast to other conversation members)
-- `typing:stop` - User stopped typing (broadcast to other conversation members)
-- `conversation:upgraded` - Group upgraded to community (not currently emitted; conversation kind changes are not auto-upgraded in current implementation)
-- `conversation:member:added` - New member added
-- `conversation:member:removed` - Member removed
-- `error` - Error notifications sent to specific client
-- Connection acknowledgment events
 
 ### TCP Message Patterns
 
@@ -169,11 +167,47 @@ None. This service does not publish Kafka events; it only consumes them.
 - Payload: conversationId, removedUserIds, removedBy, timestamp
 - Processing: Broadcast removal notification to remaining members and removal confirmation to removed users
 
+**Topic: `chat.event.conversation_updated`**
+
+- Event Type: CONVERSATION_UPDATED
+- Consumer Group: `realtime-gateway`
+- Purpose: Notify conversation members when metadata changes (name, description, avatar)
+- Payload: `{ conversationId, changes, updatedBy, timestamp }`
+- Processing: Fetch member list (Redis cache, TTL 10 min), broadcast `conversation:updated` to all members
+- Client contract: On receiving `conversation:updated`, clients must call `GET /conversations/:id` to get a fresh presigned `avatarUrl`. Presigned URLs are not included in the WebSocket payload.
+
 **Topic: `chat.event.community_notify`**
 
 - Consumer Group: `realtime-gateway`
 - Purpose: Lightweight notification for large-channel message events
 - Processing: Broadcast `community:notify` to subscribed clients
+
+**Topic: `user.profile.updated`** (KAFKA_TOPICS.USER.PROFILE_UPDATED)
+
+- Consumer Group: `nest-chat.realtime-gateway`
+- Purpose: Fan-out profile changes (name, avatar) to all clients sharing a conversation with the updated user
+- Handler: `UserProfileUpdatedConsumer` (`apps/realtime-gateway/src/consumers/user-profile-updated.consumer.ts`)
+- Logic:
+  1. **Skip** if `changedFields` is empty (cache-eviction-only signal — avatar not yet `READY`)
+  2. Emit `user:profile-updated` to `user:{userId}` room (user's own devices)
+  3. TCP call `GET_USER_CONVERSATION_IDS` → conversation IDs list
+  4. Fan-out to each `conversation:{id}` room in chunks of 50 via `setImmediate` (Thundering Herd mitigation)
+- Event emitted: `user:profile-updated`
+- Payload emitted:
+  ```json
+  {
+    "userId": "string",
+    "changedFields": ["avatarMediaId"],
+    "snapshot": { "displayName": "Nguyen Van A", "avatarMediaId": "uuid" },
+    "timestamp": 1712345678000
+  }
+  ```
+
+**New TCP pattern used by this consumer:**
+
+- Pattern: `CONVERSATION_PATTERNS.GET_USER_CONVERSATION_IDS` (`get_user_conversation_ids`)
+- Direction: Realtime GW → Conversation Service
+- Purpose: Retrieve all conversation IDs a user belongs to (for fan-out routing)
 
 ### Event Processing Details
 
@@ -282,14 +316,14 @@ None. This service does not persist data to a database.
 
 - MESSAGE_SAVED events are broadcast to all conversation members as lightweight notifications
 - Only metadata is sent (messageId, conversationId, senderId, offset, timestamp); clients must fetch full message via HTTP
-- Broadcasting is performed for all conversation types: DIRECT, DEPARTMENT, PROJECT, ANNOUNCEMENT
+- Broadcasting is performed for all conversation types: DIRECT, GROUP, COMMUNITY
 - Broadcast targets are determined by querying Conversation Service for member IDs
 - Offline members do not receive broadcasts; they sync on reconnection
 
 ### Typing Indicators
 
-- Typing indicators are ONLY supported for DIRECT, DEPARTMENT, and PROJECT conversations
-- ANNOUNCEMENT conversations do not support typing indicators (validation enforced)
+- Typing indicators are ONLY supported for DIRECT and GROUP conversations
+- COMMUNITY conversations do not support typing indicators (validation enforced)
 - Typing events are validated for membership before broadcasting
 - Typing start/stop events are broadcast to all other conversation members except sender
 - No persistence or replay of typing indicators
@@ -396,9 +430,9 @@ MESSAGE_SAVED notifications are lightweight and contain no message content to re
 
 Redis provides fast, centralized connection state storage, enabling multi-instance deployments without sticky sessions. Future migration to Redis Socket.IO adapter will enable cross-instance broadcasting.
 
-**Why No ANNOUNCEMENT Typing Indicators:**
+**Why No COMMUNITY Typing Indicators:**
 
-ANNOUNCEMENT conversations are broadcast-only channels where only OWNER/ADMIN/MODERATOR can post. Typing indicators would be meaningless for members who cannot post.
+COMMUNITY conversations are broadcast-only channels where only OWNER/ADMIN/MODERATOR can post. Typing indicators would be meaningless for members who cannot post.
 
 **Why Separate Consumers for Different Events:**
 

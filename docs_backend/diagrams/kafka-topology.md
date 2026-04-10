@@ -52,39 +52,47 @@ graph LR
         CMD3[chat.command.read<br/>12 partitions]
     end
     
-    subgraph "Event Topics (7 day retention)"
-        EVT1[chat.event.message_accepted<br/>12 partitions]
-        EVT2[chat.event.message_saved<br/>12 partitions]
-        EVT3[chat.event.message_rejected<br/>12 partitions]
-        EVT4[chat.event.conversation_created<br/>6 partitions]
-        EVT5[chat.event.member_added<br/>6 partitions]
+    subgraph "Message Event Topics (7 day retention)"
+        EVT1["chat.event.message_accepted (12 partitions)"]
+        EVT2["chat.event.message_saved (12 partitions)"]
+        EVT3["chat.event.message_rejected (12 partitions)"]
+        EVT6["chat.event.message_updated (12 partitions)"]
+        EVT7["chat.event.message_edited (12 partitions)"]
+        EVT8["chat.event.message_pinned (6 partitions)"]
+        EVT9["chat.event.message_unpinned (6 partitions)"]
+        EVT10["chat.event.deleted (12 partitions)"]
+        EVT11["chat.event.read (12 partitions)"]
     end
-    
-    subgraph "Friendship Topics (7 day retention)"
-        FRD1[friendship.request.sent<br/>6 partitions]
-        FRD2[friendship.request.accepted<br/>6 partitions]
-        FRD3[friendship.blocked<br/>6 partitions]
-    end
-    
-    subgraph "Media Topics (7 day retention)"
-        MED1[media.uploaded<br/>6 partitions]
-        MED2[media.ready<br/>6 partitions]
-        MED3[media.failed<br/>6 partitions]
-    end
-    
+
     subgraph "Conversation Topics (7 day retention)"
-        CONV1[chat.event.conversation_created<br/>6 partitions]
-        CONV2[chat.event.conversation_updated<br/>6 partitions]
-        CONV4[chat.event.member_added<br/>6 partitions]
-        CONV5[chat.event.member_removed<br/>6 partitions]
+        CONV1["chat.event.conversation_created (6 partitions)"]
+        CONV2["chat.event.conversation_updated (6 partitions)"]
+        CONV4["chat.event.member_added (6 partitions)"]
+        CONV5["chat.event.member_removed (6 partitions)"]
+        CONV6["chat.event.community_notify (6 partitions)"]
     end
-    
+
     subgraph "Friendship Topics (7 day retention)"
-        FRIEND1[friendship.request.sent<br/>6 partitions]
-        FRIEND2[friendship.request.accepted<br/>6 partitions]
-        FRIEND3[friendship.request.rejected<br/>6 partitions]
-        FRIEND4[friendship.removed<br/>6 partitions]
-        FRIEND5[friendship.blocked<br/>6 partitions]
+        FRIEND1["friendship.request.sent (6 partitions)"]
+        FRIEND2["friendship.request.accepted (6 partitions)"]
+        FRIEND3["friendship.request.rejected (6 partitions)"]
+        FRIEND4["friendship.removed (6 partitions)"]
+        FRIEND5["friendship.blocked (6 partitions)"]
+        FRIEND6["friendship.unblocked (6 partitions)"]
+    end
+
+    subgraph "Media Topics (7 day retention)"
+        MED1["media.uploaded (6 partitions)"]
+        MED2["media.ready (6 partitions)"]
+        MED3["media.failed (6 partitions)"]
+    end
+
+    subgraph "Call Topics (7 day retention)"
+        CALL1["call.event.started (6 partitions)"]
+        CALL2["call.event.join_requested (6 partitions)"]
+        CALL3["call.event.participant_joined (6 partitions)"]
+        CALL4["call.event.participant_left (6 partitions)"]
+        CALL5["call.event.ended (6 partitions)"]
     end
     
     subgraph "Real-Time Topics (30 min retention)"
@@ -104,21 +112,27 @@ graph LR
     classDef friend fill:#9C27B0,stroke:#6A1B9A,color:#fff
     classDef rt fill:#FFC107,stroke:#F57F17,color:#000
     classDef dlq fill:#607D8B,stroke:#37474F,color:#fff
-    
+    classDef call fill:#E91E63,stroke:#880E4F,color:#fff
+    classDef media fill:#009688,stroke:#004D40,color:#fff
+
     class CMD1,CMD2,CMD3 cmd
-    class EVT1,EVT2,EVT3,EVT4,EVT5 evt
-    class CONV1,CONV2,CONV3,CONV4,CONV5 conv
-    class FRIEND1,FRIEND2,FRIEND3,FRIEND4,FRIEND5 friend
+    class EVT1,EVT2,EVT3,EVT6,EVT7,EVT8,EVT9,EVT10,EVT11 evt
+    class CONV1,CONV2,CONV4,CONV5,CONV6 conv
+    class FRIEND1,FRIEND2,FRIEND3,FRIEND4,FRIEND5,FRIEND6 friend
     class RT1,RT2,RT3 rt
     class DLQ1,DLQ2 dlq
+    class CALL1,CALL2,CALL3,CALL4,CALL5 call
+    class MED1,MED2,MED3 media
 ```
 
 ### Topic Configuration Details
 
 #### Message Topics
 
-| Topic | Partitions | Replication | Retention | Min ISR | Purpose |
-|-------|------------|-------------|-----------|---------|---------|
+> **Current deployment** uses 1 broker (Replication=1, Min ISR=1). Values below reflect the **production-recommended** configuration (3 brokers).
+
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
 | `chat.command.send` | 12 | 3 | 1 day | 2 | Command to send message |
 | `chat.event.message_accepted` | 12 | 3 | 7 days | 2 | Message validated by Chat Core |
 | `chat.event.message_saved` | 12 | 3 | 7 days | 2 | Message persisted in DB |
@@ -133,13 +147,13 @@ graph LR
 
 #### Conversation Topics
 
-| Topic | Partitions | Replication | Retention | Min ISR | Purpose |
-|-------|------------|-------------|-----------|---------|---------|
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
 | `chat.event.conversation_created` | 6 | 3 | 7 days | 2 | New conversation created |
 | `chat.event.conversation_updated` | 6 | 3 | 7 days | 2 | Conversation metadata updated |
 | `chat.event.member_added` | 6 | 3 | 7 days | 2 | Member added to conversation |
 | `chat.event.member_removed` | 6 | 3 | 7 days | 2 | Member removed from conversation |
-| `chat.event.community_notify` | 6 | 3 | 7 days | 2 | ANNOUNCEMENT channel "hasNew" notification |
+| `chat.event.community_notify` | 6 | 3 | 7 days | 2 | `community` channel “hasNew” broadcast notification |
 
 **Why 6 partitions?**
 - Lower throughput than messages
@@ -148,8 +162,8 @@ graph LR
 
 #### Friendship Topics
 
-| Topic | Partitions | Replication | Retention | Min ISR | Purpose |
-|-------|------------|-------------|-----------|---------|---------|
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
 | `friendship.request.sent` | 6 | 3 | 7 days | 2 | Friend request sent |
 | `friendship.request.accepted` | 6 | 3 | 7 days | 2 | Friend request accepted |
 | `friendship.request.rejected` | 6 | 3 | 7 days | 2 | Friend request rejected |
@@ -163,8 +177,8 @@ graph LR
 
 #### Real-Time Topics
 
-| Topic | Partitions | Replication | Retention | Min ISR | Purpose |
-|-------|------------|-------------|-----------|---------|---------|
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
 | `chat.event.typing_started` | 12 | 3 | 30 min | 2 | User started typing |
 | `chat.event.typing_stopped` | 12 | 3 | 30 min | 2 | User stopped typing |
 | `presence.changed` | 6 | 3 | 30 min | 2 | User online/offline status changed |

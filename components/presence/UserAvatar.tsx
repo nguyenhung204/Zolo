@@ -1,6 +1,7 @@
 "use client";
 
 import { usePresenceStore } from "@/stores/presenceStore";
+import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 
 interface UserAvatarProps {
@@ -26,9 +27,18 @@ export function UserAvatar({
   showPresence = true,
 }: UserAvatarProps) {
   const status = usePresenceStore((s) => s.presenceMap[userId] ?? "offline");
+  const profile = usePresenceStore((s) => s.profileMap[userId]);
+  const myId = useAuthStore((s) => s.user?.id);
   const { avatar, dot, offset } = sizeMap[size];
 
-  const initials = name
+  // The current user is always online (they're the one connected)
+  const resolvedStatus = userId === myId ? "online" : status;
+
+  // Real-time profile cache overrides stale prop values
+  const resolvedAvatarUrl = profile?.avatarUrl ?? avatarUrl;
+  const resolvedName = profile?.displayName ?? name;
+
+  const initials = resolvedName
     .split(" ")
     .map((w) => w[0])
     .slice(0, 2)
@@ -37,11 +47,11 @@ export function UserAvatar({
 
   return (
     <div className="relative inline-flex shrink-0">
-      {avatarUrl ? (
+      {resolvedAvatarUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={avatarUrl}
-          alt={name}
+          src={resolvedAvatarUrl}
+          alt={resolvedName}
           className={cn("rounded-full object-cover bg-border", avatar)}
         />
       ) : (
@@ -61,7 +71,7 @@ export function UserAvatar({
             "absolute rounded-full border-white",
             dot,
             offset,
-            status === "online" ? "bg-online" : "bg-offline"
+            resolvedStatus === "online" ? "bg-online" : "bg-offline"
           )}
         />
       )}

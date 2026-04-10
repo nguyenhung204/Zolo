@@ -18,7 +18,7 @@ export function NavRail() {
   const user = useAuthStore((s) => s.user);
 
   return (
-    <nav className="flex flex-col items-center gap-1 w-14 h-full bg-primary py-4 shrink-0">
+    <nav className="flex flex-col items-center gap-1 w-14 h-full bg-[#0F172A] dark:bg-[#0a1120] py-4 shrink-0">
       {/* Brand mark */}
       <div className="mb-4 w-8 h-8 rounded-lg bg-cta flex items-center justify-center">
         <span className="text-white text-xs font-bold">Z</span>

@@ -33,26 +33,15 @@ This library solves the problem of scattered business logic and inconsistent imp
 
 ### Configuration Utilities
 
-**getDbConfig()**
-- Builds TypeORM or Mongoose configuration from environment variables
-- Supports multiple database instances per microservice pattern
-- Automatically reads from DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASS
-- Handles SSL configuration for production environments
+**getBootstrapConfig(service)**
+- Reads service host/port from environment at startup, before NestJS app creation
+- Calls `process.setMaxListeners(25)` once per process (idempotent). NestJS services load ~3-4 libraries (KafkaJS, TypeORM/pg, IORedis) each registering process exit handlers; the default limit of 10 is easily exceeded without this.
+- Use in `main.ts` before `NestFactory.createMicroservice(...)`
 
-**getKeycloakConfig()**
-- Loads Keycloak client configuration
-- Supports both internal and external URLs for Docker networking
-- Returns JWKS endpoint, realm, client ID, and secrets
-
-**getRedisConfig()**
-- Redis connection configuration builder
-- Supports single node and cluster configurations
-- Returns host, port, db, password, TLS options
-
-**getKafkaConfig()**
-- Kafka client configuration builder
-- Parses broker list from comma-separated env var
-- Configures consumer groups, client IDs, and connection settings
+**getServiceTcpConfig(host, port)**
+- Builds NestJS TCP transport options
+- Socket options: `keepAlive: true`, `keepAliveInitialDelay: 5_000ms`, `noDelay: true`
+- Note: In-process socket read timeout removed to prevent false-positive disconnections under temporary broker pressure
 
 ### Logging Infrastructure
 
@@ -87,15 +76,18 @@ This library solves the problem of scattered business logic and inconsistent imp
 
 **PORTS**
 - Default port numbers for each service
-- Gateway: 3001, Users: 3002, Chat Core: 3003, etc.
+- Gateway: 3000 (HTTP), Realtime Gateway: 3002 (WS), Users: 3001, Presence: 3003, Chat Core: 3004, Message Store: 3005, Notification: 3006, Conversation: 3007, Friendship: 3008, Media: 3009, Call: 3011
 
 **Message Patterns**
-- USERS_PATTERNS: CREATE_USER, GET_USER, UPDATE_USER, DELETE_USER, LIST_USERS, SEARCH_USERS
+- USERS_PATTERNS: CREATE_USER, GET_USER, GET_USERS_BY_IDS, UPDATE_USER, DELETE_USER, LIST_USERS, SEARCH_USERS, UPDATE_SETTINGS
 - CHAT_PATTERNS: SEND_MESSAGE
-- CONVERSATION_PATTERNS: CREATE_CONVERSATION, GET_CONVERSATION, LIST_CONVERSATIONS, ADD_MEMBERS, REMOVE_MEMBERS, IS_MEMBER, GET_MEMBER_IDS, INCREMENT_MAX_OFFSET, UPDATE_LAST_SEEN_OFFSET, GET_UNREAD_COUNT
+- CONVERSATION_PATTERNS: CREATE_CONVERSATION, GET_CONVERSATION, FIND_BY_ID, LIST_CONVERSATIONS, UPDATE_INFO, ADD_MEMBERS, REMOVE_MEMBERS, IS_MEMBER, GET_MEMBER_IDS, GET_MEMBERS_WITH_ROLES, SET_MEMBER_ROLE, INCREMENT_MAX_OFFSET, UPDATE_LAST_SEEN_OFFSET (deprecated), UPDATE_SEEN_CURSOR, UPDATE_DELIVERED_CURSOR, GET_MEMBER_CURSORS, GET_UNREAD_COUNT, GET_OUTBOX_HEALTH, GET_USER_CONVERSATION_IDS
 - FRIENDSHIP_PATTERNS: SEND_FRIEND_REQUEST, ACCEPT_FRIEND_REQUEST, REJECT_FRIEND_REQUEST, UNFRIEND, BLOCK_USER, UNBLOCK_USER, GET_FRIENDS, GET_PENDING_REQUESTS, GET_FRIEND_STATUS, IS_FRIEND
-- MESSAGE_STORE_PATTERNS: GET_MESSAGES, HAS_REPLIED, MARK_AS_READ, UPDATE_LAST_SEEN_OFFSET, GET_UNREAD_COUNT
-- PRESENCE_PATTERNS: SCHEDULE_OFFLINE, CANCEL_OFFLINE, UPDATE_ACTIVITY, SET_ONLINE, SET_OFFLINE, GET_STATUS, GET_BULK_STATUS, GET_ONLINE_COUNT, IS_ONLINE
+- MEDIA_PATTERNS: LIST_MEDIA, CREATE_UPLOAD, FINALIZE_UPLOAD, VALIDATE_MEDIA, GET_MEDIA_URL, DELETE_MEDIA, VALIDATE_FOR_SEND, BIND_TO_MESSAGE, GET_ACCESS_URL, CROSS_SHARE, **GET_AVATARS_BATCH** (batch avatar URL resolution for conversation avatars), **DELETE_AVATAR_SYSTEM** (system-level avatar deletion, tenant-scoped, no owner check)
+
+**REDIS_KEYS**
+- `REDIS_KEYS.CACHE.CONVERSATION(conversationId)` — `cache:conversation:{id}`
+- `REDIS_KEYS.CACHE.AVATAR_URL(mediaId)` — `media:avatar_url:{mediaId}` — Value: JSON `{ url: string; expiresAt: number }` (Unix ms). TTL set by ConversationGatewayService as `expiresAt - now - 5 min buffer`.
 
 **KAFKA_TOPICS**
 - MESSAGE_ACCEPTED: chat.event.message_accepted
@@ -118,15 +110,14 @@ This library solves the problem of scattered business logic and inconsistent imp
 
 **CONVERSATION_LIMITS**
 - DIRECT_MEMBERS: 2
-- GROUP_MIN_MEMBERS: 3 (used for DEPARTMENT/PROJECT minimum)
-- GROUP_MAX_MEMBERS: 100
+- GROUP_MIN_MEMBERS: 3 (minimum members for GROUP conversations)
+- GROUP_MAX_MEMBERS: 500
 - MESSAGE_MAX_LENGTH: 10000
 
 **ConversationType Enum**
 - DIRECT - One-to-one conversation (exactly 2 members)
-- DEPARTMENT - Department channel (auto-sync membership)
-- PROJECT - Project channel (manual membership)
-- ANNOUNCEMENT - Company-wide channel (read-only for MEMBER/GUEST)
+- GROUP - Group chat (3+ members, role-based permissions)
+- COMMUNITY - Broadcast channel (only OWNER/ADMIN/MODERATOR can post; MEMBER/GUEST can react only)
 
 **FriendshipStatus Enum**
 - FRIEND - Active friendship
@@ -206,14 +197,9 @@ This library solves the problem of scattered business logic and inconsistent imp
 **GlobalExceptionFilter**
 - Catches all unhandled exceptions
 - Logs exception details with stack trace
-- Returns standardized error response:
-  - statusCode
-  - message
-  - error type
-  - timestamp
-  - path
-  - traceId
-- Maps RpcException to appropriate HTTP status codes
+- Returns standardized error response
+- Maps `RpcException` to appropriate HTTP status codes
+- For TCP microservice contexts, returns `throwError(() => ...)` (RxJS Observable error) instead of throwing synchronously. This prevents unhandled Promise rejections that would crash the process in NestJS 11.x TCP transport.
 
 ### Custom Exceptions
 

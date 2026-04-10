@@ -12,8 +12,17 @@
 
 1. [Conventions & Response Format](#1-conventions--response-format)
 2. [Xác thực (Auth)](#2-xác-thực-auth)
+   - [POST /auth/login — Đăng nhập](#post-authlogin--đăng-nhập)
+   - [POST /auth/refresh — Làm mới token](#post-authrefresh--làm-mới-token)
+   - [POST /auth/logout — Đăng xuất](#post-authlogout--đăng-xuất)
+   - [POST /auth/register/init — Bước 1: Gửi OTP đăng ký](#post-authregisterinit--bước-1-gửi-otp-đăng-ký)
+   - [POST /auth/register/verify-otp — Bước 2: Xác thực OTP](#post-authregisterverify-otp--bước-2-xác-thực-otp)
+   - [POST /auth/register/complete — Bước 3: Hoàn tất đăng ký](#post-authregistercomplete--bước-3-hoàn-tất-đăng-ký)
+   - [POST /auth/forgot-password — Quên mật khẩu (gửi OTP)](#post-authforgot-password--quên-mật-khẩu-gửi-otp)
+   - [POST /auth/reset-password — Đặt lại mật khẩu bằng OTP](#post-authreset-password--đặt-lại-mật-khẩu-bằng-otp)
 3. [Health & Root](#3-health--root)
 4. [Users — Quản lý người dùng](#4-users--quản-lý-người-dùng)
+   - [POST /users/me/change-password — Đổi mật khẩu (đã đăng nhập)](#post-usersmechange-password--đổi-mật-khẩu-đã-đăng-nhập)
 5. [Conversations — Cuộc trò chuyện](#5-conversations--cuộc-trò-chuyện)
 6. [Chat & Messages — Tin nhắn](#6-chat--messages--tin-nhắn)
 7. [Friendships — Kết bạn](#7-friendships--kết-bạn)
@@ -70,18 +79,12 @@ Global: 120 request/60 giây mỗi IP. Một số endpoint call có giới hạn
 
 ### Roles trong JWT (`realm_access.roles`)
 
-| Role | Mô tả |
-|---|---|
-| `org_owner` | Chủ tổ chức, toàn quyền |
-| `org_admin` | Quản trị viên |
-| `org_member` | Thành viên thường |
-| `org_auditor` | Chỉ xem, không thay đổi |
+Roles are assigned by Keycloak and embedded in the JWT. The system uses conversation-level roles (owner, admin, moderator, member, guest) rather than org-level roles.
 
 ### Mã lỗi nghiệp vụ phổ biến
 
 | Code | Ý nghĩa |
 |---|---|
-| `FORBIDDEN_TENANT_MISMATCH` | orgId không khớp giữa user và conversation |
 | `FORBIDDEN_ACCOUNT_STATUS` | Tài khoản bị khóa hoặc đã offboard |
 | `FORBIDDEN_NOT_MEMBER` | Không phải thành viên conversation |
 | `FORBIDDEN_ROLE_REQUIRED` | Không đủ quyền để thực hiện hành động |
@@ -94,40 +97,326 @@ Global: 120 request/60 giây mỗi IP. Một số endpoint call có giới hạn
 
 ## 2. Xác thực (Auth)
 
-Hệ thống dùng **Keycloak** làm Identity Provider. Token là JWT RS256, xác thực một lần tại Gateway, khóa JWKS được cache trong Redis.
+Hệ thống dùng **Keycloak** làm Identity Provider. Token là JWT RS256, xác thực tại Gateway qua JWKS (cached Redis). Mỗi user có tối đa **1 phiên web + 1 phiên mobile** được quản lý bởi Redis Session Store.
 
-### Lấy token (Keycloak Direct Grant — dùng cho test/dev)
+> **Header bắt buộc cho các endpoint cần platform:**
+> `X-Client-Platform: web` hoặc `X-Client-Platform: mobile` (mặc định `web` nếu thiếu)
 
-```bash
-TOKEN=$(curl -s -X POST "http://localhost:8080/realms/nest-realm/protocol/openid-connect/token" \\
-  -H "Content-Type: application/x-www-form-urlencoded" \\
-  -d "client_id=nest-api" \\
-  -d "grant_type=password" \\
-  -d "username=alice@example.com" \\
-  -d "password=Secret123!" \\
-  | jq -r .access_token)
-```
+---
 
-Token có trong `access_token`. `refresh_token` dùng để gia hạn mà không cần đăng nhập lại.
+### POST /auth/login — Đăng nhập
 
-### Gia hạn token (Refresh Token)
+**Public — không cần token**
+
+> Chỉ hỗ trợ đăng nhập bằng `email` + `password`.
 
 ```bash
-NEW_TOKEN=$(curl -s -X POST "http://localhost:8080/realms/nest-realm/protocol/openid-connect/token" \\
-  -H "Content-Type: application/x-www-form-urlencoded" \\
-  -d "client_id=nest-api" \\
-  -d "grant_type=refresh_token" \\
-  -d "refresh_token=<REFRESH_TOKEN>" \\
-  | jq -r .access_token)
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -H "X-Client-Platform: web" \
+  -d '{
+    "email": "alice@example.com",
+    "password": "Secret123!",
+    "platform": "web",
+    "deviceInfo": {
+      "deviceName": "Chrome / Windows"
+    }
+  }'
 ```
 
-Khi nhận được HTTP 401 từ bất kỳ API nào, thử gia hạn token trước. Nếu refresh thất bại (401), bắt buộc đăng nhập lại.
+**Body:**
 
-### Dùng token trong request
+| Field | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `email` | string | ✅ | Email tài khoản |
+| `password` | string | ✅ | Mật khẩu |
+| `platform` | `'web'\|'mobile'` | ✅ | Loại thiết bị |
+| `deviceInfo.deviceName` | string | ❌ | Tên thiết bị hiển thị |
+| `deviceInfo.userAgent` | string | ❌ | User-Agent (tự động lấy nếu không gửi) |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource created successfully",
+  "data": {
+    "accessToken": "eyJhbGci...",
+    "refreshToken": "eyJhbGci...",
+    "expiresIn": 300
+  }
+}
+```
+
+> **Hành vi phiên**: Nếu đã có phiên `web` khác, phiên cũ bị thu hồi, WebSocket nhận event `session_revoked` và bị ngắt kết nối.
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 401 | Sai email hoặc mật khẩu |
+| 500 | Keycloak không phản hồi |
+
+---
+
+### POST /auth/refresh — Làm mới token
+
+**Public — không cần token**
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/me
+curl -X POST http://localhost:3000/auth/refresh \
+  -H "Content-Type: application/json" \
+  -H "X-Client-Platform: web" \
+  -d '{
+    "refreshToken": "<REFRESH_TOKEN>"
+  }'
 ```
+
+**Response 200:** cùng cấu trúc với `/auth/login`.
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 401 | `refreshToken` hết hạn hoặc bị revoke |
+| 401 `SESSION_REVOKED` | Phiên bị kick bởi đăng nhập ở thiết bị khác |
+
+---
+
+### POST /auth/logout — Đăng xuất
+
+**Yêu cầu JWT**
+
+```bash
+curl -X POST http://localhost:3000/auth/logout \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "X-Client-Platform: web"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource created successfully",
+  "data": { "message": "Đăng xuất thành công." }
+}
+```
+
+> Xóa phiên Redis, thu hồi session Keycloak, publish event ngắt WebSocket.
+
+---
+
+### POST /auth/register/init — Bước 1: Gửi OTP đăng ký
+
+**Public — không cần token**
+
+```bash
+curl -X POST http://localhost:3000/auth/register/init \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "bob@example.com",
+    "firstName": "Nguyễn",
+    "lastName": "Hùng"
+  }'
+```
+
+**Body:**
+
+| Field | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `email` | string | ✅ | Email đăng ký (phải chưa tồn tại) |
+| `firstName` | string | ✅ | Tên, 1–20 ký tự |
+| `lastName` | string | ✅ | Họ, 1–20 ký tự |
+
+> `username` hiển thị được hệ thống tự sinh từ `firstName + " " + lastName`, có thể trùng và có thể thay đổi sau này.
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource created successfully",
+  "data": { "cooldownSeconds": 60 }
+}
+```
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 409 | Email đã được đăng ký |
+| 429 | Vượt rate limit (5 lần/15 phút/email) hoặc cooldown 60s |
+
+---
+
+### POST /auth/register/verify-otp — Bước 2: Xác thực OTP
+
+**Public — không cần token**
+
+```bash
+curl -X POST http://localhost:3000/auth/register/verify-otp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "bob@example.com",
+    "otp": "482951"
+  }'
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource created successfully",
+  "data": {
+    "registrationToken": "550e8400-e29b-41d4-a716-446655440000",
+    "expiresIn": 600
+  }
+}
+```
+
+> `registrationToken` có hiệu lực **10 phút**, dùng một lần duy nhất cho bước 3.
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 400 | OTP hết hạn, sai, đã dùng, hoặc quá 3 lần nhập sai |
+
+---
+
+### POST /auth/register/complete — Bước 3: Hoàn tất đăng ký
+
+**Public — không cần token**
+
+```bash
+curl -X POST http://localhost:3000/auth/register/complete \
+  -H "Content-Type: application/json" \
+  -H "X-Client-Platform: web" \
+  -d '{
+    "registrationToken": "550e8400-e29b-41d4-a716-446655440000",
+    "password": "MyPass@2026",
+    "platform": "web",
+    "deviceInfo": {
+      "deviceName": "Chrome / Windows"
+    }
+  }'
+```
+
+**Body:**
+
+| Field | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `registrationToken` | string (UUID) | ✅ | Token nhận từ bước 2 |
+| `password` | string | ✅ | Mật khẩu mới, tối thiểu 8 ký tự |
+| `platform` | `'web'\|'mobile'` | ✅ | Loại thiết bị |
+| `deviceInfo.deviceName` | string | ❌ | Tên thiết bị |
+
+**Response 201:**
+```json
+{
+  "statusCode": 201,
+  "message": "Resource created successfully",
+  "data": {
+    "accessToken": "eyJhbGci...",
+    "refreshToken": "eyJhbGci...",
+    "expiresIn": 300
+  }
+}
+```
+
+> Tạo user trong Keycloak + users-service. Nếu users-service lỗi → Keycloak user bị xóa (Saga-lite rollback). Tự động đăng nhập sau khi tạo thành công.
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 400 | `registrationToken` hết hạn hoặc không hợp lệ |
+| 409 | Email đã tồn tại (race condition) |
+| 500 | Lỗi hệ thống (cả 2 vế đều được rollback) |
+
+---
+
+### POST /auth/forgot-password — Quên mật khẩu (gửi OTP)
+
+**Public — không cần token**
+
+Gửi yêu cầu đặt lại mật khẩu. Nếu email tồn tại trong hệ thống, một mã OTP 6 chữ số sẽ được gửi đến email đó (hiệu lực 10 phút).
+
+> **Bảo mật**: Response luôn trả về HTTP 200 dù email có tồn tại hay không — tránh email enumeration attack.
+
+```bash
+curl -X POST http://localhost:3000/auth/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com"}'
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "message": "Nếu email tồn tại, bạn sẽ nhận được mã OTP trong vài phút."
+  }
+}
+```
+
+**Rate limit:**
+- Tối đa **5 yêu cầu / 15 phút** mỗi email
+- Cooldown **60 giây** giữa 2 lần yêu cầu liên tiếp
+- Vượt quá → HTTP 429
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 400 | Email không đúng định dạng |
+| 429 | Vượt rate limit hoặc cooldown |
+
+---
+
+### POST /auth/reset-password — Đặt lại mật khẩu bằng OTP
+
+**Không cần token (Public)**
+
+Xác thực OTP nhận được qua email và đặt mật khẩu mới. Tất cả phiên đăng nhập hiện tại bị thu hồi sau khi đặt lại thành công.
+
+```bash
+curl -X POST http://localhost:3000/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "alice@example.com",
+    "otp": "482951",
+    "newPassword": "NewPass@2026"
+  }'
+```
+
+**Body:**
+
+| Field | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `email` | string | ✅ | Email tài khoản |
+| `otp` | string | ✅ | Mã 6 chữ số nhận qua email |
+| `newPassword` | string | ✅ | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt, tối thiểu 8 ký tự |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "message": "Mật khẩu đã được đặt lại thành công. Vui lòng đăng nhập lại."
+  }
+}
+```
+
+**Lỗi phổ biến:**
+
+| HTTP | Trường hợp |
+|------|------------|
+| 400 | OTP sai, đã hết hạn, đã dùng, hoặc quá 3 lần sai |
+| 400 | `newPassword` không đáp ứng yêu cầu độ phức tạp |
+| 500 | Lỗi phía Keycloak (thử lại sau) |
+
+> **Sau khi reset thành công**: Tất cả `access_token` / `refresh_token` cũ đều bị vô hiệu hóa. Client cần đăng nhập lại để lấy token mới.
 
 ---
 
@@ -198,86 +487,16 @@ Response:
     "username": "alice",
     "email": "alice@example.com",
     "name": "Alice Nguyen",
-    "roles": ["org_member"]
+    "roles": []
   }
 }
 ```
 
-Chỉ lấy từ payload JWT, không truy vấn DB. Dùng để lấy `id` và `roles` nhanh. Để lấy đầy đủ profile (accountStatus, departmentId...) dùng `/users/me`.
-
----
-
-### GET /admin — Kiểm tra quyền admin
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/admin
-```
+Chỉ lấy từ payload JWT, không truy vấn DB. Dùng để lấy `id` nhanh. Để lấy đầy đủ profile (avatar, settings...) dùng `/users/me`.
 
 ---
 
 ## 4. Users — Quản lý người dùng
-
-### POST /users/org/provision — Tạo user mới trong tổ chức
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -X POST http://localhost:3000/users/org/provision \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "email": "bob@example.com",
-    "username": "bob",
-    "firstName": "Bob",
-    "lastName": "Tran",
-    "phone": "+84912345678",
-    "title": "Software Engineer",
-    "departmentId": "dept-engineering-01",
-    "orgRole": "ORG_MEMBER",
-    "temporaryPassword": "TempPass123!"
-  }'
-```
-
-Hệ thống tạo account Keycloak và profile trong Users Service trong cùng 1 transaction. Các trường `orgRole` hợp lệ: `ORG_OWNER`, `ORG_ADMIN`, `ORG_MEMBER`, `ORG_AUDITOR`.
-
----
-
-### POST /users/org/provision/bulk — Tạo nhiều user cùng lúc
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -X POST http://localhost:3000/users/org/provision/bulk \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "users": [
-      {
-        "email": "carol@example.com",
-        "username": "carol",
-        "firstName": "Carol",
-        "lastName": "Le",
-        "orgRole": "ORG_MEMBER",
-        "temporaryPassword": "TempPass123!"
-      },
-      {
-        "email": "dave@example.com",
-        "username": "dave",
-        "firstName": "Dave",
-        "orgRole": "ORG_MEMBER",
-        "temporaryPassword": "TempPass123!"
-      }
-    ],
-    "continueOnError": true,
-    "concurrency": 5
-  }'
-```
-
-`continueOnError: true` — các user lỗi sẽ được ghi lại trong response, không dừng toàn bộ batch. `concurrency` giới hạn số user tạo đồng thời (1–30).
-
----
 
 ### GET /users — Danh sách tất cả user trong tổ chức
 
@@ -294,7 +513,7 @@ curl -H "Authorization: Bearer $TOKEN" \\
 curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/users/me
 ```
 
-Khác với `/me` ở root (chỉ lấy từ JWT), endpoint này lấy data đầy đủ từ Users Service bao gồm `accountStatus`, `departmentId`, `orgId`, `avatarUrl`, v.v.
+Khác với `/me` ở root (chỉ lấy từ JWT), endpoint này lấy data đầy đủ từ Users Service bao gồm `avatarUrl`, `settings`, `isActive`, v.v.
 
 ---
 
@@ -312,13 +531,11 @@ curl -X PUT http://localhost:3000/users/me \\
   }'
 ```
 
-Chỉ được cập nhật `firstName`, `lastName`, `phone`, `avatarUrl`. Không thể tự đổi `orgRole` hoặc `accountStatus`.
+Chỉ được cập nhật `firstName`, `lastName`, `phone`, `cccdNumber`, `avatarMediaId`.
 
 ---
 
-### GET /users/search — Tìm kiếm user (admin)
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
+### GET /users/search — Tìm kiếm user
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \\
@@ -327,9 +544,7 @@ curl -H "Authorization: Bearer $TOKEN" \\
 
 ---
 
-### GET /users/:id — Xem thông tin user cụ thể (admin)
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
+### GET /users/:id — Xem thông tin user cụ thể
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \\
@@ -338,67 +553,49 @@ curl -H "Authorization: Bearer $TOKEN" \\
 
 ---
 
-### PUT /users/:id — Cập nhật user (admin)
+### POST /users/me/change-password — Đổi mật khẩu (đã đăng nhập)
 
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
+**Yêu cầu token (Authenticated)**
+
+Đổi mật khẩu cho user đang đăng nhập. Hệ thống xác thực mật khẩu hiện tại trước, sau đó đặt mật khẩu mới và **thu hồi toàn bộ phiên đăng nhập** (buộc đăng nhập lại trên tất cả thiết bị).
 
 ```bash
-curl -X PUT "http://localhost:3000/users/a1b2c3d4-e5f6-7890-abcd-ef1234567890" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/users/me/change-password \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "firstName": "Bob Updated",
-    "avatarUrl": "https://cdn.example.com/avatars/bob.jpg"
+    "currentPassword": "OldPass@2025",
+    "newPassword": "NewPass@2026"
   }'
 ```
 
----
+**Body:**
 
-### PUT /users/:id/org-role — Thay đổi role trong tổ chức
+| Field | Type | Bắt buộc | Mô tả |
+|-------|------|----------|-------|
+| `currentPassword` | string | ✅ | Mật khẩu hiện tại để xác minh danh tính |
+| `newPassword` | string | ✅ | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt `!@#$%^&*`, tối thiểu 8 ký tự |
 
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -X PUT "http://localhost:3000/users/a1b2c3d4-e5f6-7890-abcd-ef1234567890/org-role" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "orgRole": "ORG_ADMIN" }'
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "message": "Mật khẩu đã được đổi thành công. Vui lòng đăng nhập lại."
+  }
+}
 ```
 
-Các giá trị hợp lệ: `ORG_OWNER`, `ORG_ADMIN`, `ORG_MEMBER`, `ORG_AUDITOR`.
+**Lỗi phổ biến:**
 
----
+| HTTP | Trường hợp |
+|------|------------|
+| 401 | Mật khẩu hiện tại không đúng |
+| 400 | `newPassword` không đáp ứng yêu cầu độ phức tạp |
+| 401 | Token hết hạn hoặc không hợp lệ |
 
-### DELETE /users/:id — Xóa user
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -X DELETE "http://localhost:3000/users/a1b2c3d4-e5f6-7890-abcd-ef1234567890" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### GET /users/health/role-drift/me — Kiểm tra role drift của bản thân
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  http://localhost:3000/users/health/role-drift/me
-```
-
-Kiểm tra xem role trong Keycloak có đồng bộ với DB không. Hữu ích khi có vấn đề phân quyền.
-
----
-
-### GET /users/health/role-drift/:id — Kiểm tra role drift của user cụ thể (admin)
-
-**Yêu cầu role**: `org_owner` hoặc `org_admin`
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/users/health/role-drift/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-```
+> **Sau khi đổi mật khẩu thành công**: Tất cả phiên đăng nhập bị thu hồi. Client cần đăng nhập lại để lấy token mới.
 
 ---
 
@@ -441,12 +638,12 @@ curl -X POST http://localhost:3000/conversations \\
 ```
 
 ```bash
-# Tạo kênh nhóm PROJECT với nhiều người
+# Tạo kênh nhóm GROUP với nhiều người
 curl -X POST http://localhost:3000/conversations \\
   -H "Authorization: Bearer $TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "type": "PROJECT",
+    "type": "GROUP",
     "memberIds": [
       "b2c3d4e5-f6a7-8901-bcde-f12345678901",
       "c3d4e5f6-a7b8-9012-cdef-123456789012"
@@ -456,7 +653,7 @@ curl -X POST http://localhost:3000/conversations \\
   }'
 ```
 
-Các loại conversation: `DIRECT` (chat đôi, không cần name), `DEPARTMENT` (tự động đồng bộ thành viên theo phòng ban), `PROJECT` (danh sách thủ công), `ANNOUNCEMENT` (chỉ admin post được).
+Các loại conversation: `DIRECT` (chat đôi, không cần name), `GROUP` (danh sách thủ công), `COMMUNITY` (chỉ admin post được).
 
 Lưu ý: Nếu đã tồn tại conversation `DIRECT` giữa 2 người, server trả về conversation cũ (không tạo mới).
 
@@ -475,6 +672,8 @@ curl -H "Authorization: Bearer $TOKEN" \\
 
 Chỉ OWNER hoặc ADMIN của conversation mới có quyền.
 
+Trường `avatarMediaId` là UUID của media (đã upload qua Media Service). Gateway tự động xóa avatar cũ khỏi MinIO sau khi cập nhật thành công (soft-fail — lỗi xóa không làm fail toàn bộ request).
+
 ```bash
 curl -X PATCH "http://localhost:3000/conversations/conv-uuid-here/info" \\
   -H "Authorization: Bearer $TOKEN" \\
@@ -482,7 +681,7 @@ curl -X PATCH "http://localhost:3000/conversations/conv-uuid-here/info" \\
   -d '{
     "name": "Project Alpha v2",
     "description": "Kênh dự án alpha phiên bản 2",
-    "avatarUrl": "https://cdn.example.com/groups/alpha.jpg"
+    "avatarMediaId": "550e8400-e29b-41d4-a716-446655440000"
   }'
 ```
 
@@ -594,6 +793,8 @@ Trả về tối đa 3 tin nhắn đang được ghim trong conversation.
 ## 6. Chat & Messages — Tin nhắn
 
 ### GET /conversations/:id/messages — Lấy tin nhắn (phân trang offset)
+
+Endpoint này nằm trong nhóm `/conversations` (trước đây là `/chat/conversations/:id/messages` — đã di chuyển). Yêu cầu membership hợp lệ.
 
 ```bash
 # Lấy 30 tin nhắn mới nhất
@@ -980,7 +1181,7 @@ curl -X POST "http://localhost:3000/media/media-uuid-abc123/cross-share" \\
   }'
 ```
 
-Chỉ ADMIN mới có quyền cross-share giữa các project. File gốc không bị nhân đôi, chỉ tạo reference mới, giữ nguyên phân quyền truy cập.
+Chỉ ADMIN mới có quyền cross-share giữa các conversation. File gốc không bị nhân đôi, chỉ tạo reference mới, giữ nguyên phân quyền truy cập.
 
 ---
 
@@ -1172,7 +1373,6 @@ curl -X POST http://localhost:3000/calls/start \\
   -H "Content-Type: application/json" \\
   -d '{
     "conversationId": "conv-uuid-here",
-    "orgId": "org-uuid-here",
     "allowWaitingRoom": true
   }'
 ```
@@ -1503,6 +1703,7 @@ Nếu không xác thực trong 30 giây, server tự động ngắt kết nối.
 | `conversation:member-added` | Thành viên mới | `{ conversationId, userId, addedBy }` | Cập nhật danh sách thành viên |
 | `conversation:member-removed` | Thành viên bị xóa | `{ conversationId, userId, removedBy }` | Xóa khỏi phòng, cập nhật UI |
 | `conversation:removed` | Bị xóa khỏi nhóm | `{ conversationId }` | Server force-leave socket — xóa conversation khỏi danh sách |
+| `conversation:updated` | Thông tin kênh thay đổi | `{ conversationId, changes, updatedBy?, timestamp? }` | Tên, mô tả, hoặc avatar bị thay đổi — client gọi `GET /conversations/:id` để lấy `avatarUrl` mới (presigned URL không có trong payload) |
 | `cursor:seen_updated` | Xác nhận | `{ conversationId, upToOffset }` | Cập nhật seen cursor thành công |
 | `cursor:delivered_updated` | Xác nhận | `{ conversationId, upToOffset }` | Cập nhật delivered cursor thành công |
 | `heartbeat:ack` | Phản hồi heartbeat | `{ timestamp }` | Xác nhận kết nối vẫn sống |
@@ -1514,7 +1715,7 @@ Nếu không xác thực trong 30 giây, server tự động ngắt kết nối.
 | Event | Payload | Rate limit (mỗi socket) | Mô tả |
 |---|---|---|---|
 | `authenticate` | `{ token }` | — | Xác thực (giống /chat) |
-| `meeting:start` | `{ conversationId, orgId, allowWaitingRoom? }` | 20 event/10s | Bắt đầu cuộc gọi qua WebSocket |
+| `meeting:start` | `{ conversationId, allowWaitingRoom? }` | 20 event/10s | Bắt đầu cuộc gọi qua WebSocket |
 | `meeting:get_active` | `{ conversationId }` | 20 event/10s | Hỏi cuộc gọi đang diễn ra trong conversation |
 | `meeting:join` | `{ conversationId }` | 20 event/10s | Yêu cầu tham gia cuộc gọi |
 | `meeting:approve_waiting` | `{ meetingId, userId }` | 20 event/10s | Duyệt người đang chờ vào phòng |
@@ -1561,7 +1762,7 @@ Khi vượt rate limit: nhận sự kiện `meeting:throttled` (chat) hoặc `we
 1. Keycloak login → lấy JWT token + refresh_token
 2. Lưu token vào secure storage (Keychain iOS, Keystore Android, sessionStorage Web)
 3. GET /me                  → lấy userId, roles từ JWT (nhanh, không query DB)
-4. GET /users/me            → lấy profile đầy đủ (accountStatus, orgId, departmentId)
+4. GET /users/me            → lấy profile đầy đủ (settings, avatarUrl)
 5. GET /conversations       → hiển thị danh sách cuộc trò chuyện
 6. Kết nối WebSocket /chat  → emit 'authenticate' với token
 7. Sau 'authenticated':
@@ -1584,13 +1785,15 @@ Khi vượt rate limit: nhận sự kiện `meeting:throttled` (chat) hoặc `we
 6. socket.emit('conversation:update_seen_cursor', { conversationId, upToOffset: newestOffset })
 7. Lắng nghe 'message:new' để append tin mới vào cuối list
 8. Lắng nghe 'message:notify' để cập nhật badge unread ở conversation khác
+9. Lắng nghe 'conversation:updated' — khi nhận, gọi `GET /conversations/:id` để lấy
+   thông tin mới (đặc biệt là `avatarUrl` mới nếu avatar vừa đổi)
 ```
 
-Load more (scroll lên): `GET /messages?before=<oldestOffset>&limit=30`.
+Load more (scroll lên): `GET /conversations/:id/messages?before=<oldestOffset>&limit=30`.
 
 Khi reconnect / re-open app:
 ```
-GET /messages?after=<lastKnownOffset>&limit=50  → lấy lại tin bị miss
+GET /conversations/:id/messages?after=<lastKnownOffset>&limit=50  → lấy lại tin bị miss
 ```
 
 ---
@@ -1706,7 +1909,7 @@ FE/Mobile xử lý:
 ### Luồng 8 — Cuộc gọi video/voice
 
 ```
-1. Host: POST /calls/start { conversationId, orgId, allowWaitingRoom: true }
+1. Host: POST /calls/start { conversationId, allowWaitingRoom: true }
    → Nhận { meetingId }
 
 2. Members nhận WebSocket 'meeting:started' { meetingId, conversationId, hostId }
@@ -1752,12 +1955,69 @@ Khi client reconnect (Socket.IO tự động retry):
 2. emit 'authenticate' lại với token (refresh nếu cần)
 3. Sau 'authenticated':
    - Re-join các conversation đang mở: emit 'conversation:join' mỗi conversationId
-   - Fetch tin nhắn bị miss: GET /messages?after=<lastOffset>&limit=50
+   - Fetch tin nhắn bị miss: GET /conversations/:id/messages?after=<lastOffset>&limit=50
    - emit 'conversation:update_delivered_cursor' với offset mới nhất
 4. Tiếp tục như bình thường
 ```
 
 Lưu ý quan trọng: Socket.IO có cơ chế reconnect tự động. Chỉ cần xử lý sự kiện `connect` (lần đầu) và `reconnect` (sau khi mất kết nối) để re-authenticate và re-join các phòng.
+
+---
+
+### Luồng 10 — Quên mật khẩu và đặt lại qua OTP email
+
+```
+1. User không đăng nhập được, nhấn "Quên mật khẩu"
+
+2. Client: POST /auth/forgot-password { email }
+   → Server luôn trả 200 (không tiết lộ email có tồn tại hay không)
+   → Nếu email tồn tại: gửi email có OTP 6 số (hiệu lực 10 phút)
+
+3. User mở email, lấy mã OTP (ví dụ: 482951)
+
+4. Client: POST /auth/reset-password { email, otp, newPassword }
+   → OTP đúng + chưa hết hạn + chưa dùng: đặt lại mật khẩu thành công
+   → Tất cả phiên đăng nhập cũ bị thu hồi ngay lập tức
+
+5. Client: Keycloak login với mật khẩu mới → lấy token mới
+```
+
+Sơ đồ lỗi:
+```
+Email không đúng định dạng        → 400 Bad Request
+Gửi quá 5 lần / 15 phút          → 429 Too Many Requests
+Gửi lại trước 60 giây            → 429 Too Many Requests
+OTP sai lần 1, 2, 3              → 400 (generic - không tiết lộ lý do)
+OTP sai lần 4 (quá 3 lần)        → 400 + XÓA OTP (phải yêu cầu OTP mới)
+OTP đúng nhưng đã dùng rồi       → 400 (race condition protection)
+newPassword yếu                  → 400 Bad Request
+```
+
+---
+
+### Luồng 11 — Đổi mật khẩu (đang đăng nhập)
+
+```
+1. User muốn đổi mật khẩu (trong Settings)
+
+2. Client: POST /users/me/change-password
+   {
+     "currentPassword": "OldPass@2025",
+     "newPassword": "NewPass@2026"
+   }
+   Header: Authorization: Bearer <token>
+
+3. Server xác minh currentPassword với Keycloak (ROPC grant)
+   → Sai: 401 Unauthorized, dừng
+
+4. Server đặt newPassword qua Keycloak Admin API
+5. Server thu hồi TẤT CẢ phiên đăng nhập (logout toàn bộ thiết bị)
+6. Client nhận 200: "Mật khẩu đã được đổi thành công. Vui lòng đăng nhập lại."
+
+7. Client xóa token cũ → redirect đến màn hình đăng nhập
+```
+
+> **Lưu ý UX**: Sau bước 6, token hiện tại cũng bị vô hiệu hóa. Client phải redirect đến trang đăng nhập.
 
 ---
 
@@ -1770,18 +2030,14 @@ Lưu ý quan trọng: Socket.IO có cơ chế reconnect tự động. Chỉ cầ
 | Health | GET | `/health/circuit-breakers` | Public | Circuit breaker status |
 | Auth | GET | `/me` | JWT | Thông tin user từ JWT |
 | Auth | GET | `/admin` | JWT + admin | Kiểm tra quyền admin |
-| Users | POST | `/users/org/provision` | JWT + admin | Tạo user |
-| Users | POST | `/users/org/provision/bulk` | JWT + admin | Tạo nhiều user |
+| Auth | POST | `/auth/forgot-password` | Public | Gửi OTP đặt lại mật khẩu |
+| Auth | POST | `/auth/reset-password` | Public | Đặt lại mật khẩu bằng OTP |
 | Users | GET | `/users` | JWT | Danh sách user |
 | Users | GET | `/users/me` | JWT | Profile bản thân |
 | Users | PUT | `/users/me` | JWT | Cập nhật profile |
-| Users | GET | `/users/search` | JWT + admin | Tìm kiếm user |
-| Users | GET | `/users/:id` | JWT + admin | Xem user |
-| Users | PUT | `/users/:id` | JWT + admin | Cập nhật user |
-| Users | PUT | `/users/:id/org-role` | JWT + admin | Đổi role |
-| Users | DELETE | `/users/:id` | JWT + admin | Xóa user |
-| Users | GET | `/users/health/role-drift/me` | JWT | Kiểm tra role drift |
-| Users | GET | `/users/health/role-drift/:id` | JWT + admin | Kiểm tra role drift user |
+| Users | GET | `/users/search` | JWT | Tìm kiếm user |
+| Users | GET | `/users/:id` | JWT | Xem user |
+| Users | POST | `/users/me/change-password` | JWT | Đổi mật khẩu (có xác minh hiện tại) |
 | Conversations | GET | `/conversations/health/outbox` | Public | Outbox health |
 | Conversations | GET | `/conversations` | JWT | Danh sách conversation |
 | Conversations | POST | `/conversations` | JWT | Tạo conversation |
@@ -1794,7 +2050,7 @@ Lưu ý quan trọng: Socket.IO có cơ chế reconnect tự động. Chỉ cầ
 | Conversations | GET | `/conversations/:id/unread` | JWT | Số tin chưa đọc |
 | Conversations | PATCH | `/conversations/:id/offset` | JWT | Cập nhật read cursor |
 | Conversations | GET | `/conversations/:id/pinned` | JWT | Tin nhắn được ghim |
-| Chat | GET | `/conversations/:id/messages` | JWT | Lấy tin nhắn |
+| Conversations | GET | `/conversations/:id/messages` | JWT | Lấy tin nhắn |
 | Chat | POST | `/chat/messages` | JWT | Gửi tin nhắn |
 | Chat | POST | `/chat/pre-check-media` | JWT | Kiểm tra trước khi upload |
 | Messages | PATCH | `/messages/:id` | JWT | Sửa tin nhắn |

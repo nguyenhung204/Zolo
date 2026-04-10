@@ -41,10 +41,11 @@ This document describes the service-to-service communication architecture in the
 | **Users** | Domain Service | TCP | User profile management |
 | **Friendship** | Domain Service | TCP + Kafka Producer | Social relationships |
 | **Conversation** | Domain Service | TCP + Kafka Consumer/Producer | Conversation lifecycle |
-| **Chat Core** | Validation Service | TCP + HTTP + Kafka Producer | Message validation, media verification |
+| **Chat Core** | Validation Service | TCP + Kafka Producer | Message validation, media verification |
 | **Message Store** | Storage Service | Kafka Consumer + TCP | Message persistence |
 | **Presence** | State Service | TCP + Redis | Online/offline status |
-| **Media Service** | HTTP REST Service | HTTP + Kafka Consumer | Multimedia storage, processing, integrity |
+| **Media Service** | TCP Microservice | TCP + Kafka Consumer | Multimedia storage, processing, integrity |
+| **Notification Service** | Consumer Service | TCP + Kafka Consumer | Push notifications, transactional email |
 | **Call Service** | Domain Service | TCP + Kafka Consumer/Producer | Meeting lifecycle, participant management, recording |
 
 ### Dependency Flow (Who Calls Whom)
@@ -62,8 +63,9 @@ graph TD
     Gateway -->|TCP| ChatCore[Chat Core]
     Gateway -->|TCP| MessageStore[Message Store]
     Gateway -->|TCP| Presence
-    Gateway -->|HTTP| MediaService[Media Service]
+    Gateway -->|TCP| MediaService[Media Service]
     Gateway -->|TCP| CallSvc[Call Service]
+    Gateway -->|TCP| NotificationSvc[Notification Service]
     
     RealtimeGW -->|TCP| ChatCore
     RealtimeGW -->|TCP| Conversation
@@ -72,7 +74,7 @@ graph TD
     ChatCore -->|TCP| Conversation
     ChatCore -->|TCP| Friendship
     ChatCore -->|TCP| MessageStore
-    ChatCore -->|HTTP| MediaService
+    ChatCore -->|TCP| MediaService
     
     CallSvc -->|HTTP| LiveKit[LiveKit SFU]
     
@@ -91,15 +93,15 @@ graph TD
 
 ### Service Communication Matrix
 
-| Caller ↓ / Callee → | Users | Friendship | Conversation | Chat Core | Message Store | Presence | Realtime GW | Call Service |
-|---------------------|-------|------------|--------------|-----------|---------------|----------|-------------|-------------|
-| **Gateway** | TCP | TCP | TCP | TCP | TCP | TCP | - | TCP |
-| **Realtime Gateway** | - | - | TCP (validate) | TCP (send) | - | TCP (status) | - | - |
-| **Chat Core** | TCP (future) | TCP (validate) | TCP (validate) | - | TCP (query) | - | - | - |
-| **Message Store** | - | - | TCP (offset) | - | - | - | Kafka event | - |
-| **Friendship** | - | - | Kafka event | - | - | - | - | - |
-| **Conversation** | - | - | - | - | - | - | Kafka event | Kafka event |
-| **Call Service** | - | - | Kafka (consume) | - | - | - | Kafka event | - |
+| Caller ↓ / Callee → | Users | Friendship | Conversation | Chat Core | Message Store | Presence | Realtime GW | Call Service | Media Service | Notification |
+|---------------------|-------|------------|--------------|-----------|---------------|----------|-------------|-------------|---------------|-------------|
+| **Gateway** | TCP | TCP | TCP | TCP | TCP | TCP | - | TCP | TCP | TCP |
+| **Realtime Gateway** | - | - | TCP (validate) | TCP (send) | - | TCP (status) | - | - | - | - |
+| **Chat Core** | TCP (future) | TCP (validate) | TCP (validate) | - | TCP (query) | - | - | - | TCP (validate) | - |
+| **Message Store** | - | - | TCP (offset) | - | - | - | Kafka event | - | - | - |
+| **Friendship** | - | - | Kafka event | - | - | - | - | - | - | - |
+| **Conversation** | - | - | - | - | - | - | Kafka event | Kafka event | - | - |
+| **Call Service** | - | - | Kafka (consume) | - | - | - | Kafka event | - | - | - |
 
 **Legend:**
 - TCP: Synchronous request/response
@@ -159,12 +161,12 @@ CHAT_CORE_PATTERNS.SEND_MESSAGE
 
 **Gateway → Message Store**
 ```
-MESSAGE_STORE_PATTERNS.GET_MESSAGES
-MESSAGE_STORE_PATTERNS.UPDATE_LAST_SEEN_OFFSET
-MESSAGE_STORE_PATTERNS.GET_UNREAD_COUNT
+MESSAGE_STORE_PATTERNS.GET_MESSAGES        # Returns paginated messages; Gateway enriches with sender info
 MESSAGE_STORE_PATTERNS.HAS_REPLIED
 MESSAGE_STORE_PATTERNS.MARK_AS_READ
 ```
+
+> **Note**: `UPDATE_LAST_SEEN_OFFSET` and `GET_UNREAD_COUNT` are handled directly by **Gateway → Conversation Service**, not via Message Store. The Message Store no longer proxies these calls.
 
 **Gateway → Presence**
 ```
@@ -179,16 +181,21 @@ PRESENCE_PATTERNS.IS_ONLINE
 PRESENCE_PATTERNS.GET_ONLINE_COUNT
 ```
 
-**Gateway → Media Service (HTTP REST)**
-```http
-POST   /media/upload                  # Create upload with pre-signed URL
-POST   /media/upload/complete         # Finalize upload with checksum
-GET    /media/:mediaId                # Get download URLs
-GET    /media/validate/:mediaId       # Validate media for messages
-DELETE /media/:mediaId                # Soft delete media
+**Gateway → Media Service (TCP)**
+```
+MEDIA_PATTERNS.CREATE_UPLOAD         # Create upload with pre-signed URL
+MEDIA_PATTERNS.FINALIZE_UPLOAD       # Finalize upload with checksum
+MEDIA_PATTERNS.GET_MEDIA_URL         # Get download URL(s)
+MEDIA_PATTERNS.GET_ACCESS_URL        # Get pre-signed access URL for download
+MEDIA_PATTERNS.VALIDATE_MEDIA        # Validate media metadata
+MEDIA_PATTERNS.DELETE_MEDIA          # Soft delete media
+MEDIA_PATTERNS.LIST_MEDIA            # List media for a conversation
+MEDIA_PATTERNS.GET_AVATARS_BATCH     # Batch avatar URL resolution
+MEDIA_PATTERNS.DELETE_AVATAR_SYSTEM  # System-level avatar deletion
+MEDIA_PATTERNS.CROSS_SHARE           # Cross-conversation share
 ```
 
-**Note**: Media Service uses HTTP (not TCP) because it handles client-facing file operations with JWT authentication. Gateway forwards Authorization header to Media Service.
+**Note**: Media Service is a TCP microservice (port 3009). Clients upload files via the Gateway, which proxies all media operations over TCP to the Media Service. JWT authentication is handled by the Gateway — Media Service trusts the internal TCP call.
 
 **Gateway → Call Service**
 ```
@@ -244,7 +251,8 @@ CONVERSATION_PATTERNS.GET_MEMBER_IDS (get recipients)
 
 **Chat Core → Friendship**
 ```
-FRIENDSHIP_PATTERNS.GET_FRIEND_STATUS (validate DIRECT relationship)
+FRIENDSHIP_PATTERNS.GET_FRIEND_STATUS (validate DIRECT relationship — TCP fallback only;
+                                       Redis block cache checked first via FriendshipBlockConsumer)
 ```
 
 **Chat Core → Message Store**
@@ -252,12 +260,13 @@ FRIENDSHIP_PATTERNS.GET_FRIEND_STATUS (validate DIRECT relationship)
 MESSAGE_STORE_PATTERNS.HAS_REPLIED (check first interaction for rate limiting)
 ```
 
-**Chat Core → Media Service (HTTP REST)**
-```http
-GET /media/validate/:mediaId?ownerId={senderId}  # Validate media attachment
+**Chat Core → Media Service (TCP)**
+```
+MEDIA_PATTERNS.VALIDATE_FOR_SEND     # Validate media attachment for a message (ownerId, status, classification)
+MEDIA_PATTERNS.BIND_TO_MESSAGE       # Bind media to message after MESSAGE_ACCEPTED
 ```
 
-**Implementation**: `HttpService` with 3s timeout, maxRedirects: 0 (circuit breaker pattern)
+**Implementation**: `ServiceRegistry.resolve<IMediaService>(SERVICE_NAMES.MEDIA)` — `MediaServiceAdapter` wraps `ClientProxy.send()` with 3s timeout (circuit breaker pattern in Chat Core).
 
 **Message Store → Conversation**
 ```
@@ -287,17 +296,19 @@ sequenceDiagram
     Conversation-->>ChatCore: true
     
     alt DIRECT conversation
-        ChatCore->>Friendship: TCP GET_FRIEND_STATUS
-        Friendship-->>ChatCore: Friend status
+        ChatCore->>ChatCore: Redis MGET block:A:B + block:B:A (O(1) fast-path)
+        alt cache miss only
+          ChatCore->>Friendship: TCP GET_FRIEND_STATUS
+          Friendship-->>ChatCore: Friend status
+        end
     end
     
     ChatCore-->>Gateway: Success (messageId)
 | Service Call | Timeout | Retry Strategy |
 |--------------|---------|----------------|
 | Gateway → Client (HTTP) | 10s | Client retry (HTTP 504) |
-| Gateway → Media Service (HTTP) | 3s | No retry (fail fast) |
 | Service → Service (TCP) | 5s | No auto-retry |
-| Chat Core → Media Service (HTTP) | 3s | No retry (fail fast) |
+| Chat Core → Media Service (TCP) | 3s | No retry (fail fast — circuit breaker) |
 ### Timeout Configuration
 
 | Service Call | Timeout | Retry Strategy |
@@ -325,7 +336,7 @@ sequenceDiagram
   {
     messageId: string;
     conversationId: string;
-    conversationType: 'DIRECT' | 'DEPARTMENT' | 'PROJECT' | 'ANNOUNCEMENT';
+    conversationType: 'DIRECT' | 'GROUP' | 'COMMUNITY';
     senderId: string;
     content: string;
     type: 'text' | 'image' | 'file';
@@ -406,7 +417,7 @@ sequenceDiagram
   ```typescript
   {
     conversationId: string;
-    type: 'DIRECT' | 'DEPARTMENT' | 'PROJECT' | 'ANNOUNCEMENT';
+    type: 'DIRECT' | 'GROUP' | 'COMMUNITY';
     createdBy: string;
     memberIds: string[];
     timestamp: string;
@@ -451,7 +462,7 @@ sequenceDiagram
 - **Purpose**: Notify conversation members that a meeting has started
 - **Payload**:
   ```typescript
-  { meetingId: string; conversationId: string; hostId: string; orgId: string; startedAt: string; }
+  { meetingId: string; conversationId: string; hostId: string; startedAt: string; }
   ```
 
 **Topic: `call.event.ended`**

@@ -15,14 +15,9 @@ interface ConversationItemProps {
 }
 
 const typeIconMap: Record<string, React.ElementType | null> = {
-  DEPARTMENT: Hash,
-  PROJECT: Hash,
-  ANNOUNCEMENT: Megaphone,
   DIRECT: null,
-  department: Hash,
-  project: Hash,
-  announcement: Megaphone,
-  direct: null,
+  GROUP: Hash,
+  COMMUNITY: Megaphone,
 };
 
 export function ConversationItem({ conversation, isActive, onClick }: ConversationItemProps) {
@@ -31,9 +26,9 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
     0,
     Number(conversation.maxOffset) - (conversation.lastSeenOffset ?? Number(conversation.maxOffset))
   );
-  const TypeIcon = typeIconMap[conversation.type] ?? null;
+  const TypeIcon = typeIconMap[conversation.kind] ?? null;
 
-  const isDirect = conversation.type.toUpperCase() === "DIRECT";
+  const isDirect = conversation.kind === "DIRECT";
 
   const displayName =
     isDirect

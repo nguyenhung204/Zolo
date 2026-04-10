@@ -106,6 +106,9 @@ export interface ServerEvents {
   "typing:started": (data: { conversationId: string; userId: string }) => void;
   "typing:stopped": (data: { conversationId: string; userId: string }) => void;
 
+  "user:online": (data: { userId: string }) => void;
+  "user:offline": (data: { userId: string; lastSeen: string | null }) => void;
+
   "member:added": (data: {
     conversationId: string;
     addedUserIds: string[];
@@ -117,7 +120,45 @@ export interface ServerEvents {
     timestamp: string;
   }) => void;
 
+  "conversation:updated": (data: {
+    conversationId: string;
+    changes: Record<string, unknown>;
+    updatedBy?: string;
+    timestamp?: string;
+  }) => void;
+
   error: (data: { message: string; code: string }) => void;
+
+
+  session_revoked: (data: {
+    reason: "logged_in_elsewhere" | "manual_logout" | "token_expired";
+  }) => void;
+
+  "conversation:created": (data: {
+    conversationId: string;
+    kind: "DIRECT" | "GROUP" | "COMMUNITY";
+    name?: string;
+    description?: string;
+    memberIds: string[];
+    createdBy: string;
+    createdAt: string;
+  }) => void;
+
+  /**
+   * Fired after media.ready propagates through the backend pipeline.
+   * The snapshot reflects the current state of the changed fields.
+   * snapshot.avatarMediaId is a mediaId — call GET /media/:id/url to resolve
+   * a presigned URL before rendering.
+   */
+  "user:profile-updated": (data: {
+    userId: string;
+    changedFields: string[];
+    snapshot: {
+      displayName: string | null;
+      avatarMediaId: string | null;
+    };
+    timestamp: number;
+  }) => void;
 
   // NOTE: call / meeting events are NOT on this namespace.
   // They are emitted on the /call namespace — see CallServerEvents below.

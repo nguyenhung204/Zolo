@@ -21,7 +21,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${jakarta.variable} h-full antialiased`}>
+    <html lang="en" suppressHydrationWarning className={`${jakarta.variable} h-full antialiased`}>
+      <head>
+        {/* Prevent flash of incorrect theme on page load */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){var t=localStorage.getItem('zolo-theme')||'system';var d=localStorage.getItem('zolo-density')||'comfortable';document.documentElement.dataset.theme=t.toLowerCase();document.documentElement.dataset.density=d.toLowerCase();})()`
+          }}
+        />
+      </head>
       <body className="h-full bg-bg font-sans text-text">
         <Providers>{children}</Providers>
       </body>

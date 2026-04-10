@@ -7,21 +7,19 @@ import type { MemberRole } from "@/lib/api/conversations";
 import { cn } from "@/lib/utils";
 
 const roleIcon: Record<MemberRole, React.ReactNode> = {
-  OWNER:     <Crown className="w-3 h-3 text-warning" />,
-  ADMIN:     <Shield className="w-3 h-3 text-cta" />,
-  MODERATOR: <Shield className="w-3 h-3 text-success" />,
-  MEMBER:    <User className="w-3 h-3 text-muted" />,
-  GUEST:     <User className="w-3 h-3 text-muted/60" />,
-  READONLY:  <User className="w-3 h-3 text-muted/40" />,
+  owner: <Crown className="w-3 h-3 text-warning" />,
+  admin: <Shield className="w-3 h-3 text-cta" />,
+  moderator: <Shield className="w-3 h-3 text-success" />,
+  member: <User className="w-3 h-3 text-muted" />,
+  guest: <User className="w-3 h-3 text-muted/60" />,
 };
 
 const roleLabel: Record<MemberRole, string> = {
-  OWNER:     "Owner",
-  ADMIN:     "Admin",
-  MODERATOR: "Mod",
-  MEMBER:    "Member",
-  GUEST:     "Guest",
-  READONLY:  "Read-only",
+  owner: "Owner",
+  admin: "Admin",
+  moderator: "Mod",
+  member: "Member",
+  guest: "Guest",
 };
 
 interface MemberListProps {

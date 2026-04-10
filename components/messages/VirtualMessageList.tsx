@@ -109,7 +109,7 @@ function MessageRowComponent({
         isGroupStart={!samePrev}
         isGroupEnd={!sameNext}
         senderName={senderName}
-        senderAvatarUrl={undefined}
+        senderAvatarUrl={member?.avatarUrl ?? undefined}
         onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, content: m.content, type: m.type })}
       />
     </div>

@@ -364,7 +364,7 @@ sequenceDiagram
 ## Conversation Creation Flow
 
 ### Scenario
-User creates a new PROJECT conversation with 5 members.
+User creates a new GROUP conversation with 5 members.
 
 ### Complete Flow
 
@@ -378,7 +378,7 @@ sequenceDiagram
     participant RealtimeGW as Realtime Gateway
     participant Members as Other Members
 
-    Client->>Gateway: POST /conversations (kind=PROJECT, memberIds=[...])
+    Client->>Gateway: POST /conversations (kind=GROUP, memberIds=[...])
     Gateway->>ConvSvc: TCP: CREATE_CONVERSATION
 
     ConvSvc->>ConvSvc: Validate member count and kind
@@ -387,7 +387,7 @@ sequenceDiagram
         Gateway-->>Client: 400 Bad Request
     else Valid
         ConvSvc->>DB: BEGIN TRANSACTION
-        ConvSvc->>DB: INSERT conversation (kind=PROJECT, orgId, metadata)
+        ConvSvc->>DB: INSERT conversation (kind=GROUP, metadata)
         ConvSvc->>DB: INSERT 5 conversation_members (role=MEMBER, creator=OWNER)
         ConvSvc->>DB: INSERT outbox event (CONVERSATION_CREATED)
         ConvSvc->>DB: COMMIT
@@ -408,7 +408,7 @@ sequenceDiagram
 - Payload:
   ```
   {
-    kind: PROJECT,
+    kind: GROUP,
     memberIds: [user1, user2, user3, user4, user5],
     name: "Project Team",
     description: "Team coordination chat"
@@ -418,19 +418,18 @@ sequenceDiagram
 
 **2. Gateway Forwards to Conversation Service**
 - Extracts userId from JWT token
-- Adds createdBy and orgId fields
+- Adds createdBy field
 - Forwards via TCP: CREATE_CONVERSATION
 
 **3. Conversation Service Validates**
 
 **Kind Validation:**
 - DIRECT: must have exactly 2 members (including creator); one-on-one only
-- DEPARTMENT: memberIds auto-populated from department; no manual add allowed (except GUEST role)
-- PROJECT: manual member list; must have at least 2 members
-- ANNOUNCEMENT: read-only for members; only OWNER/ADMIN/MODERATOR can post
+- GROUP: manual member list; must have at least 2 members
+- COMMUNITY: read-only for members; only OWNER/ADMIN/MODERATOR can post
 
 **Member Validation:**
-- All memberIds must be valid user IDs within the same orgId
+- All memberIds must be valid user IDs
 - No duplicate members
 - Creator not required in list (auto-added as OWNER)
 
@@ -440,11 +439,10 @@ sequenceDiagram
   ```
   {
     id: conversationId,
-    kind: PROJECT,
-    orgId: sender.orgId,
+    kind: GROUP,
     name: "Project Team",
     description: "Team coordination chat",
-    metadata: { projectId: ... },
+    metadata: {},
     maxOffset: 0,
     createdBy: userId,
     createdAt: now
@@ -474,8 +472,7 @@ sequenceDiagram
   ```
   {
     conversationId: UUID,
-    kind: PROJECT,
-    orgId: string,
+    kind: GROUP,
     memberIds: [user1, user2, ...],
     createdBy: userId,
     timestamp: ISO string
@@ -492,7 +489,7 @@ sequenceDiagram
 
 **Invalid Member Count:**
 - DIRECT with 3 members -> Error: "DIRECT must have exactly 2 members"
-- PROJECT with 1 member -> Error: "PROJECT must have at least 2 members"
+- GROUP with 1 member -> Error: "GROUP must have at least 2 members"
 
 **Member Doesn't Exist:**
 - Conversation Service queries Users Service

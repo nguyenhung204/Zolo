@@ -44,17 +44,28 @@ Graceful shutdown: Consumers properly disconnect from consumer groups during ser
 
 Services implementing consumers override the onMessage method to define business logic for processing each event type. The abstract consumer handles all Kafka protocol concerns, allowing service logic to focus on event interpretation and state updates.
 
+**KafkaConsumerRegistryService**
+
+The internal registry that manages Kafka consumer lifecycle for all `@KafkaHandler`-decorated methods. Key behaviors:
+
+- **Auto-restart on crash**: If `consumer.run()` throws (e.g., broker disconnect, network drop), the registry logs the error and automatically restarts the consumer after a 5-second delay. The consumer is only restarted while it is still tracked (tracked = not destroyed by `onModuleDestroy`).
+- **Retryable error detection**: Expanded set of retryable errors during initial subscription: `LEADER_NOT_AVAILABLE`, `UNKNOWN_TOPIC_OR_PARTITION`, `ECONNREFUSED`, `Connection timeout`, `KafkaJSNonRetriableError`, and `topic-partition` messages. Retries with linear backoff (2s, 4s, 6s, 8s, 10s) up to 5 attempts before giving up.
+- **Concurrency**: Default `partitionsConsumedConcurrently: 1` per consumer group to prevent CPU/RAM overload. Scale horizontally instead.
+
 **KafkaHandler Decorator**
 
-A method-level decorator that binds consumer methods to specific topic and consumer group combinations. The decorator enables multiple consumer methods within a single service to subscribe to different topics or the same topic with different consumer groups for parallel processing patterns. Configuration includes topic name, consumer group identifier, and optional filtering criteria for selective message processing.
+A method-level decorator that binds consumer methods to specific topic and consumer group combinations. The decorator enables multiple consumer methods within a single service to subscribe to different topics or the same topic with different consumer groups for parallel processing patterns. Configuration includes topic name, consumer group identifier, and optional `fromBeginning` flag.
 
 **KAFKA_TOPICS Constant**
 
-A centralized registry of all topic names used throughout the system, preventing topic name inconsistencies from typos or divergent naming conventions. Services import topic constants rather than using string literals, enabling compile-time validation of topic references and IDE autocomplete for available topics.
+A centralized registry of all topic names used throughout the system. Services import topic constants rather than using string literals, enabling compile-time validation of topic references.
 
-**EventType Enum**
+**DLQ Topics**
 
-An enumeration defining all event types published across the system. Each event type maps to specific payload schemas, enabling type-safe event production and consumption. The enum serves as documentation of all inter-service events and facilitates impact analysis when considering changes to event payloads or publishing patterns.
+Three dedicated Dead Letter Queue topics (all with 30-day retention, 4 partitions):
+- `chat.dlq` - General DLQ
+- `chat.dlq.commands` - DLQ for command events (request/reply patterns)
+- `chat.dlq.events` - DLQ for domain events (fire-and-forget patterns)
 
 ## Configuration
 
