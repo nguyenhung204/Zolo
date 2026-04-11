@@ -2,8 +2,10 @@ import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getMyProfile,
+  getUserById,
   updateMyProfile,
   updateMySettings,
+  deleteMyAccount,
   getMySessions,
   deleteAllSessions,
   deleteSession,
@@ -14,6 +16,7 @@ import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
 import type { Theme, MessageDensity } from "@/stores/preferencesStore";
+import { clearClientAuthSession } from "@/lib/auth/logout";
 
 export function useMyProfile() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -101,6 +104,18 @@ export function useDeleteAllSessions() {
   });
 }
 
+export function useDeleteMyAccount() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: deleteMyAccount,
+    onSuccess: () => {
+      qc.clear();
+      clearClientAuthSession();
+    },
+  });
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient();
   return useMutation({
@@ -108,5 +123,14 @@ export function useDeleteSession() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.users.sessions() });
     },
+  });
+}
+
+export function useUserById(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.users.detail(userId ?? ""),
+    queryFn: () => getUserById(userId!),
+    enabled: !!userId,
+    staleTime: 4 * 60_000,
   });
 }

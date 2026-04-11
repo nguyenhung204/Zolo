@@ -59,13 +59,37 @@ export function appendMessage(
   conversationId: string,
   msg: Message
 ) {
+  upsertMessage(qc, conversationId, msg);
+}
+
+export function upsertMessage(
+  qc: ReturnType<typeof useQueryClient>,
+  conversationId: string,
+  msg: Message
+) {
   qc.setQueryData<MessagesInfiniteData>(
     queryKeys.messages.list(conversationId),
     (old) => {
       if (!old) return old;
       const pages = [...old.pages];
       const last = pages[pages.length - 1];
-      if (last.data.some((m) => m.messageId === msg.messageId)) return old;
+
+      const existingIdx = last.data.findIndex(
+        (m) =>
+          m.messageId === msg.messageId ||
+          (!!m.clientMessageId && !!msg.clientMessageId && m.clientMessageId === msg.clientMessageId)
+      );
+
+      if (existingIdx !== -1) {
+        const next = [...last.data];
+        next[existingIdx] = { ...next[existingIdx], ...msg, _pending: false, _failed: false };
+        pages[pages.length - 1] = {
+          ...last,
+          data: next,
+        };
+        return { ...old, pages };
+      }
+
       pages[pages.length - 1] = {
         ...last,
         data: [...last.data, msg],

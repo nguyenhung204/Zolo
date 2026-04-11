@@ -5,6 +5,7 @@ import { ProfileSection } from "@/components/settings/ProfileSection";
 import { UserSettingsSection } from "@/components/settings/UserSettingsSection";
 import { SessionsSection } from "@/components/settings/SessionsSection";
 import { ChangePasswordSection } from "@/components/settings/ChangePasswordSection";
+import { DeleteAccountSection } from "@/components/settings/DeleteAccountSection";
 import { useAuthStore } from "@/stores/authStore";
 import { getErrorMessage } from "@/lib/api/errors";
 import { logoutCompletely } from "@/lib/auth/logout";
@@ -83,14 +84,22 @@ export default function SettingsPage() {
               {logoutError && (
                 <p className="mb-3 text-xs text-error">{logoutError}</p>
               )}
-              <button
-                onClick={handleLogout}
-                disabled={logoutPending}
-                className="px-5 py-2.5 rounded-lg bg-error text-white text-sm font-semibold hover:opacity-90 transition cursor-pointer"
-              >
-                {logoutPending ? "Signing out..." : "Sign out"}
-              </button>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-text">Sign out from this device</p>
+                  <p className="text-xs text-muted mt-1">Your account stays active and you can sign back in later.</p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  disabled={logoutPending}
+                  className="px-5 py-2.5 rounded-lg bg-error text-white text-sm font-semibold hover:opacity-90 transition cursor-pointer"
+                >
+                  {logoutPending ? "Signing out..." : "Sign out"}
+                </button>
+              </div>
             </section>
+
+            <DeleteAccountSection />
           </>
         )}
       </div>

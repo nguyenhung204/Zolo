@@ -59,6 +59,11 @@ export interface UserSession {
 
 // ─── User Profile ─────────────────────────────────────────────────────────────
 
+export async function getUserById(userId: string): Promise<UserProfile> {
+  const res = await apiClient.get(`/users/${userId}`);
+  return res.data.data;
+}
+
 export async function getMyProfile(avatarVariant: AvatarVariant = "thumb"): Promise<UserProfile> {
   const res = await apiClient.get("/users/me", { params: { avatarVariant } });
   return res.data.data;
@@ -75,6 +80,10 @@ export async function updateMyProfile(
 export async function updateMySettings(dto: UpdateSettingsDto): Promise<UserProfile> {
   const res = await apiClient.patch("/users/me/settings", dto);
   return res.data.data;
+}
+
+export async function deleteMyAccount(): Promise<void> {
+  await apiClient.delete("/users/me");
 }
 
 // ─── Session Management ───────────────────────────────────────────────────────

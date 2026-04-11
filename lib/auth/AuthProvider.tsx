@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuthStore, type AuthUser } from "@/stores/authStore";
 import {
@@ -56,8 +56,7 @@ export function applyTokenSet(tokens: TokenSet, setAuth: (data: { token: string;
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const initialized = useRef(false);
-  const [showSessionRevokedModal, setShowSessionRevokedModal] = useState(false);
-  const { setAuth, setInitialized } = useAuthStore();
+  const { setAuth, setInitialized, setSessionRevoked } = useAuthStore();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -94,42 +93,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ── Disconnect session and show notice when server revokes the session ─────
   useEffect(() => {
     const socket = getChatSocket();
-    const onRevoked = () => {
-      clearClientAuthSession();
-      setShowSessionRevokedModal(true);
+    const onRevoked = (_data: { reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
+      setSessionRevoked(true);
     };
 
     socket.on("session_revoked", onRevoked);
     return () => {
       socket.off("session_revoked", onRevoked);
     };
-  }, []);
+  }, [setSessionRevoked]);
 
-  const handleSessionRevokedAcknowledge = () => {
-    setShowSessionRevokedModal(false);
-    router.push("/login");
-  };
-
-  return (
-    <>
-      {children}
-      {showSessionRevokedModal ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 text-slate-900 shadow-2xl">
-            <h2 className="text-lg font-semibold">Session ended</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              Your account was signed in from another device. This session has been revoked.
-            </p>
-            <button
-              type="button"
-              onClick={handleSessionRevokedAcknowledge}
-              className="mt-6 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800"
-            >
-              Go to login
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
+  return <>{children}</>;
 }

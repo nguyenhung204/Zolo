@@ -109,7 +109,7 @@ export async function loginWithPassword(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(getErrorMessage(err, "Sign-in failed."));
+    throw new Error(getErrorMessage(err, "Invalid email or password."));
   }
 
   const data = (await res.json()) as unknown;

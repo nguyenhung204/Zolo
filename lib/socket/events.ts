@@ -68,6 +68,7 @@ export interface ClientEvents {
 export interface ServerEvents {
   authenticated: (data: { userId: string; socketId: string }) => void;
 
+  "chat:message_received": (data: WsMessage) => void;
   "message:new": (data: WsMessage) => void;
   "message:notify": (data: {
     conversationId: string;
@@ -131,7 +132,7 @@ export interface ServerEvents {
 
 
   session_revoked: (data: {
-    reason: "logged_in_elsewhere" | "manual_logout" | "token_expired";
+    reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded";
   }) => void;
 
   "conversation:created": (data: {

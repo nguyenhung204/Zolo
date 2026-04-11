@@ -44,7 +44,10 @@ export function useSendFriendRequest() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: sendFriendRequest,
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.friends.all }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.friends.all });
+      qc.invalidateQueries({ queryKey: queryKeys.users.all });
+    },
   });
 }
 

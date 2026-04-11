@@ -9,8 +9,7 @@ import { getChatSocket } from "@/lib/socket/socket";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
 import type { WsMessage } from "@/lib/socket/events";
-import { appendMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
-import { getMessages } from "@/lib/api/messages";
+import { upsertMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
 import { getMediaSignedUrl } from "@/lib/api/media";
 import { getFriendsPresence } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
@@ -21,6 +20,7 @@ import { getConversation } from "@/lib/api/conversations";
  */
 export function useSocket() {
   const token = useAuthStore((s) => s.token);
+  const setSessionRevoked = useAuthStore((s) => s.setSessionRevoked);
   const { setConnected } = useSocketStore();
   const { setPresence, setUserProfile } = usePresenceStore();
   const { setTyping, clearTyping } = useTypingStore();
@@ -72,42 +72,35 @@ export function useSocket() {
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     });
 
-    // ─── Messages ──────────────────────────────────────────────────────────
-    socket.on("message:new", (msg: WsMessage) => {
-      // Backend may send a partial payload (no content/createdAt) — fetch the
-      // full message from REST so the bubble renders correctly.
-      if (!msg.content || !msg.createdAt) {
-        getMessages({ conversationId: msg.conversationId, after: msg.offset - 1, limit: 1 })
-          .then((page) => {
-            const full = page.data[0];
-            if (full) {
-              appendMessage(qc, msg.conversationId, full);
-              qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
-            }
-          })
-          .catch(() => {});
-        return;
+    socket.on("session_revoked", (_data: { reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
+      setConnected(false);
+      setSessionRevoked(true);
+      // Prevent auto reconnect loop from immediately flipping UI state.
+      socket.io.reconnection(false);
+      if (socket.connected || socket.active) {
+        socket.disconnect();
       }
-      // Full payload path — append directly without extra round-trip
-      appendMessage(qc, msg.conversationId, {
+      if (typeof window !== "undefined") {
+        const channel = new BroadcastChannel("zolo-session");
+        channel.postMessage({ type: "SESSION_REVOKED" });
+        channel.close();
+      }
+    });
+
+    // ─── Messages ──────────────────────────────────────────────────────────
+    const handleIncomingMessage = (msg: WsMessage) => {
+      upsertMessage(qc, msg.conversationId, {
         ...msg,
         type: (msg.type ?? "text").toLowerCase() as WsMessage["type"],
         updatedAt: msg.editedAt ?? msg.createdAt,
       });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
-    });
+    };
 
-    socket.on("message:notify", ({ conversationId, latestOffset }: { conversationId: string; latestOffset: number }) => {
-      // Fetch the new message and append it — smooth update without full cache invalidation.
-      // This handles the case where message:new wasn't received (user not in the room).
-      getMessages({ conversationId, after: latestOffset - 1, limit: 1 })
-        .then((page) => {
-          const msg = page.data[0];
-          if (msg) appendMessage(qc, conversationId, msg);
-        })
-        .catch(() => {});
-      // Re-order the sidebar + update unread badge
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+    socket.on("chat:message_received", handleIncomingMessage);
+    socket.on("message:new", handleIncomingMessage);
+
+    socket.on("message:notify", ({ conversationId }: { conversationId: string; latestOffset: number }) => {
+      // Keep unread/detail in sync without issuing pull-after-notify message fetches.
       qc.invalidateQueries({ queryKey: queryKeys.conversations.unread(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
     });
@@ -338,5 +331,5 @@ export function useSocket() {
       typingTimers.current.forEach((t) => clearTimeout(t));
       typingTimers.current.clear();
     };
-  }, [token]); // Re-bind after token change (reconnect)
+  }, [setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
 }
