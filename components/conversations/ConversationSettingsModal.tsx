@@ -24,7 +24,7 @@ import {
   useRemoveConversationMember,
   useSetMemberRole,
 } from "@/hooks/useConversations";
-import { useUserSearch } from "@/hooks/useFriends";
+import { useUserSearch, useBlockUser } from "@/hooks/useFriends";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
 import { useAuthStore } from "@/stores/authStore";
 import type { MemberRole } from "@/lib/api/conversations";
@@ -91,7 +91,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const addMembers = useAddConversationMembers();
   const removeMember = useRemoveConversationMember();
   const setRole = useSetMemberRole();
+  const { mutateAsync: blockUser } = useBlockUser();
   const avatarUpload = useAvatarUpload();
+  const [isBlockingDirect, setIsBlockingDirect] = useState(false);
 
   const { data: searchResults = [] } = useUserSearch(addQuery);
 
@@ -109,7 +111,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
       setEditDesc(conv.description ?? "");
       setIsDirty(false);
     }
-  }, [conv?.id, activeTab]);
+  }, [conv, activeTab]);
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -168,6 +170,18 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
         ? prev.filter((u) => u.id !== user.id)
         : [...prev, user]
     );
+  };
+
+  const handleBlockDirectUser = async () => {
+    const otherUserId = conv?.otherUser?.id;
+    if (!otherUserId) return;
+    setIsBlockingDirect(true);
+    try {
+      await blockUser(otherUserId);
+      onClose();
+    } finally {
+      setIsBlockingDirect(false);
+    }
   };
 
   if (!open || !conv) return null;
@@ -287,25 +301,35 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
                 {/* DIRECT — other user info */}
                 {isDirect && conv.otherUser && (
-                  <div className="flex items-center gap-3">
-                    {conv.otherUser.avatarUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={conv.otherUser.avatarUrl}
-                        alt=""
-                        className="w-12 h-12 rounded-full object-cover shrink-0"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
-                        {conv.otherUser.displayName[0]?.toUpperCase()}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      {conv.otherUser.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={conv.otherUser.avatarUrl}
+                          alt=""
+                          className="w-12 h-12 rounded-full object-cover shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
+                          {conv.otherUser.displayName[0]?.toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-sm font-semibold text-text">
+                          {conv.otherUser.displayName}
+                        </p>
+                        <p className="text-xs text-muted">@{conv.otherUser.username}</p>
                       </div>
-                    )}
-                    <div>
-                      <p className="text-sm font-semibold text-text">
-                        {conv.otherUser.displayName}
-                      </p>
-                      <p className="text-xs text-muted">@{conv.otherUser.username}</p>
                     </div>
+
+                    <button
+                      onClick={handleBlockDirectUser}
+                      disabled={isBlockingDirect}
+                      className="w-full py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isBlockingDirect ? "Blocking..." : "Block User"}
+                    </button>
                   </div>
                 )}
 

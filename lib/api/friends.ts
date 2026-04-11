@@ -11,15 +11,30 @@ export interface Friendship {
   id: string;
   userId: string;
   friendId: string;
-  status: FriendshipStatus;
-  createdAt: string;
+  status: "FRIEND";
+  createdAt?: string;
 }
 
-export interface FriendRequest {
-  id: string;
-  fromUserId: string;
-  toUserId: string;
-  createdAt: string;
+export interface PendingRequestsResponse {
+  incoming: string[];
+  outgoing: string[];
+}
+
+export interface FriendshipStatusResponse {
+  userId: string;
+  targetUserId: string;
+  status: FriendshipStatus;
+}
+
+export interface FriendsResponse {
+  friends: string[];
+  fromCache: boolean;
+}
+
+export interface FriendshipMutationResponse {
+  success: boolean;
+  message: string;
+  autoAccepted?: boolean;
 }
 
 export interface UserSearchResult {
@@ -35,38 +50,90 @@ export interface UserSearchResult {
 
 export async function getFriends(): Promise<Friendship[]> {
   const res = await apiClient.get("/friendships");
-  const d = res.data?.data;
-  return Array.isArray(d) ? d : [];
+  const data = res.data?.data as FriendsResponse | undefined;
+  const friendIds = Array.isArray(data?.friends) ? data.friends : [];
+  return friendIds.map((friendId) => ({
+    id: friendId,
+    userId: "",
+    friendId,
+    status: "FRIEND",
+  }));
 }
 
-export async function getFriendRequests(): Promise<FriendRequest[]> {
+export async function getFriendRequests(): Promise<PendingRequestsResponse> {
   const res = await apiClient.get("/friendships/requests");
-  const d = res.data?.data;
-  return Array.isArray(d) ? d : [];
+  const data = res.data?.data as PendingRequestsResponse | undefined;
+  return {
+    incoming: Array.isArray(data?.incoming) ? data.incoming : [],
+    outgoing: Array.isArray(data?.outgoing) ? data.outgoing : [],
+  };
 }
 
-export async function sendFriendRequest(toUserId: string): Promise<void> {
-  await apiClient.post(`/friendships/requests/${toUserId}`);
+export async function getFriendshipStatus(
+  targetUserId: string
+): Promise<FriendshipStatusResponse> {
+  const res = await apiClient.get(`/friendships/${targetUserId}/status`);
+  return res.data.data;
 }
 
-export async function acceptFriendRequest(fromUserId: string): Promise<void> {
-  await apiClient.post(`/friendships/requests/${fromUserId}/accept`);
+export async function sendFriendRequest(
+  toUserId: string
+): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.post(`/friendships/requests/${toUserId}`);
+  return res.data.data;
 }
 
-export async function rejectFriendRequest(fromUserId: string): Promise<void> {
-  await apiClient.delete(`/friendships/requests/${fromUserId}`);
+export async function acceptFriendRequest(
+  fromUserId: string
+): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.post(`/friendships/requests/${fromUserId}/accept`);
+  return res.data.data;
 }
 
-export async function unfriend(userId: string): Promise<void> {
-  await apiClient.delete(`/friendships/${userId}`);
+export async function rejectOrCancelFriendRequest(
+  userId: string
+): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.post(`/friendships/requests/${userId}/reject`);
+  return res.data.data;
 }
 
-export async function blockUser(userId: string): Promise<void> {
-  await apiClient.post(`/friendships/${userId}/block`);
+export async function unfriend(userId: string): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.delete(`/friendships/${userId}`);
+  return res.data.data;
+}
+
+export async function blockUser(userId: string): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.post(`/friendships/blocks/${userId}`);
+  return res.data.data;
+}
+
+export async function unblockUser(userId: string): Promise<FriendshipMutationResponse> {
+  const res = await apiClient.delete(`/friendships/blocks/${userId}`);
+  return res.data.data;
 }
 
 export async function searchUsers(query: string): Promise<UserSearchResult[]> {
   const res = await apiClient.get(`/users/search?q=${encodeURIComponent(query)}`);
   const d = res.data?.data;
   return Array.isArray(d) ? d : [];
+}
+
+export function mapFriendshipStatus(status: FriendshipStatus):
+  | "none"
+  | "pending_out"
+  | "pending_in"
+  | "friend"
+  | "blocked" {
+  switch (status) {
+    case "PENDING_OUT":
+      return "pending_out";
+    case "PENDING_IN":
+      return "pending_in";
+    case "FRIEND":
+      return "friend";
+    case "BLOCKED":
+      return "blocked";
+    default:
+      return "none";
+  }
 }

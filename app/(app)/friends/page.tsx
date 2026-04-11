@@ -15,38 +15,54 @@ import {
   Bell,
   Loader2,
   UsersRound,
+  Ban,
+  MoreHorizontal,
+  Eye,
 } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import {
   useFriends,
   useFriendRequests,
   useUserSearch,
+  useFriendshipStatus,
   useSendFriendRequest,
   useAcceptFriendRequest,
   useRejectFriendRequest,
   useUnfriend,
+  useBlockUser,
 } from "@/hooks/useFriends";
 import { useConversations } from "@/hooks/useConversations";
 import { useUserById } from "@/hooks/useUser";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
-import type { Friendship, FriendRequest } from "@/lib/api/friends";
+import type { Friendship, FriendshipStatus, UserSearchResult } from "@/lib/api/friends";
 
 type Tab = "friends" | "requests" | "search";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+type ActionKey =
+  | "send"
+  | "accept"
+  | "reject"
+  | "unfriend"
+  | "block";
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
+function formatSeenAgo(iso: string): string {
+  const time = Date.parse(iso);
+  if (Number.isNaN(time)) return "just now";
+
+  const diffSeconds = Math.max(1, Math.floor((Date.now() - time) / 1000));
+  if (diffSeconds < 60) return `${diffSeconds} second${diffSeconds === 1 ? "" : "s"} ago`;
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -54,7 +70,9 @@ function timeAgo(iso: string): string {
 export default function FriendsPage() {
   const [tab, setTab] = useState<Tab>("friends");
   const [searchQuery, setSearchQuery] = useState("");
-  const { data: requests = [] } = useFriendRequests();
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
+  const { data: requests } = useFriendRequests();
+  const incomingCount = requests?.incoming.length ?? 0;
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode; badge?: number }[] = [
     { id: "friends", label: "Friends", icon: <Users className="w-4 h-4" /> },
@@ -62,7 +80,7 @@ export default function FriendsPage() {
       id: "requests",
       label: "Requests",
       icon: <Bell className="w-4 h-4" />,
-      badge: requests.length || undefined,
+      badge: incomingCount || undefined,
     },
     { id: "search", label: "Add People", icon: <UserPlus className="w-4 h-4" /> },
   ];
@@ -98,19 +116,28 @@ export default function FriendsPage() {
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {tab === "friends" && <FriendList />}
+        {tab === "friends" && <FriendList onViewProfile={setProfileUserId} />}
         {tab === "requests" && <RequestList />}
         {tab === "search" && (
-          <SearchPeople query={searchQuery} onQueryChange={setSearchQuery} />
+          <SearchPeople
+            query={searchQuery}
+            onQueryChange={setSearchQuery}
+            onViewProfile={setProfileUserId}
+          />
         )}
       </div>
+      <UserProfileModal
+        userId={profileUserId}
+        open={!!profileUserId}
+        onClose={() => setProfileUserId(null)}
+      />
     </div>
   );
 }
 
 // ─── Friend List ──────────────────────────────────────────────────────────────
 
-function FriendList() {
+function FriendList({ onViewProfile }: { onViewProfile: (userId: string) => void }) {
   const { data: friends = [], isLoading } = useFriends();
 
   if (isLoading) return <ListSkeleton count={5} />;
@@ -132,19 +159,32 @@ function FriendList() {
       </p>
       <ul className="space-y-1">
         {friends.map((f) => (
-          <FriendRow key={f.id} friendship={f} />
+          <FriendRow
+            key={f.id}
+            friendship={f}
+            onViewProfile={() => onViewProfile(f.friendId)}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function FriendRow({ friendship }: { friendship: Friendship }) {
+function FriendRow({
+  friendship,
+  onViewProfile,
+}: {
+  friendship: Friendship;
+  onViewProfile: () => void;
+}) {
   const router = useRouter();
   const { data: user, isLoading } = useUserById(friendship.friendId);
-  const { mutate: unfriend, isPending } = useUnfriend();
+  const { mutateAsync: unfriend } = useUnfriend();
+  const { mutateAsync: blockUser } = useBlockUser();
   const { data: conversations = [] } = useConversations();
+  const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
   const status = usePresenceStore((s) => s.presenceMap[friendship.friendId] ?? "offline");
+  const lastSeen = usePresenceStore((s) => s.lastSeenMap[friendship.friendId]);
   const profile = usePresenceStore((s) => s.profileMap[friendship.friendId]);
 
   const displayName = profile?.displayName
@@ -164,6 +204,17 @@ function FriendRow({ friendship }: { friendship: Friendship }) {
     }
   }
 
+  async function run(action: ActionKey, fn: () => Promise<unknown>) {
+    setPendingAction(action);
+    try {
+      await fn();
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  const actionDisabled = pendingAction !== null;
+
   return (
     <li className="group flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/30 transition-colors duration-150">
       <UserAvatar
@@ -180,7 +231,11 @@ function FriendRow({ friendship }: { friendship: Friendship }) {
           <p className="text-sm font-semibold text-text truncate">{displayName ?? friendship.friendId}</p>
         )}
         <p className={cn("text-xs font-medium", status === "online" ? "text-online" : "text-muted")}>
-          {status === "online" ? "Online" : "Offline"}
+          {status === "online"
+            ? "Online"
+            : lastSeen
+              ? `Offline · seen ${formatSeenAgo(lastSeen)}`
+              : "Offline"}
         </p>
       </div>
       <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
@@ -194,19 +249,60 @@ function FriendRow({ friendship }: { friendship: Friendship }) {
             Message
           </button>
         )}
-        <button
-          onClick={() => unfriend(friendship.friendId)}
-          disabled={isPending}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-error hover:bg-error/10 transition-colors cursor-pointer disabled:opacity-50"
-          title="Unfriend"
-        >
-          {isPending ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <UserMinus className="w-3.5 h-3.5" />
-          )}
-          Unfriend
-        </button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-secondary hover:bg-border/70 transition-colors cursor-pointer"
+              aria-label="More actions"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              sideOffset={6}
+              align="end"
+              className="z-50 min-w-40 rounded-xl border border-border bg-surface p-1.5 shadow-lg"
+            >
+              <DropdownMenu.Item
+                onSelect={onViewProfile}
+                className="flex items-center gap-2 px-2.5 py-2 text-xs text-secondary rounded-lg outline-none hover:bg-border/60 cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                View profile
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="h-px my-1 bg-border" />
+              <DropdownMenu.Item
+                disabled={actionDisabled}
+                onSelect={() => {
+                  void run("unfriend", () => unfriend(friendship.friendId));
+                }}
+                className="flex items-center gap-2 px-2.5 py-2 text-xs text-error rounded-lg outline-none hover:bg-error/10 cursor-pointer disabled:opacity-60"
+              >
+                {pendingAction === "unfriend" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserMinus className="w-3.5 h-3.5" />
+                )}
+                Unfriend
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                disabled={actionDisabled}
+                onSelect={() => {
+                  void run("block", () => blockUser(friendship.friendId));
+                }}
+                className="flex items-center gap-2 px-2.5 py-2 text-xs text-error rounded-lg outline-none hover:bg-error/10 cursor-pointer disabled:opacity-60"
+              >
+                {pendingAction === "block" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Ban className="w-3.5 h-3.5" />
+                )}
+                Block user
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       </div>
     </li>
   );
@@ -215,48 +311,81 @@ function FriendRow({ friendship }: { friendship: Friendship }) {
 // ─── Incoming Requests ────────────────────────────────────────────────────────
 
 function RequestList() {
-  const { data: requests = [], isLoading } = useFriendRequests();
+  const { data: requests, isLoading } = useFriendRequests();
+  const incoming = requests?.incoming ?? [];
+  const outgoing = requests?.outgoing ?? [];
 
   if (isLoading) return <ListSkeleton count={3} />;
 
-  if (requests.length === 0) {
+  if (incoming.length === 0 && outgoing.length === 0) {
     return (
       <EmptyState
         icon={<Bell className="w-10 h-10 text-muted/40" />}
         title="No pending requests"
-        description="Friend requests you receive will appear here."
+        description="Incoming and sent requests will appear here."
       />
     );
   }
 
   return (
     <div className="p-4">
-      <p className="text-xs font-semibold text-muted uppercase tracking-wider px-2 mb-3">
-        {requests.length} pending {requests.length === 1 ? "request" : "requests"}
-      </p>
-      <ul className="space-y-2">
-        {requests.map((r) => (
-          <RequestRow key={r.id} request={r} />
-        ))}
-      </ul>
+      <div className="mb-4">
+        <p className="text-xs font-semibold text-muted uppercase tracking-wider px-2 mb-2">
+          Incoming ({incoming.length})
+        </p>
+        {incoming.length > 0 ? (
+          <ul className="space-y-2">
+            {incoming.map((userId) => (
+              <RequestRow key={`in-${userId}`} userId={userId} direction="incoming" />
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted px-2">No incoming requests.</p>
+        )}
+      </div>
+
+      <div>
+        <p className="text-xs font-semibold text-muted uppercase tracking-wider px-2 mb-2">
+          Sent ({outgoing.length})
+        </p>
+        {outgoing.length > 0 ? (
+          <ul className="space-y-2">
+            {outgoing.map((userId) => (
+              <RequestRow key={`out-${userId}`} userId={userId} direction="outgoing" />
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted px-2">No sent requests.</p>
+        )}
+      </div>
     </div>
   );
 }
 
-function RequestRow({ request }: { request: FriendRequest }) {
-  const { data: user, isLoading } = useUserById(request.fromUserId);
-  const { mutate: accept, isPending: accepting } = useAcceptFriendRequest();
-  const { mutate: reject, isPending: rejecting } = useRejectFriendRequest();
+function RequestRow({ userId, direction }: { userId: string; direction: "incoming" | "outgoing" }) {
+  const { data: user, isLoading } = useUserById(userId);
+  const { mutateAsync: accept } = useAcceptFriendRequest();
+  const { mutateAsync: rejectOrCancel } = useRejectFriendRequest();
+  const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
 
   const displayName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username
     : null;
 
+  async function run(action: ActionKey, fn: () => Promise<unknown>) {
+    setPendingAction(action);
+    try {
+      await fn();
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   return (
     <li className="flex items-center gap-3 px-3 py-3 rounded-xl border border-border/60 bg-surface hover:border-border transition-colors duration-150">
       <UserAvatar
-        userId={request.fromUserId}
-        name={displayName ?? request.fromUserId}
+        userId={userId}
+        name={displayName ?? userId}
         avatarUrl={user?.avatarUrl}
         size="md"
         showPresence={false}
@@ -269,7 +398,7 @@ function RequestRow({ request }: { request: FriendRequest }) {
           </>
         ) : (
           <>
-            <p className="text-sm font-semibold text-text truncate">{displayName ?? request.fromUserId}</p>
+            <p className="text-sm font-semibold text-text truncate">{displayName ?? userId}</p>
             {user?.username && (
               <p className="text-xs text-muted truncate">@{user.username}</p>
             )}
@@ -279,24 +408,26 @@ function RequestRow({ request }: { request: FriendRequest }) {
       <div className="flex flex-col items-end gap-2">
         <p className="text-[11px] text-muted flex items-center gap-1">
           <Clock className="w-3 h-3" />
-          {timeAgo(request.createdAt)}
+          Pending
         </p>
         <div className="flex items-center gap-2">
+          {direction === "incoming" && (
+            <button
+              onClick={() => run("accept", () => accept(userId))}
+              disabled={pendingAction !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold hover:bg-success/20 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {pendingAction === "accept" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              Accept
+            </button>
+          )}
           <button
-            onClick={() => accept(request.fromUserId)}
-            disabled={accepting || rejecting}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold hover:bg-success/20 transition-colors cursor-pointer disabled:opacity-50"
-          >
-            {accepting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-            Accept
-          </button>
-          <button
-            onClick={() => reject(request.fromUserId)}
-            disabled={accepting || rejecting}
+            onClick={() => run("reject", () => rejectOrCancel(userId))}
+            disabled={pendingAction !== null}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-50"
           >
-            {rejecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
-            Decline
+            {pendingAction === "reject" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            {direction === "incoming" ? "Decline" : "Cancel"}
           </button>
         </div>
       </div>
@@ -309,14 +440,14 @@ function RequestRow({ request }: { request: FriendRequest }) {
 function SearchPeople({
   query,
   onQueryChange,
+  onViewProfile,
 }: {
   query: string;
   onQueryChange: (q: string) => void;
+  onViewProfile: (userId: string) => void;
 }) {
   const { data: results = [], isLoading, isFetching } = useUserSearch(query);
-  const { mutate: sendRequest, isPending: sending, variables: sendingTo } = useSendFriendRequest();
   const myId = useAuthStore((s) => s.user?.id);
-  const [localPendingOut, setLocalPendingOut] = useState<string[]>([]);
 
   const showResults = query.trim().length >= 2;
 
@@ -353,102 +484,13 @@ function SearchPeople({
       {!isLoading && showResults && results.length > 0 && (
         <ul className="space-y-1.5">
           {results.map((u) => {
-            const name = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username;
-            const isSendingThisOne = sending && sendingTo === u.id;
-            const isMe = u.id === myId;
-            const isLocallyPendingOut = localPendingOut.includes(u.id);
-            const friendship = isLocallyPendingOut ? "PENDING_OUT" : (u.friendship ?? "NONE");
-
-            const handleSendRequest = () => {
-              if (isLocallyPendingOut) return;
-              setLocalPendingOut((prev) => (prev.includes(u.id) ? prev : [...prev, u.id]));
-              sendRequest(u.id, {
-                onError: () => {
-                  setLocalPendingOut((prev) => prev.filter((id) => id !== u.id));
-                },
-              });
-            };
-
             return (
-              <li
+              <SearchResultRow
                 key={u.id}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/30 transition-colors duration-150"
-              >
-                <UserAvatar
-                  userId={u.id}
-                  name={name}
-                  avatarUrl={u.avatarUrl}
-                  size="md"
-                  showPresence={false}
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-text truncate">{name}</p>
-                  <p className="text-xs text-muted truncate">@{u.username}</p>
-                </div>
-
-                {/* Status badge / action */}
-                {isMe && (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border/60 text-muted text-xs font-medium shrink-0">
-                    You
-                  </span>
-                )}
-                {!isMe && friendship === "NONE" && (
-                  <button
-                    onClick={handleSendRequest}
-                    disabled={isSendingThisOne || isLocallyPendingOut}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta text-white text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-60 shrink-0"
-                  >
-                    {isSendingThisOne ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <UserPlus className="w-3.5 h-3.5" />
-                    )}
-                    Add Friend
-                  </button>
-                )}
-                {!isMe && friendship === "PENDING_OUT" && (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border/60 text-muted text-xs font-medium shrink-0">
-                    <Clock className="w-3.5 h-3.5" />
-                    Pending
-                  </span>
-                )}
-                {!isMe && friendship === "PENDING_IN" && (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta/10 text-cta text-xs font-medium shrink-0">
-                    <Bell className="w-3.5 h-3.5" />
-                    Respond
-                  </span>
-                )}
-                {!isMe && friendship === "FRIEND" && (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold shrink-0">
-                    <UserCheck className="w-3.5 h-3.5" />
-                    Friends
-                  </span>
-                )}
-                {!isMe && friendship === "BLOCKED" && (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-medium shrink-0">
-                    Blocked
-                  </span>
-                )}
-                {!isMe &&
-                  friendship !== "NONE" &&
-                  friendship !== "PENDING_OUT" &&
-                  friendship !== "PENDING_IN" &&
-                  friendship !== "FRIEND" &&
-                  friendship !== "BLOCKED" && (
-                    <button
-                      onClick={handleSendRequest}
-                      disabled={isSendingThisOne || isLocallyPendingOut}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta text-white text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-60 shrink-0"
-                    >
-                      {isSendingThisOne ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <UserPlus className="w-3.5 h-3.5" />
-                      )}
-                      Add Friend
-                    </button>
-                  )}
-              </li>
+                user={u}
+                myId={myId}
+                onViewProfile={onViewProfile}
+              />
             );
           })}
         </ul>
@@ -463,6 +505,233 @@ function SearchPeople({
         />
       )}
     </div>
+  );
+}
+
+function SearchResultRow({
+  user,
+  myId,
+  onViewProfile,
+}: {
+  user: UserSearchResult;
+  myId?: string;
+  onViewProfile: (userId: string) => void;
+}) {
+  const isMe = user.id === myId;
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username;
+
+  const { data: statusData, isFetching: statusLoading } = useFriendshipStatus(
+    isMe ? undefined : user.id,
+    user.friendship
+  );
+  const status: FriendshipStatus = statusData?.status ?? user.friendship ?? "NONE";
+
+  const { mutateAsync: send } = useSendFriendRequest();
+  const { mutateAsync: accept } = useAcceptFriendRequest();
+  const { mutateAsync: rejectOrCancel } = useRejectFriendRequest();
+  const { mutateAsync: unfriend } = useUnfriend();
+  const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
+
+  async function run(action: ActionKey, fn: () => Promise<unknown>) {
+    setPendingAction(action);
+    try {
+      await fn();
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  const actionDisabled = pendingAction !== null || statusLoading;
+
+  return (
+    <li className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/30 transition-colors duration-150">
+      <UserAvatar
+        userId={user.id}
+        name={name}
+        avatarUrl={user.avatarUrl}
+        size="md"
+        showPresence={false}
+      />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-text truncate">{name}</p>
+        <p className="text-xs text-muted truncate">@{user.username}</p>
+      </div>
+
+      {!isMe && (
+        <button
+          onClick={() => onViewProfile(user.id)}
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-secondary hover:bg-border/70 transition-colors cursor-pointer shrink-0"
+          aria-label="View profile"
+          title="View profile"
+        >
+          <Eye className="w-4 h-4" />
+        </button>
+      )}
+
+      {isMe && (
+        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border/60 text-muted text-xs font-medium shrink-0">
+          You
+        </span>
+      )}
+
+      {!isMe && status === "NONE" && (
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => run("send", () => send(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta text-white text-xs font-semibold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "send" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+            Add Friend
+          </button>
+        </div>
+      )}
+
+      {!isMe && status === "PENDING_OUT" && (
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => run("reject", () => rejectOrCancel(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "reject" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {!isMe && status === "PENDING_IN" && (
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => run("accept", () => accept(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold hover:bg-success/20 transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "accept" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+            Accept
+          </button>
+          <button
+            onClick={() => run("reject", () => rejectOrCancel(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "reject" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            Decline
+          </button>
+        </div>
+      )}
+
+      {!isMe && status === "FRIEND" && (
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold">
+            <UserCheck className="w-3.5 h-3.5" />
+            Friends
+          </span>
+          <button
+            onClick={() => run("unfriend", () => unfriend(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-error hover:bg-error/10 transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "unfriend" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserMinus className="w-3.5 h-3.5" />}
+            Unfriend
+          </button>
+        </div>
+      )}
+
+      {!isMe && status === "BLOCKED" && (
+        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-medium shrink-0">
+          Blocked
+        </span>
+      )}
+    </li>
+  );
+}
+
+function UserProfileModal({
+  userId,
+  open,
+  onClose,
+}: {
+  userId: string | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { data: user, isLoading } = useUserById(userId ?? undefined);
+  const status = usePresenceStore((s) => (userId ? (s.presenceMap[userId] ?? "offline") : "offline"));
+  const lastSeen = usePresenceStore((s) => (userId ? s.lastSeenMap[userId] : undefined));
+
+  if (!open) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-surface rounded-2xl shadow-xl border border-border">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <h2 className="text-sm font-bold text-primary">User Profile</h2>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-border/60 transition-colors cursor-pointer"
+              aria-label="Close profile"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="px-5 py-5">
+            {isLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading profile...
+              </div>
+            )}
+
+            {!isLoading && user && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <UserAvatar
+                    userId={user.id}
+                    name={[user.firstName, user.lastName].filter(Boolean).join(" ") || user.username}
+                    avatarUrl={user.avatarUrl}
+                    size="lg"
+                    showPresence
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-text truncate">
+                      {[user.firstName, user.lastName].filter(Boolean).join(" ") || user.username}
+                    </p>
+                    <p className="text-xs text-muted truncate">@{user.username}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted">Email</span>
+                    <span className="text-secondary truncate">{user.email}</span>
+                  </div>
+                  {user.phone && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted">Phone</span>
+                      <span className="text-secondary">{user.phone}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted">Status</span>
+                    <span className={cn("font-medium", status === "online" ? "text-online" : "text-muted")}>
+                      {status === "online"
+                        ? "Online"
+                        : lastSeen
+                          ? `Offline · seen ${formatSeenAgo(lastSeen)}`
+                          : "Offline"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 

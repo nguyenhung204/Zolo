@@ -11,7 +11,7 @@ import { queryKeys } from "@/lib/query/keys";
 import type { WsMessage } from "@/lib/socket/events";
 import { upsertMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
 import { getMediaSignedUrl } from "@/lib/api/media";
-import { getFriendsPresence } from "@/lib/api/presence";
+import { getFriendsPresence, getMyPresenceStatus } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
 
 /**
@@ -20,6 +20,7 @@ import { getConversation } from "@/lib/api/conversations";
  */
 export function useSocket() {
   const token = useAuthStore((s) => s.token);
+  const myId = useAuthStore((s) => s.user?.id);
   const setSessionRevoked = useAuthStore((s) => s.setSessionRevoked);
   const { setConnected } = useSocketStore();
   const { setPresence, setUserProfile } = usePresenceStore();
@@ -45,15 +46,23 @@ export function useSocket() {
         socket.emit("heartbeat");
       }, 30_000);
       // Seed initial presence state — do this after every (re)connect
-      getFriendsPresence()
-        .then((entries) => {
-          usePresenceStore.getState().bulkSetPresence(
-            entries.map(({ userId, status, lastSeen }) => ({
-              userId,
-              status,
-              lastSeen: lastSeen ?? undefined,
-            }))
-          );
+      Promise.allSettled([getFriendsPresence(), getMyPresenceStatus()])
+        .then(([friendsRes, meRes]) => {
+          if (friendsRes.status === "fulfilled") {
+            usePresenceStore.getState().bulkSetPresence(
+              friendsRes.value.map(({ userId, status, lastSeen }) => ({
+                userId,
+                status,
+                lastSeen: lastSeen ?? undefined,
+              }))
+            );
+          }
+
+          if (myId && meRes.status === "fulfilled" && meRes.value) {
+            usePresenceStore
+              .getState()
+              .setPresence(myId, meRes.value.status, meRes.value.lastSeen ?? undefined);
+          }
         })
         .catch(() => {});
     });
@@ -331,5 +340,5 @@ export function useSocket() {
       typingTimers.current.forEach((t) => clearTimeout(t));
       typingTimers.current.clear();
     };
-  }, [setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
+  }, [myId, setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
 }
