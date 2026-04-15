@@ -156,6 +156,83 @@ sequenceDiagram
 
 ---
 
+## Sticker Message Flow
+
+### Description
+
+End-to-end flow for sending a sticker. The key performance insight: a sticker message is **as fast as a text message** — the backend never touches any image file during the chat exchange. The sticker image URL was pre-loaded from `GET /stickers/packages` and the browser/app fetches it directly from storage.
+
+### Phase 0: Pre-fetch (App Startup)
+
+When the user opens the sticker keyboard, the client calls `GET /stickers/packages` (HTTP). The Gateway proxies to Message Store via TCP (`sticker.get_packages`), returning each package with a `thumbnailUrl` for its icon. The client then calls `GET /stickers/packages/:id/stickers` per package and caches all sticker URLs in memory.
+
+### Flow Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant ClientA as Client A (Sender)
+    participant GW as Gateway (HTTP)
+    participant ChatCore as Chat Core (TCP)
+    participant Kafka
+    participant MsgStore as Message Store
+    participant RealtimeGW as Realtime Gateway
+    participant ClientB as Client B (Receiver)
+    participant Storage as Public Storage (CDN)
+
+    Note over ClientA: User opens sticker keyboard
+    ClientA->>GW: GET /stickers/packages
+    GW->>MsgStore: TCP: sticker.get_packages
+    MsgStore-->>GW: [{id, name, thumbnailUrl, isFree}, ...]
+    GW-->>ClientA: 200 OK — packages list
+
+    ClientA->>GW: GET /stickers/packages/pck_sprite/stickers
+    GW->>MsgStore: TCP: sticker.get_package_stickers
+    MsgStore-->>GW: [{id, url}, ...] (50 per page)
+    GW-->>ClientA: 200 OK — sticker list cached in RAM
+
+    Note over ClientA: User taps sprite_45212
+
+    ClientA->>GW: POST /chat/messages<br/>{clientMessageId, conversationId,<br/>type: "sticker", content: "",<br/>metadata: {url: "https://…/sprite_45212.webp"}}
+
+    GW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId,<br/>type: "sticker", content: "",<br/>metadata: {url: "…"}}
+
+    Note over ChatCore: Rate limit check (shared bucket with text)
+    Note over ChatCore: ACL chain — uses text chain (no mediaId)
+    Note over ChatCore: Content validation bypassed for type=sticker
+
+    ChatCore->>Kafka: Publish: MESSAGE_ACCEPTED<br/>{messageId, type: "sticker",<br/>content: "", metadata: {url: "…"}}
+    ChatCore-->>GW: {success: true, messageId}
+    GW-->>ClientA: 200 OK — message accepted
+
+    Note over ClientA: Shows sticker immediately (optimistic UI)
+
+    Kafka->>MsgStore: Consume: MESSAGE_ACCEPTED
+    MsgStore->>MsgStore: Persist — type=STICKER,<br/>content="", metadata={url:"…"}
+    MsgStore->>Kafka: Publish: MESSAGE_SAVED
+
+    Kafka->>RealtimeGW: Consume: MESSAGE_SAVED
+    RealtimeGW->>ClientB: WS: message:new<br/>{type: "sticker", metadata: {url: "…"}}
+
+    Note over ClientB: Renders <img src="…"/>
+    ClientB->>Storage: GET /zolo-stickers/sprite_45212.webp
+    Storage-->>ClientB: 200 WebP image
+    Note over ClientB: Sticker visible
+```
+
+### Key Design Decisions
+
+**Why no server-side URL validation when sending?**
+Sticker URLs are static public assets on a CDN — no ownership or access-control concern. Validating the URL against the DB on every send would add a DB round-trip for zero security benefit. The client only has valid URLs because they came from `GET /stickers/packages/:id/stickers` in the first place.
+
+**Why use the text ACL chain for stickers?**
+Stickers have no `mediaId`; they reference pre-uploaded static files that the server never processes. The text chain checks membership, account status, and conversation permissions — exactly what is needed. The `MediaValidationRule` fires only when `context.media` is present, so it naturally skips for stickers.
+
+**Why is `content` empty for stickers?**
+`content` is the searchable/indexable text body of a message. Stickers carry no textual content; the sticker identity and display URL live in `metadata.url`. This keeps the message model consistent and avoids storing redundant data.
+
+---
+
 ## Typing Indicator Flow
 
 ### Description

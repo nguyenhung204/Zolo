@@ -1,12 +1,14 @@
 "use client";
 
 import { ReplyPreview } from "./ReplyPreview";
+import { StickerPicker } from "./StickerPicker";
 import { useTyping } from "@/hooks/useTyping";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { useConversationStore } from "@/stores/conversationStore";
 import { useRef, useState, type KeyboardEvent } from "react";
-import { Send, Paperclip, X } from "lucide-react";
+import { Send, Paperclip, X, Smile } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { Sticker } from "@/lib/api/stickers";
 
 interface MessageComposerProps {
   conversationId: string;
@@ -20,6 +22,7 @@ export function MessageComposer({
   placeholder = "Type a message…",
 }: MessageComposerProps) {
   const [text, setText] = useState("");
+  const [showStickers, setShowStickers] = useState(false);
   const { send } = useSendMessage();
   const { onKeystroke, stopTyping } = useTyping(conversationId);
   const replyTo = useConversationStore((s) => s.replyToMessage);
@@ -55,6 +58,16 @@ export function MessageComposer({
     }
   };
 
+  const handleSendSticker = (sticker: Sticker) => {
+    send({
+      conversationId,
+      content: "",
+      type: "sticker",
+      metadata: { url: sticker.url },
+    });
+    setShowStickers(false);
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -63,7 +76,7 @@ export function MessageComposer({
   };
 
   return (
-    <div className="shrink-0 border-t border-border bg-surface px-4 py-3">
+    <div className="relative shrink-0 border-t border-border bg-surface px-4 py-3">
       {/* Reply preview strip */}
       {replyTo && (
         <ReplyPreview
@@ -72,6 +85,13 @@ export function MessageComposer({
           type={replyTo.type}
           onClose={() => setReplyTo(null)}
         />
+      )}
+
+      {/* Sticker picker popover */}
+      {showStickers && (
+        <div className="absolute bottom-[72px] left-4 z-50">
+          <StickerPicker onSelect={handleSendSticker} />
+        </div>
       )}
 
       <div className={cn(
@@ -86,6 +106,22 @@ export function MessageComposer({
           title="Attach file"
         >
           <Paperclip className="w-4 h-4" />
+        </button>
+
+        {/* Sticker */}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setShowStickers((v) => !v)}
+          className={cn(
+            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5",
+            showStickers
+              ? "text-primary bg-primary/10"
+              : "text-muted hover:text-secondary hover:bg-border/50"
+          )}
+          title="Stickers"
+        >
+          <Smile className="w-4 h-4" />
         </button>
 
         {/* Textarea */}

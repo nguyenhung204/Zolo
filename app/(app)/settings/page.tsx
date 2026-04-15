@@ -73,12 +73,6 @@ export default function SettingsPage() {
           <>
             <ChangePasswordSection />
 
-            <section className="bg-surface rounded-2xl border border-border p-6 space-y-2">
-              <h2 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4">Account</h2>
-              <SettingRow label="User ID" value={user?.id ?? "—"} />
-              <SettingRow label="Organisation" value={user?.orgId ?? "—"} />
-            </section>
-
             <section className="bg-surface rounded-2xl border border-error/30 p-6">
               <h2 className="text-sm font-semibold text-error uppercase tracking-wide mb-4">Danger zone</h2>
               {logoutError && (

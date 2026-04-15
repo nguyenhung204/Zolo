@@ -46,4 +46,11 @@ export const queryKeys = {
     active: (conversationId: string) =>
       [...queryKeys.calls.all, "active", conversationId] as const,
   },
+
+  // Stickers
+  stickers: {
+    all: ["stickers"] as const,
+    packages: () => [...queryKeys.stickers.all, "packages"] as const,
+    list: (packageId: string) => [...queryKeys.stickers.all, "list", packageId] as const,
+  },
 } as const;

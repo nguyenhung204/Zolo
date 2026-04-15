@@ -94,6 +94,20 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 - Payload: messageId (UUID)
 - Response: Message entity or NOT_FOUND exception
 
+**Pattern: `MESSAGE_STORE_PATTERNS.GET_STICKER_PACKAGES`**
+
+- Purpose: List all active sticker packages with thumbnail icons for the sticker keyboard
+- Payload: none
+- Response: Array of `{ id, name, thumbnailUrl, isFree }` — result is Redis-cached for 1 hour
+- Use Case: Frontend pre-fetches on sticker keyboard open; rarely changes
+
+**Pattern: `MESSAGE_STORE_PATTERNS.GET_PACKAGE_STICKERS`**
+
+- Purpose: Retrieve stickers belonging to a package, paginated
+- Payload: `{ packageId: string; limit?: number; offset?: number }` (default limit 50)
+- Response: Array of `{ id, url }` representing each sticker in the package
+- Use Case: Frontend fetches per-package list and caches in RAM for instant rendering
+
 ### Timeout and Retry Behavior
 
 - TCP requests timeout after default NestJS ClientProxy timeout (typically 10 seconds)
@@ -193,7 +207,7 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 - **conversationId** (UUID, Indexed) - Target conversation reference
 - **senderId** (UUID, Indexed) - Message sender user ID
 - **content** (TEXT) - Full message content
-- **messageType** (ENUM: TEXT, IMAGE, FILE, AUDIO, VIDEO, SYSTEM) - Message content type
+- **messageType** (ENUM: TEXT, IMAGE, FILE, AUDIO, VIDEO, STICKER, SYSTEM) - Message content type
 - **conversationType** (ENUM: DIRECT, GROUP, COMMUNITY) - Conversation type at message creation
 - **offset** (BIGINT) - Sequential offset within conversation (1-indexed)
 - **metadata** (JSONB, Nullable) - Additional metadata (replies, mentions, attachments URLs, reactions)
@@ -228,6 +242,27 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 ### Cache Usage
 
 None currently implemented. All queries go directly to PostgreSQL. Future optimization may introduce Redis caching for recent messages per conversation.
+
+### Sticker Catalog Tables
+
+**Table: `sticker_packages`**
+
+- **id** (VARCHAR, Primary Key) - Short identifier, e.g. `pck_sprite`
+- **name** (VARCHAR) - Display name shown in sticker keyboard
+- **thumbnailUrl** (VARCHAR, NOT NULL) - URL of the representative icon image (auto-set during seed from first file in the package folder)
+- **isFree** (BOOLEAN, default true) - Whether the package is available to all users
+- **createdAt** (TIMESTAMP)
+
+**Table: `stickers`**
+
+- **id** (VARCHAR, Primary Key) - File stem of the WebP asset, e.g. `sprite_45212`
+- **packageId** (VARCHAR, FK → `sticker_packages.id`) - Owning package
+- **url** (VARCHAR, NOT NULL) - Full public URL: `https://storage.bcn.id.vn/zolo-stickers/{id}.webp`
+- **createdAt** (TIMESTAMP)
+
+**Seeding**: Run `node scripts/seed-sticker.js` after applying the migration. Script scans `./sticker/` for `sprite_*.webp`, `sticker_*.webp`, and `webpc_*.webp` files; inserts the three packages (using the first file of each prefix as `thumbnailUrl`) and all individual stickers in batches of 500.
+
+---
 
 ### Data Retention
 

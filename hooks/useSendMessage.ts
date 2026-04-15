@@ -20,6 +20,7 @@ interface SendOptions {
     mentions?: string[];
     tags?: string[];
     attachmentUrls?: string[];
+    url?: string;
   };
 }
 
@@ -131,6 +132,7 @@ export function useSendMessage() {
         offset: -1,
         replyToMessageId,
         mediaId,
+        metadata,
         clientMessageId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

@@ -28,6 +28,12 @@
   --shadow-xl: 0 20px 25px rgba(0,0,0,0.15);
 }
 
+/* ─── Sticker sprite-sheet animation ──────────────────────────────────────── */
+@keyframes play-sticker {
+  from { background-position: 0% 0%; }
+  to   { background-position: 100% 0%; }
+}
+
 /* ─── Base resets ──────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;

@@ -5,6 +5,8 @@ import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatTime } from "@/lib/utils/date";
 import type { Message } from "@/lib/api/messages";
 import { Check, CheckCheck, Clock, AlertCircle, FileText, Mic, Reply } from "lucide-react";
+import Image from "next/image";
+import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
 
 interface MessageRowProps {
   message: Message;
@@ -86,23 +88,27 @@ export function MessageRow({
           {/* Bubble */}
           <div
             className={cn(
-              "px-3.5 py-2 text-sm leading-relaxed wrap-break-word",
-              isMine
-                ? "bg-cta text-white"
-                : "bg-surface border border-border text-text shadow-sm",
-              isDeleted && "opacity-50 italic",
-              // Rounded corners: full except the corner touching the avatar run
-              isMine
-                ? cn(
-                    "rounded-2xl",
-                    isGroupStart && "rounded-tr-md",
-                    isGroupEnd && "rounded-br-md"
-                  )
+              message.type === "sticker"
+                ? "p-1"
                 : cn(
-                    "rounded-2xl",
-                    isGroupStart && "rounded-tl-md",
-                    isGroupEnd && "rounded-bl-md"
-                  )
+                    "px-3.5 py-2 text-sm leading-relaxed wrap-break-word",
+                    isMine
+                      ? "bg-cta text-white"
+                      : "bg-surface border border-border text-text shadow-sm",
+                    // Rounded corners: full except the corner touching the avatar run
+                    isMine
+                      ? cn(
+                          "rounded-2xl",
+                          isGroupStart && "rounded-tr-md",
+                          isGroupEnd && "rounded-br-md"
+                        )
+                      : cn(
+                          "rounded-2xl",
+                          isGroupStart && "rounded-tl-md",
+                          isGroupEnd && "rounded-bl-md"
+                        )
+                  ),
+              isDeleted && "opacity-50 italic",
             )}
           >
             {isDeleted ? (
@@ -137,6 +143,11 @@ export function MessageRow({
 
 function MessageContent({ message, isMine }: { message: Message; isMine: boolean }) {
   switch (message.type) {
+    case "sticker":
+      return message.metadata?.url ? (
+        <AnimatedSticker url={message.metadata.url} size={130} alt="sticker" />
+      ) : null;
+
     case "text":
       return <p className="whitespace-pre-wrap">{message.content}</p>;
 

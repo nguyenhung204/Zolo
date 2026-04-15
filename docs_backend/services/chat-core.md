@@ -82,7 +82,7 @@ A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy clas
 3. Fetch membership + role from Redis (`SISMEMBER`) or TCP fallback to Conversation Service
 4. For `direct` kind: check friendship and block status via Friendship Service (TCP)
 5. For non-friend `direct` conversation: check `HAS_REPLIED` via Message Store (TCP) for stranger rate-limiting
-6. If `mediaId` present: validate via `MediaValidatorService` (Media Service TCP)
+6. If `mediaId` present: validate via `MediaValidatorService` (Media Service TCP). **For `type=sticker`: no `mediaId` is present; the sticker URL lives in `metadata.url`. The text ACL chain is used and content-empty validation is bypassed.**
 7. Build immutable `PermissionContext`
 8. Execute ACL Rule Chain
 9. Check idempotency: Redis `GET idempotency:message:{clientMessageId}` (24h window)
@@ -168,7 +168,7 @@ export interface AclContext {
   "conversationType": "direct | group | community",
   "senderId": "keycloak-id",
   "content": "...",
-  "type": "text | image | file | audio | video",
+  "type": "text | image | file | audio | video | sticker",
   "timestamp": "2026-04-02T10:00:00.000Z",
   "metadata": { "replyToMessageId?": "...", "mediaId?": "..." }
 }

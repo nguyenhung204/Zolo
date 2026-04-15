@@ -128,11 +128,11 @@ curl -X POST http://localhost:3000/auth/login \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `email` | string | ✅ | Email tài khoản |
-| `password` | string | ✅ | Mật khẩu |
-| `platform` | `'web'\|'mobile'` | ✅ | Loại thiết bị |
-| `deviceInfo.deviceName` | string | ❌ | Tên thiết bị hiển thị |
-| `deviceInfo.userAgent` | string | ❌ | User-Agent (tự động lấy nếu không gửi) |
+| `email` | string |  | Email tài khoản |
+| `password` | string |  | Mật khẩu |
+| `platform` | `'web'\|'mobile'` |  | Loại thiết bị |
+| `deviceInfo.deviceName` | string |  | Tên thiết bị hiển thị |
+| `deviceInfo.userAgent` | string |  | User-Agent (tự động lấy nếu không gửi) |
 
 **Response 200:**
 ```json
@@ -223,9 +223,9 @@ curl -X POST http://localhost:3000/auth/register/init \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `email` | string | ✅ | Email đăng ký (phải chưa tồn tại) |
-| `firstName` | string | ✅ | Tên, 1–20 ký tự |
-| `lastName` | string | ✅ | Họ, 1–20 ký tự |
+| `email` | string |  | Email đăng ký (phải chưa tồn tại) |
+| `firstName` | string |  | Tên, 1–20 ký tự |
+| `lastName` | string |  | Họ, 1–20 ký tự |
 
 > `username` hiển thị được hệ thống tự sinh từ `firstName + " " + lastName`, có thể trùng và có thể thay đổi sau này.
 
@@ -304,10 +304,10 @@ curl -X POST http://localhost:3000/auth/register/complete \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `registrationToken` | string (UUID) | ✅ | Token nhận từ bước 2 |
-| `password` | string | ✅ | Mật khẩu mới, tối thiểu 8 ký tự |
-| `platform` | `'web'\|'mobile'` | ✅ | Loại thiết bị |
-| `deviceInfo.deviceName` | string | ❌ | Tên thiết bị |
+| `registrationToken` | string (UUID) |  | Token nhận từ bước 2 |
+| `password` | string |  | Mật khẩu mới, tối thiểu 8 ký tự |
+| `platform` | `'web'\|'mobile'` |  | Loại thiết bị |
+| `deviceInfo.deviceName` | string |  | Tên thiết bị |
 
 **Response 201:**
 ```json
@@ -393,9 +393,9 @@ curl -X POST http://localhost:3000/auth/reset-password \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `email` | string | ✅ | Email tài khoản |
-| `otp` | string | ✅ | Mã 6 chữ số nhận qua email |
-| `newPassword` | string | ✅ | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt, tối thiểu 8 ký tự |
+| `email` | string |  | Email tài khoản |
+| `otp` | string |  | Mã 6 chữ số nhận qua email |
+| `newPassword` | string |  | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt, tối thiểu 8 ký tự |
 
 **Response 200:**
 ```json
@@ -573,8 +573,8 @@ curl -X POST http://localhost:3000/users/me/change-password \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `currentPassword` | string | ✅ | Mật khẩu hiện tại để xác minh danh tính |
-| `newPassword` | string | ✅ | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt `!@#$%^&*`, tối thiểu 8 ký tự |
+| `currentPassword` | string |  | Mật khẩu hiện tại để xác minh danh tính |
+| `newPassword` | string |  | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt `!@#$%^&*`, tối thiểu 8 ký tự |
 
 **Response 200:**
 ```json

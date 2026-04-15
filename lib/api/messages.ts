@@ -14,7 +14,7 @@ interface RawMessage {
   mediaStatus?: MediaStatus;
   replyToMessageId?: string;
   clientMessageId?: string;
-  metadata?: { mentions?: string[]; tags?: string[]; attachmentUrls?: string[] };
+  metadata?: { mentions?: string[]; tags?: string[]; attachmentUrls?: string[]; url?: string };
   createdAt: string;
   updatedAt?: string;
   editedAt?: string;
@@ -37,6 +37,7 @@ export interface Message {
     mentions?: string[];
     tags?: string[];
     attachmentUrls?: string[];
+    url?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -67,6 +68,7 @@ export interface SendMessagePayload {
     mentions?: string[];
     tags?: string[];
     attachmentUrls?: string[];
+    url?: string;
   };
 }
 

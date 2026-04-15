@@ -23,9 +23,9 @@ import type { ConversationKind } from "@/lib/api/conversations";
 // ─── Tab configuration ────────────────────────────────────────────────────────
 
 const TABS: { kind: ConversationKind; label: string; icon: React.ElementType }[] = [
-  { kind: "DIRECT", label: "Direct", icon: MessageCircle },
-  { kind: "GROUP", label: "Group", icon: Hash },
-  { kind: "COMMUNITY", label: "Community", icon: Megaphone },
+  { kind: "direct", label: "Direct", icon: MessageCircle },
+  { kind: "group", label: "Group", icon: Hash },
+  { kind: "community", label: "Community", icon: Megaphone },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ interface Props {
 }
 
 export function CreateConversationModal({ open, onClose }: Props) {
-  const [kind, setKind] = useState<ConversationKind>("DIRECT");
+  const [kind, setKind] = useState<ConversationKind>("direct");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [memberQuery, setMemberQuery] = useState("");
@@ -60,7 +60,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
   // ─── Reset ─────────────────────────────────────────────────────────────────
 
   const reset = useCallback(() => {
-    setKind("DIRECT");
+    setKind("direct");
     setName("");
     setDescription("");
     setMemberQuery("");
@@ -114,22 +114,22 @@ export function CreateConversationModal({ open, onClose }: Props) {
     try {
       let conv;
 
-      if (kind === "DIRECT") {
+      if (kind === "direct") {
         if (!selectedDirect) {
           setError("Please select a user");
           return;
         }
         conv = await create.mutateAsync({
-          kind: "DIRECT",
+          kind: "direct",
           memberIds: [selectedDirect.id],
         });
-      } else if (kind === "GROUP") {
+      } else if (kind === "group") {
         if (!name.trim()) {
           setError("Name is required");
           return;
         }
         conv = await create.mutateAsync({
-          kind: "GROUP",
+          kind: "group",
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: selectedMembers.map((m) => m.id),
@@ -142,7 +142,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
           return;
         }
         conv = await create.mutateAsync({
-          kind: "COMMUNITY",
+          kind: "community",
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: [],
@@ -215,7 +215,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
           {/* Content */}
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0">
             {/* ── Avatar (non-DIRECT) ── */}
-            {kind !== "DIRECT" && (
+            {kind !== "direct" && (
               <div className="flex items-center gap-4">
                 <div
                   onClick={() => fileInputRef.current?.click()}
@@ -255,7 +255,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
             )}
 
             {/* ── DIRECT: single user search ── */}
-            {kind === "DIRECT" && (
+            {kind === "direct" && (
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-secondary">Search user</label>
                 {selectedDirect ? (
@@ -333,7 +333,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
             )}
 
             {/* ── Name (PROJECT / ANNOUNCEMENT) ── */}
-            {(kind === "GROUP" || kind === "COMMUNITY") && (
+            {(kind === "group" || kind === "community") && (
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-secondary">
                   Name <span className="text-red-500">*</span>
@@ -341,7 +341,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
                 <input
                   type="text"
                   placeholder={
-                    kind === "GROUP" ? "e.g. Team Alpha" : "e.g. Company Updates"
+                    kind === "group" ? "e.g. Team Alpha" : "e.g. Company Updates"
                   }
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -352,7 +352,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
             {/* ── DEPARTMENT: name (optional) + departmentId ── */}
             {/* ── Description (GROUP / COMMUNITY) ── */}
-            {(kind === "GROUP" || kind === "COMMUNITY") && (
+            {(kind === "group" || kind === "community") && (
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-secondary">Description</label>
                 <input
@@ -367,7 +367,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
             {/* ── PROJECT: multi-member search ── */}
             {/* ── GROUP: multi-member search ── */}
-            {kind === "GROUP" && (
+            {kind === "group" && (
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-secondary">Add members</label>
                 <div className="relative">
@@ -437,10 +437,10 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
             {/* ── ANNOUNCEMENT note ── */}
             {/* ── COMMUNITY note ── */}
-            {kind === "COMMUNITY" && (
+            {kind === "community" && (
               <div className="px-3 py-2.5 bg-warning/10 rounded-xl">
                 <p className="text-xs text-warning font-medium">
-                  Only Owner, Admin and Moderator can post in this channel
+                  Only Owner, Admin can post in this channel
                 </p>
               </div>
             )}

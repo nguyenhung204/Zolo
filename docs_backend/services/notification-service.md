@@ -16,45 +16,45 @@ The Notification Service is a **TCP microservice** (port 3006) responsible for d
 
 ```
 TCP Port 3006
-┌─────────────────────────────────────────────┐
-│           Notification Service              │
-│                                             │
-│  NotificationController (TCP)               │
-│    ├─ REGISTER_DEVICE                       │
-│    ├─ UNREGISTER_DEVICE                     │
-│    ├─ UPDATE_NOTIFICATION_PREF              │
-│    ├─ GET_NOTIFICATION_PREFS                │
-│    └─ SEND_OTP_EMAIL                        │
-│                                             │
-│  Kafka Consumers (5 consumers)              │
-│    ├─ MessageSavedConsumer                  │
-│    ├─ FriendshipConsumer                    │
-│    ├─ CallEventConsumer                     │
-│    ├─ MemberChangesConsumer                 │
-│    └─ AuthEventConsumer                     │
-│                                             │
-│  BullMQ Queue: notification.dispatch        │
-│    └─ NotificationWorker (concurrency: 10)  │
-│         ├─ Presence check (Redis O(1))      │
-│         ├─ Preference check                 │
-│         ├─ Dedup check (Redis TTL 30s)      │
-│         └─ PushProviderFactory              │
-│               ├─ FcmProvider (Android)      │
-│               ├─ ApnsProvider (iOS)         │
-│               └─ WebPushProvider (Browser)  │
-│                                             │
-│  EmailService (Resend API)                  │
-│    ├─ sendPasswordResetOtp()                │
-│    └─ sendPasswordChangedAlert()            │
-│                                             │
-│  PostgreSQL: notification_db (chat-db)      │
-│    ├─ device_tokens                         │
-│    └─ notification_preferences              │
-│                                             │
-│  Redis: shared redis-chat                   │
-│    ├─ DB 0: presence check                  │
-│    └─ DB 0: push:dedup:{userId}:{messageId} │
-└─────────────────────────────────────────────┘
+
+           Notification Service              
+                                             
+  NotificationController (TCP)               
+     REGISTER_DEVICE                       
+     UNREGISTER_DEVICE                     
+     UPDATE_NOTIFICATION_PREF              
+     GET_NOTIFICATION_PREFS                
+     SEND_OTP_EMAIL                        
+                                             
+  Kafka Consumers (5 consumers)              
+     MessageSavedConsumer                  
+     FriendshipConsumer                    
+     CallEventConsumer                     
+     MemberChangesConsumer                 
+     AuthEventConsumer                     
+                                             
+  BullMQ Queue: notification.dispatch        
+     NotificationWorker (concurrency: 10)  
+          Presence check (Redis O(1))      
+          Preference check                 
+          Dedup check (Redis TTL 30s)      
+          PushProviderFactory              
+                FcmProvider (Android)      
+                ApnsProvider (iOS)         
+                WebPushProvider (Browser)  
+                                             
+  EmailService (Resend API)                  
+     sendPasswordResetOtp()                
+     sendPasswordChangedAlert()            
+                                             
+  PostgreSQL: notification_db (chat-db)      
+     device_tokens                         
+     notification_preferences              
+                                             
+  Redis: shared redis-chat                   
+     DB 0: presence check                  
+     DB 0: push:dedup:{userId}:{messageId} 
+
 ```
 
 ### What This Service IS Responsible For
@@ -253,27 +253,27 @@ interface NotificationJobData {
 
 ```
 1. Presence check
-   ├── Read REDIS_KEYS.PRESENCE.USER_STATUS(userId)
-   └── If online → skip (user sees realtime message, no push spam)
+    Read REDIS_KEYS.PRESENCE.USER_STATUS(userId)
+    If online → skip (user sees realtime message, no push spam)
 
 2. Preference check
-   ├── preferenceService.isAllowed(userId, conversationId, priority)
-   ├── high-priority jobs → always allowed (bypasses mute/quiet hours)
-   └── If muted, in quiet hours, or notifyOnMessage=false → skip
+    preferenceService.isAllowed(userId, conversationId, priority)
+    high-priority jobs → always allowed (bypasses mute/quiet hours)
+    If muted, in quiet hours, or notifyOnMessage=false → skip
 
 3. Dedup check (when messageId present)
-   ├── Check Redis: push:dedup:{userId}:{messageId}
-   └── If key exists → skip (already sent within 30s)
+    Check Redis: push:dedup:{userId}:{messageId}
+    If key exists → skip (already sent within 30s)
 
 4. Fetch active device tokens (DB read)
-   └── If no tokens → skip
+    If no tokens → skip
 
 5. Send via PushProviderFactory
-   ├── Promise.allSettled across all platforms (FCM + APNS + WEB)
-   └── Invalid tokens auto-deactivated inside providers
+    Promise.allSettled across all platforms (FCM + APNS + WEB)
+    Invalid tokens auto-deactivated inside providers
 
 6. Set dedup key
-   └── SETEX push:dedup:{userId}:{messageId} 30 1 (after successful send)
+    SETEX push:dedup:{userId}:{messageId} 30 1 (after successful send)
 ```
 
 ---
