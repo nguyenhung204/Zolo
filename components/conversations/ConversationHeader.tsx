@@ -13,15 +13,15 @@ import { useState } from "react";
 import type { ConversationKind } from "@/lib/api/conversations";
 
 const kindLabel: Record<ConversationKind, string> = {
-  DIRECT: "Direct",
-  GROUP: "Group",
-  COMMUNITY: "Community",
+  direct: "Direct",
+  group: "Group",
+  community: "Community",
 };
 
 const kindColor: Record<ConversationKind, string> = {
-  DIRECT: "bg-secondary/10 text-secondary",
-  GROUP: "bg-cta/10 text-cta",
-  COMMUNITY: "bg-warning/10 text-warning",
+  direct: "bg-secondary/10 text-secondary",
+  group: "bg-cta/10 text-cta",
+  community: "bg-warning/10 text-warning",
 };
 
 interface ConversationHeaderProps {
@@ -45,8 +45,8 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
     );
   }
 
-  const isDirect = conv.kind === "DIRECT";
-  const isCommunity = conv.kind === "COMMUNITY";
+  const isDirect = conv.kind === "direct";
+  const isCommunity = conv.kind === "community";
 
   // GET /conversations/:id returns participants but not otherUser — derive from participants as fallback
   const otherParticipant = isDirect && !conv.otherUser

@@ -15,9 +15,9 @@ interface ConversationItemProps {
 }
 
 const typeIconMap: Record<string, React.ElementType | null> = {
-  DIRECT: null,
-  GROUP: Hash,
-  COMMUNITY: Megaphone,
+  direct: null,
+  group: Hash,
+  community: Megaphone,
 };
 
 export function ConversationItem({ conversation, isActive, onClick }: ConversationItemProps) {
@@ -28,7 +28,7 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
   );
   const TypeIcon = typeIconMap[conversation.kind] ?? null;
 
-  const isDirect = conversation.kind === "DIRECT";
+  const isDirect = conversation.kind === "direct";
 
   const displayName =
     isDirect

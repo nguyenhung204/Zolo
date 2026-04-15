@@ -2,7 +2,7 @@ import { apiClient } from "@/lib/api/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ConversationKind = "DIRECT" | "GROUP" | "COMMUNITY";
+export type ConversationKind = "direct" | "group" | "community";
 export type MemberRole = "owner" | "admin" | "moderator" | "member" | "guest";
 
 /** @deprecated Use ConversationKind */
@@ -65,15 +65,20 @@ export interface UpdateConversationInfoPayload {
 
 // ─── API calls ────────────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeConversation(raw: any): Conversation {
+  return { ...raw, kind: raw.kind ?? raw.type };
+}
+
 export async function getConversations(): Promise<Conversation[]> {
   const res = await apiClient.get("/conversations");
   const d = res.data?.data?.conversations ?? res.data?.data;
-  return Array.isArray(d) ? d : [];
+  return Array.isArray(d) ? d.map(normalizeConversation) : [];
 }
 
 export async function getConversation(id: string): Promise<Conversation> {
   const res = await apiClient.get(`/conversations/${id}`);
-  return res.data.data;
+  return normalizeConversation(res.data.data);
 }
 
 export async function getConversationMembers(id: string): Promise<ConversationMember[]> {
@@ -90,10 +95,12 @@ export async function getUnreadCount(id: string): Promise<number> {
 export async function createConversation(
   payload: CreateConversationPayload
 ): Promise<Conversation> {
+  const { kind, ...rest } = payload;
   const res = await apiClient.post("/conversations", {
-    ...payload,
+    ...rest,
+    type: kind,
   });
-  return res.data.data;
+  return normalizeConversation(res.data.data);
 }
 
 export async function updateSeenOffset(
