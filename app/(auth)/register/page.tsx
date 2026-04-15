@@ -21,6 +21,11 @@ export default function RegisterPage() {
     e.preventDefault();
     setError("");
 
+    if (!email.toLowerCase().endsWith("@gmail.com")) {
+      setError("Only Gmail addresses (@gmail.com) are accepted.");
+      return;
+    }
+
     if (!firstName.trim() || !lastName.trim()) {
       setError("First name and last name are required.");
       return;

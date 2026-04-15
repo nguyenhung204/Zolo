@@ -26,6 +26,10 @@ function LoginContent() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (!email.toLowerCase().endsWith("@gmail.com")) {
+      setError("Only Gmail addresses (@gmail.com) are accepted.");
+      return;
+    }
     setLoading(true);
     try {
       const tokens = await loginWithPassword(email, password);
