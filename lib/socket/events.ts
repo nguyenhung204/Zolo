@@ -1,6 +1,6 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
-export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system";
+export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker";
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
@@ -23,6 +23,7 @@ export interface WsMessage {
     mentions?: string[];
     tags?: string[];
     attachmentUrls?: string[];
+    url?: string;
   };
 }
 
@@ -132,7 +133,7 @@ export interface ServerEvents {
 
 
   session_revoked: (data: {
-    reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded";
+    reason: "logged_in_elsewhere" | "new_login_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded";
   }) => void;
 
   "conversation:created": (data: {

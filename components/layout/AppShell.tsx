@@ -2,7 +2,7 @@
 
 import { NavRail } from "./NavRail";
 import { ConversationList } from "@/components/conversations/ConversationList";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { useSocket } from "@/hooks/useSocket";
 import { useCallSocket } from "@/hooks/useCallSocket";
@@ -11,6 +11,7 @@ import { useCallStore } from "@/stores/callStore";
 import { useAuthStore } from "@/stores/authStore";
 import { connectChatSocket, getChatSocket } from "@/lib/socket/socket";
 import { CallBar } from "@/components/calls/CallBar";
+import { useStickerPreloader } from "@/hooks/useStickers";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -22,11 +23,17 @@ const ACTIVE_TAB_KEY = "zolo-active-tab-id";
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const activeMeetingId = useCallStore((s) => s.activeMeetingId);
   const token = useAuthStore((s) => s.token);
   const isSessionRevoked = useAuthStore((s) => s.isSessionRevoked);
+  const revocationReason = useAuthStore((s) => s.revocationReason);
   const setSessionRevoked = useAuthStore((s) => s.setSessionRevoked);
+  const clearAuth = useAuthStore((s) => s.clearAuth);
   const tabIdRef = useRef<string>(Math.random().toString(36).slice(2));
+
+  // Preload first 100 stickers for every package in background via Worker thread
+  useStickerPreloader();
 
   // Sync revoked state from localStorage after mount to avoid hydration mismatch
   useEffect(() => {
@@ -47,10 +54,10 @@ export function AppShell({ children }: AppShellProps) {
   const applyOwner = (ownerId?: string | null) => {
     const currentTabId = tabIdRef.current;
     if (ownerId && ownerId === currentTabId) {
-      setSessionRevoked(false, false);
+      setSessionRevoked(false, null, false);
       return;
     }
-    setSessionRevoked(true, false);
+    setSessionRevoked(true, "tab_limit_exceeded", false);
     relinquishSocket();
   };
 
@@ -75,7 +82,8 @@ export function AppShell({ children }: AppShellProps) {
     ) => {
       if (!event.data?.type) return;
       if (event.data.type === "SESSION_REVOKED") {
-        setSessionRevoked(true);
+        const reason = (event.data as { type: string; reason?: string }).reason;
+        setSessionRevoked(true, (reason as Parameters<typeof setSessionRevoked>[1]) ?? null, false);
       }
       if (event.data.type === "ACTIVE_TAB_CHANGED") {
         applyOwner(event.data.ownerId);
@@ -104,7 +112,7 @@ export function AppShell({ children }: AppShellProps) {
     const existingOwner = window.localStorage.getItem(ACTIVE_TAB_KEY);
     if (!existingOwner) {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tabIdRef.current);
-      setSessionRevoked(false, false);
+      setSessionRevoked(false, null, false);
       channel.postMessage({ type: "ACTIVE_TAB_CHANGED", ownerId: tabIdRef.current });
     } else {
       applyOwner(existingOwner);
@@ -125,6 +133,13 @@ export function AppShell({ children }: AppShellProps) {
       channel.removeEventListener("message", onMessage);
       channel.close();
       channelRef.current = null;
+      // SPA navigation (e.g. logout → login) does NOT fire beforeunload,
+      // so we must clear ownership here to prevent the new AppShell instance
+      // from seeing a stale tab ID and falsely showing the "another tab" dialog.
+      const owner = window.localStorage.getItem(ACTIVE_TAB_KEY);
+      if (owner === tabIdRef.current) {
+        window.localStorage.removeItem(ACTIVE_TAB_KEY);
+      }
     };
   }, [setSessionRevoked]);
 
@@ -138,9 +153,14 @@ export function AppShell({ children }: AppShellProps) {
     const socket = connectChatSocket(token);
     socket.io.reconnection(true);
     socket.once("connect", () => {
-      setSessionRevoked(false, false); // clear and do not persist
+      setSessionRevoked(false, null, false);
       channelRef.current?.postMessage({ type: "SESSION_RECONNECTED", reconnectedBy: tabIdRef.current });
     });
+  };
+
+  const handleSignInAgain = () => {
+    clearAuth();
+    router.push("/login");
   };
 
   return (
@@ -162,19 +182,41 @@ export function AppShell({ children }: AppShellProps) {
       {isSessionRevoked ? (
         <div className="fixed inset-0 z-110 flex items-center justify-center bg-black/55 px-4 pointer-events-auto">
           <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 text-text shadow-2xl">
-            <h2 className="text-lg font-semibold">Connection Paused</h2>
-            <p className="mt-2 text-sm text-muted">
-              You are using Zolo in another tab. Activate this tab to take over the active session.
-            </p>
-            <button
-              type="button"
-              onClick={handleReconnect}
-              className="mt-6 inline-flex w-full items-center justify-center rounded-lg bg-cta px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
-              tabIndex={0}
-              autoFocus
-            >
-              Activate This Tab
-            </button>
+            {revocationReason === "tab_limit_exceeded" ? (
+              <>
+                <h2 className="text-lg font-semibold">Connection Paused</h2>
+                <p className="mt-2 text-sm text-muted">
+                  You are using Zolo in another tab. Activate this tab to take over the active session.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleReconnect}
+                  className="mt-6 inline-flex w-full items-center justify-center rounded-lg bg-cta px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+                  tabIndex={0}
+                  autoFocus
+                >
+                  Activate This Tab
+                </button>
+              </>
+            ) : (
+              <>
+                <h2 className="text-lg font-semibold">You&apos;ve been signed out</h2>
+                <p className="mt-2 text-sm text-muted">
+                  {revocationReason === "logged_in_elsewhere" || revocationReason === "new_login_elsewhere"
+                    ? "Your account was signed in on another device. Please sign in again to continue."
+                    : "Your session has ended. Please sign in again to continue."}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSignInAgain}
+                  className="mt-6 inline-flex w-full items-center justify-center rounded-lg bg-cta px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+                  tabIndex={0}
+                  autoFocus
+                >
+                  Sign In Again
+                </button>
+              </>
+            )}
           </div>
         </div>
       ) : null}

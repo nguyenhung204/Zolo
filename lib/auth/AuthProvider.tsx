@@ -93,8 +93,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ── Disconnect session and show notice when server revokes the session ─────
   useEffect(() => {
     const socket = getChatSocket();
-    const onRevoked = (_data: { reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
-      setSessionRevoked(true);
+    const onRevoked = (data: { reason: "logged_in_elsewhere" | "new_login_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
+      setSessionRevoked(true, data.reason);
     };
 
     socket.on("session_revoked", onRevoked);

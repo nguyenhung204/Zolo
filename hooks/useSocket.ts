@@ -81,9 +81,9 @@ export function useSocket() {
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     });
 
-    socket.on("session_revoked", (_data: { reason: "logged_in_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
+    socket.on("session_revoked", (data: { reason: "logged_in_elsewhere" | "new_login_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded" }) => {
       setConnected(false);
-      setSessionRevoked(true);
+      setSessionRevoked(true, data.reason);
       // Prevent auto reconnect loop from immediately flipping UI state.
       socket.io.reconnection(false);
       if (socket.connected || socket.active) {
@@ -91,7 +91,7 @@ export function useSocket() {
       }
       if (typeof window !== "undefined") {
         const channel = new BroadcastChannel("zolo-session");
-        channel.postMessage({ type: "SESSION_REVOKED" });
+        channel.postMessage({ type: "SESSION_REVOKED", reason: data.reason });
         channel.close();
       }
     });
