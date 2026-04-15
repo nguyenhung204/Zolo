@@ -20,7 +20,7 @@ export function ConversationList() {
   const filtered = conversations.filter((c) => {
     if (!searchQuery) return true;
     const name =
-      c.kind === "DIRECT"
+      c.kind === "direct"
         ? (c.otherUser?.displayName ?? c.otherUser?.username ?? "Direct Message")
         : (c.name ?? "Unnamed");
     return name.toLowerCase().includes(searchQuery.toLowerCase());

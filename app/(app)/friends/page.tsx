@@ -193,7 +193,7 @@ function FriendRow({
   const dmConversation = useMemo(
     () =>
       conversations.find(
-        (c) => c.kind === "DIRECT" && c.otherUser?.id === friendship.friendId
+        (c) => c.kind === "direct" && c.otherUser?.id === friendship.friendId
       ),
     [conversations, friendship.friendId]
   );

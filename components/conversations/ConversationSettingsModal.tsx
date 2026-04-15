@@ -97,8 +97,8 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
   const { data: searchResults = [] } = useUserSearch(addQuery);
 
-  const isDirect = conv?.kind === "DIRECT";
-  const isAnnouncement = conv?.kind === "COMMUNITY";
+  const isDirect = conv?.kind === "direct";
+  const isAnnouncement = conv?.kind === "community";
   const ownerCount = members.filter((m) => m.role === "owner").length;
   const isUploading =
     avatarUpload.status === "uploading" ||
