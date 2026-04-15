@@ -40,7 +40,7 @@ export function AppShell({ children }: AppShellProps) {
     if (typeof window === "undefined") return;
     const key = "zolo-session-revoked";
     if (window.localStorage.getItem(key) === "1") {
-      setSessionRevoked(true, false);
+      setSessionRevoked(true, null, false);
     }
   }, [setSessionRevoked]);
   const channelRef = useRef<BroadcastChannel | null>(null);
