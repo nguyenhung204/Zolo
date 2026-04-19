@@ -1,16 +1,15 @@
 "use client";
 
-import { Phone, Users, Search, MoreHorizontal, Hash, Megaphone } from "lucide-react";
-import { useConversation } from "@/hooks/useConversations";
 import { UserAvatar } from "@/components/presence/UserAvatar";
-import { ConversationSettingsModal } from "./ConversationSettingsModal";
-import { useRouter } from "next/navigation";
 import { useCall } from "@/hooks/useCall";
-import { useAuthStore } from "@/stores/authStore";
-import type { ConversationType } from "@/lib/api/conversations";
-import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
+import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/authStore";
+import { Hash, Megaphone, MoreHorizontal, Phone, Search, Users } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { ConversationSettingsModal } from "./ConversationSettingsModal";
 
 const kindLabel: Record<ConversationKind, string> = {
   direct: "Direct",

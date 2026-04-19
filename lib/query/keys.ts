@@ -13,6 +13,8 @@ export const queryKeys = {
     all: ["messages"] as const,
     list: (conversationId: string) =>
       [...queryKeys.messages.all, "list", conversationId] as const,
+    pinned: (conversationId: string) =>
+      [...queryKeys.messages.all, "pinned", conversationId] as const,
   },
 
   // Users

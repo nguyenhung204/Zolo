@@ -12,6 +12,7 @@ import { useAuthStore } from "@/stores/authStore";
 import { connectChatSocket, getChatSocket } from "@/lib/socket/socket";
 import { CallBar } from "@/components/calls/CallBar";
 import { useStickerPreloader } from "@/hooks/useStickers";
+import { hasActiveUploads } from "@/hooks/useSendMessage";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -60,6 +61,17 @@ export function AppShell({ children }: AppShellProps) {
     setSessionRevoked(true, "tab_limit_exceeded", false);
     relinquishSocket();
   };
+
+  // Warn user before leaving page when file uploads are in progress
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasActiveUploads()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
 
   // Initialise socket event listeners
   useSocket();

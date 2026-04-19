@@ -2,10 +2,16 @@
 
 import {
   useInfiniteQuery,
+  useQuery,
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { getMessages, type Message, type MessagePage } from "@/lib/api/messages";
+import {
+  getMessages,
+  getPinnedMessages,
+  type Message,
+  type MessagePage,
+} from "@/lib/api/messages";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -82,7 +88,16 @@ export function upsertMessage(
 
       if (existingIdx !== -1) {
         const next = [...last.data];
-        next[existingIdx] = { ...next[existingIdx], ...msg, _pending: false, _failed: false };
+        // Only overwrite with defined/truthy values so socket events never clear
+        // replyToMessageId (server may echo null for this field even when a reply exists).
+        const safeFields = Object.fromEntries(
+          Object.entries(msg).filter(([key, v]) => {
+            if (v === undefined) return false;
+            if (key === "replyToMessageId" && !v) return false;
+            return true;
+          })
+        ) as Partial<Message>;
+        next[existingIdx] = { ...next[existingIdx], ...safeFields, _pending: false, _failed: false };
         pages[pages.length - 1] = {
           ...last,
           data: next,
@@ -97,4 +112,14 @@ export function upsertMessage(
       return { ...old, pages };
     }
   );
+}
+
+export function usePinnedMessages(conversationId: string) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: queryKeys.messages.pinned(conversationId),
+    queryFn: () => getPinnedMessages(conversationId),
+    enabled: isAuthenticated && !!conversationId,
+    staleTime: 60_000,
+  });
 }

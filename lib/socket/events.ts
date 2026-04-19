@@ -1,6 +1,6 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
-export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker";
+export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media";
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
@@ -100,9 +100,25 @@ export interface ServerEvents {
     messageId: string;
     conversationId: string;
   }) => void;
+  "message:revoked": (data: {
+    messageId: string;
+    conversationId: string;
+  }) => void;
   "message:updated": (data: {
     messageId: string;
-    mediaStatus: MediaStatus;
+    conversationId?: string;
+    /** New payload shape from backend */
+    attachment?: {
+      mediaId: string;
+      kind: "image" | "video" | "audio" | "file";
+      status: string;
+      variantsReady?: boolean;
+      thumbReady?: boolean;
+      meta?: { width?: number; height?: number; format?: string };
+    };
+    /** Legacy field — kept for backward compat */
+    mediaStatus?: MediaStatus;
+    metadata?: { waveform?: number[] };
   }) => void;
 
   "typing:started": (data: { conversationId: string; userId: string }) => void;
@@ -131,6 +147,9 @@ export interface ServerEvents {
 
   error: (data: { message: string; code: string }) => void;
 
+  "cursor:seen_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
+  "cursor:delivered_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
+  "message:reaction_updated": (data: { messageId: string; conversationId: string; reactions: Record<string, number> }) => void;
 
   session_revoked: (data: {
     reason: "logged_in_elsewhere" | "new_login_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded";

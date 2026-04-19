@@ -7,7 +7,6 @@ import { CreateConversationModal } from "./CreateConversationModal";
 import { useRouter } from "next/navigation";
 import { MessageSquarePlus, Search } from "lucide-react";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
 
 export function ConversationList() {
   const { data: conversations = [], isLoading } = useConversations();

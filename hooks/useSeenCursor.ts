@@ -5,6 +5,7 @@ import { getChatSocket } from "@/lib/socket/socket";
 import { updateSeenOffset } from "@/lib/api/conversations";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query/keys";
+import type { Conversation } from "@/lib/api/conversations";
 
 /**
  * Watches the bottom-most visible message via IntersectionObserver and
@@ -32,8 +33,13 @@ export function useSeenCursor(
       // Fire-and-forget REST (keeps cursor persistent across devices)
       updateSeenOffset(conversationId, offset).catch(() => {});
 
-      // Update local conversation list unread badge
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      // Update local unread badge without re-fetching the entire list
+      qc.setQueryData<Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => old?.map((c) =>
+          c.id === conversationId ? { ...c, lastSeenOffset: Math.max(c.lastSeenOffset ?? 0, offset) } : c
+        )
+      );
     },
     [conversationId, qc]
   );

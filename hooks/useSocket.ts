@@ -9,10 +9,33 @@ import { getChatSocket } from "@/lib/socket/socket";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
 import type { WsMessage } from "@/lib/socket/events";
-import { upsertMessage, type MessagesInfiniteData } from "@/hooks/useMessages";
+import { upsertMessage, prefetchMessages, type MessagesInfiniteData } from "@/hooks/useMessages";
 import { getMediaSignedUrl } from "@/lib/api/media";
 import { getFriendsPresence, getMyPresenceStatus } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
+
+function isMediaMessageType(type: WsMessage["type"]) {
+  return type === "image" || type === "video" || type === "audio" || type === "file" || type === "media";
+}
+
+function normalizeMediaStatus(status: string | undefined): WsMessage["mediaStatus"] {
+  if (!status) return undefined;
+  const s = status.toLowerCase();
+  switch (s) {
+    case "created":
+      return "created";
+    case "uploaded":
+      return "uploaded";
+    case "processing":
+      return "processing";
+    case "ready":
+      return "ready";
+    case "failed":
+      return "failed";
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Initialise the Socket.IO event listeners and keep them alive.
@@ -28,11 +51,23 @@ export function useSocket() {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Per-user typing auto-clear timers
   const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Per-conversation delivered cursor throttle timers
+  const deliveredThrottleRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Debounce timer for conversations list invalidation — multiple socket events
+  // can fire in quick succession; coalescing them prevents redundant API calls.
+  const listInvalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!token) return;
 
     const socket = getChatSocket();
+    const scheduleListInvalidate = () => {
+      if (listInvalidateTimerRef.current) clearTimeout(listInvalidateTimerRef.current);
+      listInvalidateTimerRef.current = setTimeout(() => {
+        listInvalidateTimerRef.current = null;
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      }, 300);
+    };
     const qc = getQueryClient();
 
     // ─── Connection lifecycle ───────────────────────────────────────────────
@@ -97,21 +132,96 @@ export function useSocket() {
     });
 
     // ─── Messages ──────────────────────────────────────────────────────────
-    const handleIncomingMessage = (msg: WsMessage) => {
-      upsertMessage(qc, msg.conversationId, {
+    const handleIncomingMessage = (msg: WsMessage & { replyToId?: string }) => {
+      // Backend may send replyToId instead of replyToMessageId
+      const replyToMessageId = msg.replyToMessageId ?? (msg as { replyToId?: string }).replyToId;
+      const normalizedType = (msg.type ?? "text").toLowerCase() as WsMessage["type"];
+      const attachments = (msg as WsMessage & { attachments?: Array<{ mediaId: string; type?: "image" | "video" | "audio" | "file"; kind?: "image" | "video" | "audio" | "file"; status?: string; prefer?: "ORIGINAL" | "OPTIMIZED"; variantsReady?: boolean }> | null }).attachments ?? null;
+      const firstAttachment = attachments?.[0];
+      const derivedMediaId = msg.mediaId ?? firstAttachment?.mediaId;
+      const derivedMediaStatus =
+        normalizeMediaStatus(msg.mediaStatus as string | undefined) ??
+        normalizeMediaStatus(firstAttachment?.status) ??
+        // If the server confirmed this message (offset > 0), media is already accessible.
+        // "processing" is only correct for brand-new optimistic messages (offset <= 0).
+        (isMediaMessageType(normalizedType) && derivedMediaId
+          ? (Number(msg.offset ?? 0) > 0 ? "ready" : "processing")
+          : undefined);
+      const normalized = {
         ...msg,
-        type: (msg.type ?? "text").toLowerCase() as WsMessage["type"],
+        replyToMessageId,
+        type: normalizedType,
+        mediaId: derivedMediaId,
+        mediaStatus: derivedMediaStatus,
+        attachments: attachments?.map((attachment) => ({
+          ...attachment,
+          type: attachment.type ?? attachment.kind,
+        })) ?? null,
+        offset: Number(msg.offset ?? 0),
         updatedAt: msg.editedAt ?? msg.createdAt,
-      });
+      };
+      // If this conversation has no cache yet, prefetch the latest 30 messages
+      // so opening the conversation later is instant (no loading spinner).
+      // For active conversations (cache exists) upsertMessage does the live update.
+      if (!qc.getQueryData(queryKeys.messages.list(msg.conversationId))) {
+        prefetchMessages(qc, msg.conversationId);
+      } else {
+        upsertMessage(qc, msg.conversationId, normalized);
+      }
+      // Throttle-emit delivered cursor for incoming messages from others (1s per conversation)
+      if (msg.senderId !== myId && msg.offset > 0) {
+        const existing = deliveredThrottleRef.current.get(msg.conversationId);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+          const s = getChatSocket();
+          s.emit("conversation:update_delivered_cursor", {
+            conversationId: msg.conversationId,
+            upToOffset: msg.offset,
+          });
+          deliveredThrottleRef.current.delete(msg.conversationId);
+        }, 1_000);
+        deliveredThrottleRef.current.set(msg.conversationId, timer);
+      }
+      // Update the lastMessage preview in the conversations list cache
+      qc.setQueryData(
+        queryKeys.conversations.list(),
+        (old: import("@/lib/api/conversations").Conversation[] | undefined) => {
+          if (!old) return old;
+          return old.map((c) =>
+            c.id === msg.conversationId
+              ? {
+                  ...c,
+                  lastMessage: {
+                    content: msg.content,
+                    senderId: msg.senderId,
+                    type: msg.type,
+                    createdAt: msg.createdAt,
+                  },
+                  maxOffset: Math.max(Number(c.maxOffset ?? 0), msg.offset),
+                }
+              : c
+          );
+        }
+      );
     };
 
     socket.on("chat:message_received", handleIncomingMessage);
     socket.on("message:new", handleIncomingMessage);
 
-    socket.on("message:notify", ({ conversationId }: { conversationId: string; latestOffset: number }) => {
-      // Keep unread/detail in sync without issuing pull-after-notify message fetches.
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.unread(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+    socket.on("message:notify", ({ conversationId, latestOffset }: { conversationId: string; latestOffset: number }) => {
+      // Update maxOffset in the conversations list so the unread badge recalculates
+      // without fetching the full conversation detail.
+      qc.setQueryData(
+        queryKeys.conversations.list(),
+        (old: import("@/lib/api/conversations").Conversation[] | undefined) => {
+          if (!old) return old;
+          return old.map((c) =>
+            c.id === conversationId
+              ? { ...c, maxOffset: Math.max(Number(c.maxOffset ?? 0), latestOffset) }
+              : c
+          );
+        }
+      );
     });
 
     socket.on("message:queued", ({ clientMessageId, messageId }: { clientMessageId: string; messageId: string }) => {
@@ -135,18 +245,22 @@ export function useSocket() {
     });
 
     socket.on("message:saved", ({ clientMessageId, messageId, conversationId, offset }) => {
-      // Reconcile optimistic message: swap clientMessageId → real messageId, clear pending flag
+      // Reconcile optimistic message → real messageId + offset.
+      // The server may or may not include clientMessageId in this event.
+      // Strategy: match by clientMessageId first; if absent, match by real messageId
+      // (markAcked already swapped the temp id → real id via HTTP response).
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
           const pages = old.pages.map((page) => ({
             ...page,
-            data: page.data.map((m) =>
-              m.clientMessageId === clientMessageId
-                ? { ...m, messageId, offset, clientMessageId: undefined, _pending: false }
-                : m
-            ),
+            data: page.data.map((m) => {
+              const matchByClientId = clientMessageId && m.clientMessageId === clientMessageId;
+              const matchByMessageId = !clientMessageId && m.messageId === messageId;
+              if (!matchByClientId && !matchByMessageId) return m;
+              return { ...m, messageId, offset, clientMessageId: undefined, _pending: false };
+            }),
           }));
           return { ...old, pages };
         }
@@ -209,21 +323,50 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:updated", ({ messageId, mediaStatus }) => {
-      // Media processing complete — update cache across all conversations
-      qc.setQueriesData(
-        { queryKey: queryKeys.messages.all },
+    socket.on("message:revoked", ({ messageId, conversationId }: { messageId: string; conversationId: string }) => {
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {
           if (!old) return old;
           const pages = old.pages.map((page) => ({
             ...page,
             data: page.data.map((m) =>
-              m.messageId === messageId ? { ...m, mediaStatus } : m
+              m.messageId === messageId ? { ...m, isRevoked: true, content: "" } : m
             ),
           }));
           return { ...old, pages };
         }
       );
+    });
+
+    socket.on("message:updated", ({ messageId, attachment, mediaStatus: legacyStatus, metadata }) => {
+      // Resolve status from either new `attachment` payload or legacy `mediaStatus` field.
+      const resolvedStatus = normalizeMediaStatus(attachment?.status ?? legacyStatus);
+      // Media processing complete — update mediaStatus and optional waveform metadata.
+      // We don't know which conversation the message belongs to, so scan all cached
+      // message-list queries. Use findAll + setQueryData (instead of setQueriesData)
+      // so we can safely skip pinned-message queries that store a plain Message[].
+      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
+      for (const query of listKeys) {
+        qc.setQueryData(
+          query.queryKey,
+          (old: MessagesInfiniteData | undefined) => {
+            if (!old || !Array.isArray(old.pages)) return old;
+            const pages = old.pages.map((page) => ({
+              ...page,
+              data: Array.isArray(page?.data)
+                ? page.data.map((m) => {
+                    if (m.messageId !== messageId) return m;
+                    const updated = { ...m, mediaStatus: resolvedStatus };
+                    if (metadata) updated.metadata = { ...m.metadata, ...metadata };
+                    return updated;
+                  })
+                : page?.data,
+            }));
+            return { ...old, pages };
+          }
+        );
+      }
     });
 
     // ─── Presence ───────────────────────────────────────────────────────────
@@ -280,14 +423,14 @@ export function useSocket() {
       });
 
       // Re-fetch conversation list so embedded otherUser / participant URLs refresh
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      scheduleListInvalidate();
       qc.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
     });
     // ─── Membership ────────────────────────────────────────────────────────
     socket.on("member:added", ({ conversationId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      scheduleListInvalidate();
     });
 
     socket.on("member:removed", ({ conversationId, removedUserIds }) => {
@@ -302,8 +445,55 @@ export function useSocket() {
       } else {
         qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
         qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-        qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+        scheduleListInvalidate();
       }
+    });
+
+    // ─── Cursor tracking ──────────────────────────────────────────────────
+    socket.on("cursor:seen_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId: string; upToOffset: number }) => {
+      qc.setQueryData(
+        queryKeys.conversations.members(conversationId),
+        (old: import("@/lib/api/conversations").ConversationMember[] | undefined) => {
+          if (!old) return old;
+          return old.map((m) =>
+            m.userId === userId
+              ? { ...m, lastSeenOffset: Math.max(m.lastSeenOffset, upToOffset) }
+              : m
+          );
+        }
+      );
+    });
+
+    socket.on("cursor:delivered_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId: string; upToOffset: number }) => {
+      qc.setQueryData(
+        queryKeys.conversations.members(conversationId),
+        (old: import("@/lib/api/conversations").ConversationMember[] | undefined) => {
+          if (!old) return old;
+          return old.map((m) =>
+            m.userId === userId
+              ? { ...m, lastDeliveredOffset: Math.max(m.lastDeliveredOffset, upToOffset) }
+              : m
+          );
+        }
+      );
+    });
+
+    socket.on("message:reaction_updated", ({ messageId, conversationId, reactions }: { messageId: string; conversationId: string; reactions: Record<string, number> }) => {
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              data: page.data.map((m) =>
+                m.messageId === messageId ? { ...m, reactions } : m
+              ),
+            })),
+          };
+        }
+      );
     });
 
     // ─── Conversation info changes ─────────────────────────────────────────
@@ -319,12 +509,12 @@ export function useSocket() {
               (old) => old?.map((c) => (c.id === conversationId ? { ...c, ...fresh } : c))
             );
           } else {
-            qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+            scheduleListInvalidate();
           }
         })
         .catch(() => {
           qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
-          qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+          scheduleListInvalidate();
         });
     });
 
@@ -339,6 +529,9 @@ export function useSocket() {
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       typingTimers.current.forEach((t) => clearTimeout(t));
       typingTimers.current.clear();
+      deliveredThrottleRef.current.forEach((t) => clearTimeout(t));
+      deliveredThrottleRef.current.clear();
+      if (listInvalidateTimerRef.current) clearTimeout(listInvalidateTimerRef.current);
     };
   }, [myId, setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
 }

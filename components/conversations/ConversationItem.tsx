@@ -1,12 +1,12 @@
 "use client";
 
-import { useConversationStore } from "@/stores/conversationStore";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatDistanceToNowStrict } from "@/lib/utils/date";
+import { usePinnedMessages } from "@/hooks/useMessages";
 import type { Conversation } from "@/lib/api/conversations";
-import { Hash, Megaphone } from "lucide-react";
+import { FileText, Hash, Image, Mic, Megaphone, Pin, Sticker, Video } from "lucide-react";
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -20,15 +20,41 @@ const typeIconMap: Record<string, React.ElementType | null> = {
   community: Megaphone,
 };
 
+function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
+  if (!msg) return null;
+  const prefix = isMe ? "Bạn: " : "";
+  switch (msg.type) {
+    case "image":
+      return { icon: Image, label: prefix + "Hình ảnh" };
+    case "video":
+      return { icon: Video, label: prefix + "Video" };
+    case "audio":
+      return { icon: Mic, label: prefix + "Âm thanh" };
+    case "file":
+      return { icon: FileText, label: prefix + "File" };
+    case "sticker":
+      return { icon: Sticker, label: prefix + "Sticker" };
+    case "media":
+      return { icon: Image, label: prefix + "Media" };
+    case "system":
+      return { icon: null, label: msg.content };
+    default:
+      return { icon: null, label: prefix + (msg.content || "") };
+  }
+}
+
 export function ConversationItem({ conversation, isActive, onClick }: ConversationItemProps) {
   const userId = useAuthStore((s) => s.user?.id ?? "");
   const unread = Math.max(
     0,
     Number(conversation.maxOffset) - (conversation.lastSeenOffset ?? Number(conversation.maxOffset))
   );
+  const hasUnread = unread > 0 && !isActive;
   const TypeIcon = typeIconMap[conversation.kind] ?? null;
-
   const isDirect = conversation.kind === "direct";
+
+  const { data: pinned = [] } = usePinnedMessages(conversation.id);
+  const hasPinned = pinned.length > 0;
 
   const displayName =
     isDirect
@@ -39,6 +65,8 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
   const directUserId = isDirect ? (conversation.otherUser?.id ?? conversation.id) : conversation.id;
 
   const lastMsg = conversation.lastMessage;
+  const isMyMsg = lastMsg?.senderId === userId;
+  const preview = lastMsgPreview(lastMsg, isMyMsg);
 
   return (
     <button
@@ -77,31 +105,46 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
             )}
           </div>
         )}
+        {/* Unread dot on avatar */}
+        {hasUnread && (
+          <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-cta border-2 border-bg" />
+        )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-1">
-          <span className={cn("text-sm font-semibold truncate", isActive ? "text-primary" : "text-text")}>
+          <span className={cn(
+            "text-sm truncate",
+            hasUnread ? "font-bold text-text" : isActive ? "font-semibold text-primary" : "font-semibold text-text"
+          )}>
             {displayName}
           </span>
           {lastMsg && (
-            <span className="text-[10px] text-muted shrink-0">
+            <span className={cn("text-[10px] shrink-0", hasUnread ? "text-cta font-semibold" : "text-muted")}>
               {formatDistanceToNowStrict(lastMsg.createdAt)}
             </span>
           )}
         </div>
-        {lastMsg && (
-          <p className="text-xs text-muted truncate mt-0.5">
-            {lastMsg.senderId === userId ? "You: " : ""}
-            {lastMsg.type === "text" ? lastMsg.content : `📎 ${lastMsg.type}`}
-          </p>
-        )}
+
+        <div className="flex items-center gap-1 mt-0.5">
+          {hasPinned && (
+            <Pin className="w-2.5 h-2.5 text-cta shrink-0 opacity-70" />
+          )}
+          {preview ? (
+            <div className={cn("flex items-center gap-1 min-w-0 text-xs truncate", hasUnread ? "text-text font-medium" : "text-muted")}>
+              {preview.icon ? <preview.icon className="w-3 h-3 shrink-0" /> : null}
+              <p className="truncate">{preview.label}</p>
+            </div>
+          ) : hasPinned ? (
+            <p className="text-xs text-muted truncate">{pinned.length} tin ghim</p>
+          ) : null}
+        </div>
       </div>
 
       {/* Unread badge */}
-      {unread > 0 && (
-        <span className="shrink-0 min-w-4.5 h-4.5 px-1 rounded-full bg-cta text-white text-[10px] font-bold flex items-center justify-center">
+      {hasUnread && (
+        <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-cta text-white text-[10px] font-bold flex items-center justify-center">
           {unread > 99 ? "99+" : unread}
         </span>
       )}

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { toast } from "sonner";
 import { toApiError } from "@/lib/api/errors";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -54,6 +55,25 @@ apiClient.interceptors.response.use(
         useAuthStore.getState().clearAuth();
       }
     }
+
+    // 429 – rate limit
+    if (error.response?.status === 429) {
+      toast.error("Bạn đang thực hiện quá nhiều yêu cầu. Vui lòng thử lại sau ít phút.", {
+        id: "rate-limit",
+        duration: 6000,
+      });
+    }
+
+    // 400 – bad request (gentle inline warning, only if not already handled)
+    if (error.response?.status === 400 && !error.config?._silent400) {
+      const raw = (error.response?.data as { message?: string | string[] })?.message;
+      const msg = Array.isArray(raw) ? raw[0] : raw;
+      toast.warning(typeof msg === "string" && msg ? msg : "Yêu cầu không hợp lệ. Vui lòng kiểm tra lại thông tin.", {
+        id: `bad-req-${String(error.config?.url ?? "")}`,
+        duration: 4000,
+      });
+    }
+
     return Promise.reject(toApiError(error));
   }
 );

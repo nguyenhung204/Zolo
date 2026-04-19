@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getConversations,
   getConversation,
+  getConversationMembers,
   createConversation,
   updateConversationInfo,
   addConversationMembers,
@@ -50,6 +51,7 @@ export function useConversation(id: string) {
     queryKey: queryKeys.conversations.detail(id),
     queryFn: () => getConversation(id),
     enabled: isAuthenticated && !!id,
+    staleTime: 5 * 60 * 1000, // conversation metadata changes rarely; WS events handle real-time updates
   });
 
   // The detail response resolves avatarUrl via presigned URL while the list
@@ -68,24 +70,32 @@ export function useConversation(id: string) {
 }
 
 export function useConversationMembers(id: string) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const { data: conversation } = useConversation(id);
 
-  const members: (ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null })[] =
-    (conversation?.participants ?? []).map((p) => ({
-      id: p.userId,
-      conversationId: id,
-      userId: p.userId,
-      role: p.role as MemberRole,
-      lastSeenOffset: 0,
-      lastDeliveredOffset: 0,
-      joinedAt: conversation?.createdAt ?? "",
-      leftAt: null,
-      displayName: p.displayName,
-      username: p.username,
-      avatarUrl: p.avatarUrl,
-    }));
+  const { data: memberRecords = [], isLoading } = useQuery({
+    queryKey: queryKeys.conversations.members(id),
+    queryFn: () => getConversationMembers(id),
+    enabled: isAuthenticated && !!id,
+    staleTime: 30_000,
+  });
 
-  return { data: members, isLoading: !conversation };
+  // Merge cursor data from API with display info from conversation.participants
+  const participantMap = new Map(
+    (conversation?.participants ?? []).map((p) => [p.userId, p])
+  );
+
+  const members = memberRecords.map((m) => {
+    const p = participantMap.get(m.userId);
+    return {
+      ...m,
+      displayName: (p as { displayName?: string } | undefined)?.displayName,
+      username: (p as { username?: string } | undefined)?.username,
+      avatarUrl: (p as { avatarUrl?: string | null } | undefined)?.avatarUrl ?? null,
+    };
+  });
+
+  return { data: members, isLoading };
 }
 
 export function useCreateConversation() {

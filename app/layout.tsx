@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers/Providers";
+import { Toaster } from "sonner";
 
 const jakarta = Plus_Jakarta_Sans({
   variable: "--font-jakarta",
@@ -32,6 +33,7 @@ export default function RootLayout({
       </head>
       <body className="h-full bg-bg font-sans text-text">
         <Providers>{children}</Providers>
+        <Toaster richColors position="top-center" />
       </body>
     </html>
   );

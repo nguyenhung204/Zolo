@@ -7,9 +7,20 @@ import {
   finalizeUpload,
   getMediaSignedUrl,
   preCheckMedia,
+  initiateMultipartUpload,
+  presignMultipartParts,
+  uploadPart,
+  completeMultipartUpload,
+  abortMultipartUpload,
   type MediaType,
+  type MediaTypeLarge,
 } from "@/lib/api/media";
-// Note: getMediaSignedUrl is kept for pollForSignedUrl (used by other callers if needed)
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const MULTIPART_THRESHOLD = 30 * 1024 * 1024; // 30 MB
+const PART_SIZE = 10 * 1024 * 1024; // 10 MB per part
+const MAX_PARALLEL_PARTS = 3;
 
 type UploadStatus = "idle" | "checking" | "uploading" | "finalizing" | "processing" | "ready" | "error";
 
@@ -20,12 +31,81 @@ interface UploadState {
   error: string | null;
 }
 
+// ─── MIME helpers ─────────────────────────────────────────────────────────────
+
 const mimeToType = (mime: string): MediaType => {
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
   return "file";
 };
+
+const mimeToTypeLarge = (mime: string): MediaTypeLarge => {
+  if (mime.startsWith("image/")) return "IMAGE";
+  if (mime.startsWith("video/")) return "VIDEO";
+  return "FILE";
+};
+
+// ─── Multipart upload helper ──────────────────────────────────────────────────
+
+async function multipartUpload(
+  file: File,
+  onProgress: (pct: number) => void
+): Promise<string> {
+  const totalParts = Math.ceil(file.size / PART_SIZE);
+  const partNumbers = Array.from({ length: totalParts }, (_, i) => i + 1);
+
+  // Step 1: Init
+  const { mediaId } = await initiateMultipartUpload({
+    filename: file.name,
+    mimeType: file.type,
+    type: mimeToTypeLarge(file.type),
+    totalSize: file.size,
+  });
+
+  try {
+    // Step 2: Get presigned URLs in batches
+    const partUrls = await presignMultipartParts({ mediaId, partNumbers });
+    const urlMap = new Map(partUrls.map((p) => [p.partNumber, p.url]));
+
+    // Step 3: Upload parts with limited concurrency and collect ETags.
+    // uploadPart reads the ETag from the PUT response header.
+    // If ETag is missing (CORS not configured), it throws and the catch
+    // block below aborts the multipart session immediately.
+    const completedParts: { partNumber: number; eTag: string }[] = [];
+    let uploaded = 0;
+
+    for (let i = 0; i < totalParts; i += MAX_PARALLEL_PARTS) {
+      const batch = partNumbers.slice(i, i + MAX_PARALLEL_PARTS);
+      await Promise.all(
+        batch.map(async (partNum) => {
+          const start = (partNum - 1) * PART_SIZE;
+          const chunk = file.slice(start, start + PART_SIZE);
+          const url = urlMap.get(partNum)!;
+          const eTag = await uploadPart(url, chunk, file.type);
+          completedParts.push({ partNumber: partNum, eTag });
+          uploaded += 1;
+          onProgress(Math.round((uploaded / totalParts) * 95)); // reserve 5% for complete
+        })
+      );
+    }
+
+    // Step 4: Complete — sort ascending by partNumber as S3 requires.
+    completedParts.sort((a, b) => a.partNumber - b.partNumber);
+    await completeMultipartUpload({ mediaId, parts: completedParts });
+    onProgress(100);
+    return mediaId;
+  } catch (err) {
+    // Best-effort cleanup
+    if (process.env.NODE_ENV === "development") {
+      console.error('[multipartUpload] Upload failed:', { mediaId, error: err });
+    }
+    abortMultipartUpload(mediaId).catch(() => {});
+    throw err;
+  }
+}
+
+// ─── useMediaUpload ───────────────────────────────────────────────────────────
 
 export function useMediaUpload(conversationId: string) {
   const [state, setState] = useState<UploadState>({
@@ -40,34 +120,18 @@ export function useMediaUpload(conversationId: string) {
       setState({ status: "checking", progress: 0, mediaId: null, error: null });
 
       try {
-        // Step 0: Pre-check permission
-        const check = await preCheckMedia({
-          conversationId,
-          mimeType: file.type,
-          fileSize: file.size,
+        const mediaId = await uploadFileDirect(file, conversationId, (progress) => {
+          setState((s) => ({
+            ...s,
+            status: progress >= 100 ? "finalizing" : "uploading",
+            progress,
+          }));
         });
-        if (!check.approved) {
-          setState((s) => ({ ...s, status: "error", error: check.reason ?? "Not allowed" }));
+
+        if (!mediaId) {
+          setState((s) => ({ ...s, status: "error", error: s.error ?? "Upload failed" }));
           return null;
         }
-
-        // Step 1: Initiate
-        setState((s) => ({ ...s, status: "uploading" }));
-        const { mediaId, uploadUrl } = await initiateUpload({
-          type: mimeToType(file.type),
-          mimeType: file.type,
-          size: file.size,
-          filename: file.name,
-        });
-
-        // Step 2: PUT to presigned URL
-        await uploadToPresignedUrl(uploadUrl, file, (progress) => {
-          setState((s) => ({ ...s, progress }));
-        });
-
-        // Step 3: Finalize
-        setState((s) => ({ ...s, status: "finalizing", progress: 100 }));
-        await finalizeUpload({ mediaId });
 
         setState({ status: "ready", progress: 100, mediaId, error: null });
         return mediaId;
@@ -87,10 +151,47 @@ export function useMediaUpload(conversationId: string) {
   return { ...state, upload, reset };
 }
 
-// ─── Poll /media/:mediaId/url until worker is done ───────────────────────────
-// The /url endpoint returns an error until status = READY; retry until success.
+// ─── Stateless single-file upload (no shared state — safe for parallel calls) ─
 
-async function pollForSignedUrl(
+export async function uploadFileDirect(
+  file: File,
+  conversationId: string,
+  onProgress?: (progress: number) => void
+): Promise<string | null> {
+  try {
+    const check = await preCheckMedia({
+      conversationId,
+      mimeType: file.type,
+      fileSize: file.size,
+    });
+    if (!check.approved) return null;
+
+    if (file.size >= MULTIPART_THRESHOLD) {
+      return await multipartUpload(file, (progress) => {
+        onProgress?.(progress);
+      });
+    }
+
+    const { mediaId, uploadUrl } = await initiateUpload({
+      type: mimeToType(file.type),
+      mimeType: file.type,
+      size: file.size,
+      filename: file.name,
+    });
+    await uploadToPresignedUrl(uploadUrl, file, (progress) => {
+      onProgress?.(Math.min(progress, 95));
+    });
+    onProgress?.(100);
+    await finalizeUpload({ mediaId });
+    return mediaId;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Poll /media/:mediaId/url until worker is done ───────────────────────────
+
+export async function pollForSignedUrl(
   mediaId: string,
   maxAttempts = 15,
   intervalMs = 2_000
@@ -107,7 +208,6 @@ async function pollForSignedUrl(
 }
 
 // ─── Avatar upload (no preCheck) ─────────────────────────────────────────────
-// Flow: Initiate → PUT MinIO → Finalize → poll READY → signed URL
 
 interface AvatarUploadState {
   status: UploadStatus;
@@ -127,7 +227,6 @@ export function useAvatarUpload() {
   const upload = useCallback(async (file: File): Promise<string | null> => {
     setState({ status: "uploading", progress: 0, mediaId: null, error: null });
     try {
-      // Step 1: Initiate — get pre-signed PUT URL
       const { mediaId, uploadUrl } = await initiateUpload({
         type: "image",
         mimeType: file.type,
@@ -135,16 +234,13 @@ export function useAvatarUpload() {
         filename: file.name,
       });
 
-      // Step 2: Upload directly to MinIO
       await uploadToPresignedUrl(uploadUrl, file, (progress) => {
         setState((s) => ({ ...s, progress }));
       });
 
-      // Step 3: Finalize — tells backend the file is in MinIO, triggers worker
       setState((s) => ({ ...s, status: "finalizing", progress: 100 }));
       await finalizeUpload({ mediaId });
 
-      // Done — return mediaId; Gateway resolves the URL at read time
       setState({ status: "ready", progress: 100, mediaId, error: null });
       return mediaId;
     } catch (err) {

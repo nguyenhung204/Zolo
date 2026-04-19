@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import {
   List,
   useDynamicRowHeight,
@@ -8,19 +8,31 @@ import {
   type RowComponentProps,
 } from "react-window";
 import { useMessages } from "@/hooks/useMessages";
+import { useSeenCursor } from "@/hooks/useSeenCursor";
 import { MessageRow } from "./MessageRow";
 import { useAuthStore } from "@/stores/authStore";
 import { useConversationStore } from "@/stores/conversationStore";
+import { getQueryClient } from "@/lib/query/queryClient";
+import { queryKeys } from "@/lib/query/keys";
 import type { Message } from "@/lib/api/messages";
+import { deleteMessageForMe, revokeMessage, pinMessage } from "@/lib/api/messages";
+import { ForwardModal } from "./ForwardModal";
+import { MessageDetailsModal } from "./MessageDetailsModal";
 import type { ConversationMember } from "@/lib/api/conversations";
-import type { ReplyTarget } from "@/stores/conversationStore";
+import type { ReplyTarget, EditTarget } from "@/stores/conversationStore";
 import { formatDateDivider } from "@/lib/utils/date";
 import { Loader2, MessageSquare } from "lucide-react";
+import type { MessagesInfiniteData } from "@/hooks/useMessages";
+import { toast } from "sonner";
 
 interface VirtualMessageListProps {
   conversationId: string;
   members: ConversationMember[];
   onScrollChange?: (atBottom: boolean, unreadBelow: number) => void;
+  /** External details target (set from pinned banner). If provided, overrides internal state. */
+  onViewDetails?: (msg: Message) => void;
+  detailsTarget?: Message | null;
+  onCloseDetails?: () => void;
 }
 
 // ─── List item types ──────────────────────────────────────────────────────────
@@ -54,9 +66,17 @@ function buildItems(messages: Message[]): ListItem[] {
 interface RowData {
   items: ListItem[];
   userId: string;
+  messageById: Map<string, Message>;
   memberMap: Map<string, ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }>;
+  otherMembers: Array<{ userId: string; lastSeenOffset: number; lastDeliveredOffset: number; avatarUrl?: string | null; displayName?: string; username?: string }>;
   setReplyTo: (msg: ReplyTarget | null) => void;
   observeRowElements: (els: Element[] | NodeListOf<Element>) => () => void;
+  onEdit: (msg: Message) => void;
+  onDelete: (msg: Message) => void;
+  onRevoke: (msg: Message) => void;
+  onForward: (msg: Message) => void;
+  onPin: (msg: Message) => void;
+  onViewDetails: (msg: Message) => void;
 }
 
 // rowComponent MUST be defined outside the parent to keep a stable reference
@@ -65,9 +85,17 @@ function MessageRowComponent({
   style,
   items,
   userId,
+  messageById,
   memberMap,
+  otherMembers,
   setReplyTo,
   observeRowElements,
+  onEdit,
+  onDelete,
+  onRevoke,
+  onForward,
+  onPin,
+  onViewDetails,
 }: RowComponentProps<RowData>) {
   const item = items[index];
   if (!item) return null;
@@ -100,6 +128,10 @@ function MessageRowComponent({
   const member = memberMap.get(msg.senderId);
   // Prefer a human-readable name: displayName > username > short userId
   const senderName = member?.displayName ?? member?.username ?? msg.senderId.slice(0, 8);
+  const replyMsg = msg.replyToMessageId ? messageById.get(msg.replyToMessageId) ?? null : null;
+  const replySenderName = replyMsg
+    ? (memberMap.get(replyMsg.senderId)?.displayName ?? memberMap.get(replyMsg.senderId)?.username ?? (replyMsg.senderId === userId ? "Bạn" : replyMsg.senderId.slice(0, 8)))
+    : undefined;
 
   return (
     <div style={style} ref={(el) => { if (el) observeRowElements([el]); }}>
@@ -108,9 +140,18 @@ function MessageRowComponent({
         isMine={isMine}
         isGroupStart={!samePrev}
         isGroupEnd={!sameNext}
+        replyMsg={replyMsg}
         senderName={senderName}
         senderAvatarUrl={member?.avatarUrl ?? undefined}
-        onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, content: m.content, type: m.type })}
+        replySenderName={replySenderName}
+        otherMembers={otherMembers}
+        onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, senderName, content: m.content, type: m.type })}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        onRevoke={onRevoke}
+        onForward={onForward}
+        onPin={onPin}
+        onViewDetails={onViewDetails}
       />
     </div>
   );
@@ -122,11 +163,104 @@ export function VirtualMessageList({
   conversationId,
   members,
   onScrollChange,
+  onViewDetails: externalViewDetails,
+  detailsTarget: externalDetailsTarget,
+  onCloseDetails,
 }: VirtualMessageListProps) {
   const userId = useAuthStore((s) => s.user?.id ?? "");
   const setReplyTo = useConversationStore((s) => s.setReplyTo);
+  const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
     useMessages(conversationId);
+
+  // ─── Seen cursor tracking ────────────────────────────────────────────────
+  const [lastVisibleOffset, setLastVisibleOffset] = useState<number | null>(null);
+  useSeenCursor(conversationId, lastVisibleOffset);
+
+  // ─── Message action handlers ──────────────────────────────────────────────
+  const handleEdit = useCallback((msg: Message) => {
+    setEditingMessage({ messageId: msg.messageId, content: msg.content ?? "" });
+  }, [setEditingMessage]);
+
+  const handleDelete = useCallback(async (msg: Message) => {
+    try {
+      await deleteMessageForMe(msg.messageId, conversationId);
+      const qc = getQueryClient();
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((p) => ({
+              ...p,
+              data: p.data.filter((m) => m.messageId !== msg.messageId),
+            })),
+          };
+        }
+      );
+    } catch {
+      // noop
+    }
+  }, [conversationId]);
+
+  const handleRevoke = useCallback(async (msg: Message) => {
+    try {
+      await revokeMessage(msg.messageId, conversationId);
+      const qc = getQueryClient();
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((p) => ({
+              ...p,
+              data: p.data.map((m) =>
+                m.messageId === msg.messageId ? { ...m, isRevoked: true, content: "" } : m
+              ),
+            })),
+          };
+        }
+      );
+    } catch (err) {
+      if ((err as { response?: { status?: number } }).response?.status === 403) {
+        toast.error("Đã quá thời gian cho phép thực hiện thao tác");
+      }
+    }
+  }, [conversationId]);
+
+  const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
+  const handleForward = useCallback((msg: Message) => {
+    setForwardTarget(msg);
+  }, []);
+
+  const [internalDetailsTarget, setInternalDetailsTarget] = useState<Message | null>(null);
+  const detailsTarget = externalDetailsTarget !== undefined ? externalDetailsTarget : internalDetailsTarget;
+  const handleViewDetails = useCallback((msg: Message) => {
+    if (externalViewDetails) {
+      externalViewDetails(msg);
+    } else {
+      setInternalDetailsTarget(msg);
+    }
+  }, [externalViewDetails]);
+
+  const handlePin = useCallback(async (msg: Message) => {
+    try {
+      await pinMessage(msg.messageId, conversationId);
+      const qc = getQueryClient();
+      qc.setQueryData(
+        queryKeys.messages.pinned(conversationId),
+        (old: Message[] | undefined) => {
+          const list = old ?? [];
+          if (list.some((m) => m.messageId === msg.messageId)) return list;
+          return [...list, msg];
+        }
+      );
+    } catch {
+      alert("Tối đa 3 tin nhắn ghim trong một cuộc trò chuyện.");
+    }
+  }, [conversationId]);
 
   const listRef = useRef<ListImperativeAPI>(null!);
   const rowHeight = useDynamicRowHeight({ defaultRowHeight: 56, key: conversationId });
@@ -146,8 +280,20 @@ export function VirtualMessageList({
 
   const items = buildItems(messages);
   itemsLengthRef.current = items.length;
+  const messageById = new Map(messages.map((m) => [m.messageId, m]));
 
   const memberMap = new Map(members.map((m) => [m.userId, m as ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }]));
+
+  const otherMembers = members
+    .filter((m) => m.userId !== userId)
+    .map((m) => ({
+      userId: m.userId,
+      lastSeenOffset: m.lastSeenOffset,
+      lastDeliveredOffset: m.lastDeliveredOffset,
+      avatarUrl: (m as { avatarUrl?: string | null }).avatarUrl ?? null,
+      displayName: (m as { displayName?: string }).displayName,
+      username: (m as { username?: string }).username,
+    }));
 
   // Reset scroll tracking whenever the user navigates to a different conversation
   useEffect(() => {
@@ -155,6 +301,7 @@ export function VirtualMessageList({
     prevTopOffsetRef.current = null;
     atBottomRef.current = true;
     needsScrollBottomRef.current = true;
+    setLastVisibleOffset(null);
   }, [conversationId]);
 
   // Keep atBottomRef in sync with the user's actual scroll position
@@ -218,8 +365,20 @@ export function VirtualMessageList({
       if (startIndex <= 5 && hasNextPage && !isFetchingNextPage) {
         fetchNextPage();
       }
+      // Track the highest visible message offset for the seen cursor
+      let maxOffset = -1;
+      for (let i = stopIndex; i >= startIndex; i--) {
+        const item = items[i];
+        if (item?.kind === "message" && item.msg.senderId !== userId && item.msg.offset > 0) {
+          maxOffset = item.msg.offset;
+          break;
+        }
+      }
+      if (maxOffset > 0) {
+        setLastVisibleOffset((prev) => (prev === null || maxOffset > prev) ? maxOffset : prev);
+      }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage]
+    [hasNextPage, isFetchingNextPage, fetchNextPage, items, userId]
   );
 
   if (isLoading) {
@@ -257,10 +416,25 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, memberMap, setReplyTo, observeRowElements: rowHeight.observeRowElements }}
+        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, observeRowElements: rowHeight.observeRowElements, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails }}
         onRowsRendered={handleRowsRendered}
         overscanCount={8}
       />
+      {forwardTarget && (
+        <ForwardModal message={forwardTarget} onClose={() => setForwardTarget(null)} />
+      )}
+      {detailsTarget && (
+        <MessageDetailsModal
+          message={detailsTarget}
+          memberMap={memberMap}
+          messageById={messageById}
+          otherMembers={otherMembers}
+          onClose={() => {
+            if (onCloseDetails) { onCloseDetails(); }
+            else { setInternalDetailsTarget(null); }
+          }}
+        />
+      )}
     </div>
   );
 }
