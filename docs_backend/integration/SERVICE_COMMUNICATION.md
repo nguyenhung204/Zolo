@@ -149,7 +149,6 @@ CONVERSATION_PATTERNS.LIST_CONVERSATIONS
 CONVERSATION_PATTERNS.ADD_MEMBERS
 CONVERSATION_PATTERNS.REMOVE_MEMBERS
 CONVERSATION_PATTERNS.GET_MEMBER_IDS
-CONVERSATION_PATTERNS.INCREMENT_MAX_OFFSET
 CONVERSATION_PATTERNS.UPDATE_LAST_SEEN_OFFSET
 CONVERSATION_PATTERNS.GET_UNREAD_COUNT
 ```
@@ -251,8 +250,10 @@ CONVERSATION_PATTERNS.GET_MEMBER_IDS (get recipients)
 
 **Chat Core → Friendship**
 ```
-FRIENDSHIP_PATTERNS.GET_FRIEND_STATUS (validate DIRECT relationship — TCP fallback only;
-                                       Redis block cache checked first via FriendshipBlockConsumer)
+FRIENDSHIP_PATTERNS.GET_FRIEND_STATUS (DIRECT validation fallback only)
+// Hot path uses one Redis MGET on 4 keys:
+// {chat:rel:{lo}:{hi}}:block:A:B, {chat:rel:{lo}:{hi}}:block:B:A,
+// {chat:rel:{lo}:{hi}}:friends, {chat:rel:{lo}:{hi}}:proof
 ```
 
 **Chat Core → Message Store**
@@ -270,7 +271,7 @@ MEDIA_PATTERNS.BIND_TO_MESSAGE       # Bind media to message after MESSAGE_ACCEP
 
 **Message Store → Conversation**
 ```
-CONVERSATION_PATTERNS.INCREMENT_MAX_OFFSET (assign sequential offset)
+CONVERSATION_PATTERNS.INCREMENT_MAX_OFFSET (cold path only, seed Redis offset key when absent)
 CONVERSATION_PATTERNS.UPDATE_LAST_SEEN_OFFSET (mark messages read)
 ```
 
@@ -296,7 +297,7 @@ sequenceDiagram
     Conversation-->>ChatCore: true
     
     alt DIRECT conversation
-        ChatCore->>ChatCore: Redis MGET block:A:B + block:B:A (O(1) fast-path)
+        ChatCore->>ChatCore: Redis MGET 4 keys (block:A:B, block:B:A, friends, proof)
         alt cache miss only
           ChatCore->>Friendship: TCP GET_FRIEND_STATUS
           Friendship-->>ChatCore: Friend status
@@ -791,30 +792,39 @@ Fail fast for typing indicators, presence updates
 
 | Cache Key Pattern | TTL | Purpose | Invalidation |
 |------------------|-----|---------|--------------|
-| `conversation:{id}:members` | 10 min | Reduce IS_MEMBER calls | On member add/remove |
-| `friendship:{userA}:{userB}` | 5 min | Reduce friendship checks | On friendship change |
+| `chat:conversation:{id}:members` | 7 days | Reduce IS_MEMBER calls | Write-through + Kafka consumer |
+| `{chat:rel:{lo}:{hi}}:friends` | 30 days | Friend status LWW | FriendshipFriendsConsumer tombstone |
+| `{chat:rel:{lo}:{hi}}:block:{A}:{B}` | 24h | Block status | FriendshipBlockConsumer DEL |
+| `{chat:rel:{lo}:{hi}}:proof` | 30s | Race-condition bridge | TTL expiry |
+| `chat:conv:{id}:max_offset` | permanent | Redis INCR offset counter | OffsetSyncJob write-behind |
 | `user:{id}:profile` | 5 min | Reduce user lookups | On profile update |
 | `presence:user:{id}` | 1 hour | Track online status | On status change |
 
 **Cache Patterns**
-- **Cache-Aside**: Chat Core caches membership checks
-- **Write-Through**: Presence Service updates Redis + state
-- **Refresh-Ahead**: Conversation Service pre-fetches member lists
+- **Multi-layer (L1+L0+TCP)**: `MembershipValidatorService`, `UserValidatorService`, `MessageSendOrchestrator` — in-process Map → Redis → TCP singleflight
+- **LWW Register**: `FriendshipFriendsConsumer` — broker timestamp CAS via Lua script
+- **Write-Through**: `ConversationService` — pipeline-write to Redis immediately after DB commit
+- **Write-Behind**: `OffsetSyncJob` — Redis INCR → batch UPDATE PostgreSQL every 5s
+- **Singleflight**: `MessageSendOrchestrator`, `MembershipValidatorService` — N concurrent misses → 1 TCP call
 
 ### Connection Pooling
 
-**TCP Connection Pools**
-- Gateway → Services: 10 connections per service
-- Service → Service: 5 connections per dependency
-- Keep-alive: 60 seconds
+**`PooledTcpClientProxy` (Gateway)**
+- Gateway uses `PooledTcpClientProxy` (round-robin) for `SERVICES.CHAT_CORE`, `SERVICES.CONVERSATION`, `SERVICES.FRIENDSHIP`.
+- Constructor: `new PooledTcpClientProxy(host, port, poolSize)` where `poolSize` controls number of TCP connections.
+- `send()` / `emit()` delegate to the next proxy in round-robin order.
 
 **Database Connection Pools**
 - PostgreSQL: 20 connections per service
 - MongoDB: 10 connections per service
 
 **Redis Connection Pools**
-- Single connection per service (multiplexed)
+- Single IORedis instance per service (multiplexed)
 - Cluster mode: 1 connection per node
+
+### Deadline Propagation (`ProxyHelper`)
+
+All TCP calls via `ProxyHelper.send()` carry a `_deadline` timestamp. Effective timeout = `Math.min(configured_timeout, remaining_deadline_budget)`. This prevents retries from running past the overall request deadline.
 
 ### Batching Strategies
 

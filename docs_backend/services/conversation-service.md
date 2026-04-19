@@ -72,12 +72,13 @@ Used by OutboxProcessor to publish events to Kafka atomically within the same tr
 
 ### Create Conversation
 
-1. Normalize memberIds (include createdBy, deduplicate)
-2. Insert `conversation` record with correct `memberCount`
-3. Bulk insert `conversation_member` records; `createdBy` gets `owner` role, others get `member`
-4. For `direct`: enforce idempotency via unique index on sorted pair — catch `23505` conflict and return existing conversation
-5. Write `CONVERSATION_CREATED` outbox event in same transaction
-6. Commit
+1. Normalize memberIds (include createdBy, deduplicate).
+2. Insert `conversation` record with correct `memberCount`.
+3. Bulk insert `conversation_member` records; `createdBy` gets `owner` role, others get `member`.
+4. For `direct`: enforce idempotency via unique index on sorted pair — catch `23505` conflict and return existing conversation.
+5. Write `CONVERSATION_CREATED` outbox event in same transaction.
+6. Commit transaction.
+7. **Write-through Redis** (after commit, non-blocking): pipeline `SADD members` + `SET role EX 7d` + `EXPIRE 7d` for all members. Eliminates dependency on Kafka MEMBER_ADDED consumer lag for cache warm-up.
 
 ### Get Conversation (with participants)
 
@@ -111,17 +112,27 @@ The Gateway (`ConversationManagementGatewayService`) uses `previousAvatarMediaId
 
 ### Add / Remove Members
 
-1. Verify caller has `OWNER` or `ADMIN` role
-2. Bulk insert members (`ON CONFLICT DO NOTHING` for idempotency)
-3. Update `memberCount` from actual DB count
-4. Write `MEMBER_ADDED` / `MEMBER_REMOVED` outbox event in same transaction
-5. Commit
+1. Verify caller has `OWNER` or `ADMIN` role.
+2. Bulk insert members (`ON CONFLICT DO NOTHING` for idempotency).
+3. Update `memberCount` from actual DB count.
+4. Write `MEMBER_ADDED` / `MEMBER_REMOVED` outbox event in same transaction.
+5. Commit.
+6. **Write-through Redis** (after commit, non-blocking): for `addMembers()`, pipeline `SADD + SET role EX 7d + EXPIRE 7d`. Same pattern as createConversation for immediate cache warm-up.
 
-`MembershipCacheConsumer` (Kafka) handles Redis Set invalidation on receipt of these events.
+`MembershipCacheConsumer` (Kafka) also handles Redis Set invalidation on receipt of these events (idempotent).
 
-### Offset Management
+### Offset Management (Redis Atomic INCR + OffsetSyncJob)
 
-`INCREMENT_MAX_OFFSET` atomically increments `conversation.maxOffset` and returns the new value. Called by Message Store before persisting a message to assign a unique, ordered offset.
+**Trước**: `INCREMENT_MAX_OFFSET` pattern — TCP call từ message-store → UPDATE conversations SET max_offset + 1 → row lock mỗi message.
+
+**Hiện tại**: Redis Atomic Offset pattern:
+1. `MessageAcceptedConsumer` dùng Lua script `INCR_IF_EXISTS` để assign offset từ Redis counter `chat:conv:{id}:max_offset` (O(1), zero DB traffic on warm path).
+2. Sau mỗi INCR: `SADD chat:conv:dirty_offsets {conversationId}`.
+3. **OffsetSyncJob** (`@Cron('*/5 * * * * *')`): `SMEMBERS dirty_offsets` → batch `UPDATE conversations SET max_offset = :val WHERE max_offset < :val` → `SREM dirty_offsets`.
+
+`INCREMENT_MAX_OFFSET` TCP pattern chỉ dùng cho **cold path** (Redis counter absent sau restart).
+
+`IConversationRepository.syncMaxOffset(conversationId, offset)`: method mới cho OffsetSyncJob.
 
 ### Cursor Tracking (Unread / Delivery Status)
 
@@ -152,7 +163,7 @@ Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-me
 | `GET_MEMBER_IDS` | All member IDs |
 | `GET_MEMBERS_WITH_ROLES` | Members with role info |
 | `SET_MEMBER_ROLE` | Change member role |
-| `INCREMENT_MAX_OFFSET` | Atomic offset increment |
+| `INCREMENT_MAX_OFFSET` | Atomic offset increment (cold-path seeding for Redis counter) |
 | `UPDATE_LAST_SEEN_OFFSET` | Deprecated alias of `UPDATE_SEEN_CURSOR` (kept for backward compatibility) |
 | `UPDATE_SEEN_CURSOR` | Update lastSeenOffset |
 | `UPDATE_DELIVERED_CURSOR` | Update lastDeliveredOffset |
@@ -218,6 +229,7 @@ The membership Redis Set (key: `chat:conversation:{conversationId}:members`) is 
     ConversationOutboxProcessor,
     FriendshipEventConsumer,
     MembershipCacheConsumer,
+    OffsetSyncJob,           // @Cron(*/5 * * * * *) — write-behind Redis→PG
   ],
 })
 export class ConversationModule {}

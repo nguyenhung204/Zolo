@@ -17,8 +17,8 @@ sequenceDiagram
     participant Client
     participant RealtimeGW as Realtime Gateway
     participant ChatCore as Chat Core
+    participant Redis
     participant ConvSvc as Conversation Service
-    participant FriendSvc as Friendship Service
     participant Kafka
     participant MsgStore as Message Store
     participant ConvDB as Conversation DB
@@ -27,132 +27,155 @@ sequenceDiagram
 
     %% Phase 1: Client sends message
     Client->>RealtimeGW: WS: message:send<br/>{conversationId, content}
-    RealtimeGW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId, content}
-    
-    %% Phase 2: Validate conversation
-    ChatCore->>ConvSvc: TCP: GET_CONVERSATION<br/>{conversationId}
-    ConvSvc->>ConvDB: SELECT conversation + members
-    ConvDB-->>ConvSvc: Conversation data
-    ConvSvc-->>ChatCore: {conversation, members}
-    
-    %% Phase 3: Check membership
-    ChatCore->>ChatCore: Verify sender is member
-    
+    RealtimeGW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId, content, type}
+
+    %% Phase 2: Rate limit check
+    ChatCore->>Redis: Rate limit check (INCR key)
+    Note over ChatCore: Step 1: Rate limit (inline)
+
+    %% Phase 3: Validate conversation + members (parallel, in-process cached)
+    Note over ChatCore: L1 in-process cache (15s conv / 30s members)<br/>Singleflight prevents thundering herd<br/>L0 Redis cache (5min) on miss
+    ChatCore->>Redis: GET chat:conv:meta:{id} (L0 Redis)
+    alt L0 miss
+        ChatCore->>ConvSvc: TCP: GET_CONVERSATION (singleflight)
+        ConvSvc->>ConvDB: SELECT conversation
+        ConvDB-->>ConvSvc: Conversation data
+        ConvSvc-->>ChatCore: ConversationDto
+        ChatCore->>Redis: SET chat:conv:meta:{id} EX 300 (async write-back)
+    end
+    ChatCore->>ChatCore: Check sender is member (from members list)
+
     alt Sender not member
         ChatCore-->>RealtimeGW: Error: FORBIDDEN
         RealtimeGW-->>Client: error: Not a member
     end
-    
-    %% Phase 4: Check friendship (DIRECT only)
+
+    %% Phase 4: Check friendship (DIRECT only) — Redis MGET, no TCP
     alt Conversation type = DIRECT
-        ChatCore->>FriendSvc: TCP: IS_FRIEND<br/>{userId, targetUserId}
-        FriendSvc->>FriendSvc: Query friendship status
-        FriendSvc-->>ChatCore: Status: FRIEND/BLOCKED/NONE
-        
-        alt Status = BLOCKED
+        ChatCore->>Redis: MGET<br/>{chat:rel:{lo:hi}:block:A:B,<br/>chat:rel:{lo:hi}:block:B:A,<br/>chat:rel:{lo:hi}:friends,<br/>chat:rel:{lo:hi}:proof}
+        Note over ChatCore: All 4 keys share same hash tag<br/>{chat:rel:{lo}:{hi}} — single Redis slot
+
+        alt blockA or blockB key exists
             ChatCore-->>RealtimeGW: Error: BLOCKED
             RealtimeGW-->>Client: error: User blocked you
         end
-        
-        alt Status = NONE (strangers)
-            ChatCore->>MsgStore: TCP: HAS_REPLIED<br/>{conversationId, recipientId}
-            MsgStore-->>ChatCore: hasReplied: false
-            ChatCore->>ChatCore: Apply rate limit<br/>(1 msg/hour)
-            
+
+        alt friends key absent AND proof key absent
+            Note over ChatCore: Strangers: TCP fallback (in-process cache 30s)
+            ChatCore->>ChatCore: Apply rate limit (1 msg/hour)
             alt Rate limit exceeded
                 ChatCore-->>RealtimeGW: Error: RATE_LIMIT
                 RealtimeGW-->>Client: error: Rate limit
             end
         end
     end
-    
-    %% Phase 5: Validation passed, publish event
-    ChatCore->>Kafka: Publish: MESSAGE_ACCEPTED<br/>{messageId, conversationId, senderId, content}
-    ChatCore-->>RealtimeGW: Success: {messageId}
-    RealtimeGW-->>Client: message:saved<br/>{messageId, status: "sending"}
-    
-    Note over Client: Shows "sent" checkmark<br/>(~50-100ms latency)
-    
+
+    %% Phase 5: Validation passed — publish Kafka (fire-and-forget + outbox)
+    ChatCore->>Kafka: Publish: MESSAGE_ACCEPTED<br/>{messageId, conversationId, senderId, content, type}
+    Note over ChatCore: Kafka publish is fire-and-forget.<br/>On transient failure → push to<br/>Redis outbox (chat:kafka:outbox).<br/>Background poller retries every 500ms.
+    ChatCore-->>RealtimeGW: Success: {messageId} (201)
+    RealtimeGW-->>Client: message:saved<br/>{messageId, status: "sent"}
+
+    Note over Client: Shows "sent" checkmark<br/>(~20-60ms latency)
+
     %% Phase 6: Message Store consumes event
     Kafka->>MsgStore: Consume: MESSAGE_ACCEPTED
-    MsgStore->>MsgStore: Check idempotency<br/>(messageId exists?)
-    
-    %% Phase 7: Get sequential offset
-    MsgStore->>ConvSvc: TCP: INCREMENT_MAX_OFFSET<br/>{conversationId}
-    ConvSvc->>ConvDB: UPDATE conversations<br/>SET maxOffset = maxOffset + 1<br/>WHERE id = ?
-    ConvDB-->>ConvSvc: New offset: 42
-    ConvSvc-->>MsgStore: offset: 42
-    
-    %% Phase 8: Persist message
-    MsgStore->>ChatDB: BEGIN TRANSACTION
-    MsgStore->>ChatDB: INSERT INTO messages<br/>(id, conversationId, senderId,<br/>content, offset, createdAt)
+    MsgStore->>MsgStore: Idempotency check (messageId)
+
+    %% Phase 7: Atomic offset via Redis INCR (Lua)
+    MsgStore->>Redis: EVAL INCR_IF_EXISTS<br/>chat:conv:{id}:max_offset
+    alt Warm path (key exists)
+        Redis-->>MsgStore: offset = N+1 (O(1), no DB)
+        MsgStore->>Redis: SADD chat:conv:dirty_offsets {conversationId}
+    else Cold path (key absent → Lua returns -1)
+        MsgStore->>ConvSvc: TCP: INCREMENT_MAX_OFFSET (once to seed)
+        ConvSvc->>ConvDB: UPDATE conversations SET max_offset = max_offset + 1
+        ConvDB-->>ConvSvc: offset = N
+        ConvSvc-->>MsgStore: offset: N
+        MsgStore->>Redis: SET chat:conv:{id}:max_offset N NX
+        MsgStore->>Redis: SADD chat:conv:dirty_offsets {conversationId}
+    end
+
+    %% Phase 8: Persist message (offset known before INSERT)
+    MsgStore->>ChatDB: INSERT INTO messages<br/>(id, conversationId, senderId,<br/>content, offset, type, createdAt)
     MsgStore->>ChatDB: INSERT INTO message_receipts<br/>(messageId, userId, status='delivered')<br/>FOR EACH member
-    MsgStore->>ChatDB: COMMIT TRANSACTION
-    
-    %% Phase 9: Publish saved event
+
+    %% Phase 9: OffsetSyncJob (every 5s) persists max_offset to DB
+    Note over ConvDB: OffsetSyncJob (@Cron 5s):<br/>SMEMBERS dirty_offsets →<br/>batch UPDATE conversations<br/>SET max_offset WHERE max_offset < new<br/>SREM dirty_offsets (synced IDs)
+
+    %% Phase 10: Publish saved event
     MsgStore->>Kafka: Publish: MESSAGE_SAVED<br/>{messageId, conversationId, latestOffset}
-    
-    %% Phase 10: Realtime Gateway broadcasts
+
+    %% Phase 11: Realtime Gateway broadcasts
     Kafka->>RealtimeGW: Consume: MESSAGE_SAVED
     RealtimeGW->>RealtimeGW: Batch events (80ms window)
-    
+
     %% Tier 1: Personal rooms (all members)
     RealtimeGW->>Recipients: Broadcast to user:{userId} rooms<br/>message:notify<br/>{conversationId, latestOffset}
-    
+
     Note over Recipients: Badge count increments<br/>for users not in conversation
-    
+
     %% Tier 2: Conversation room (active viewers)
     RealtimeGW->>Recipients: Broadcast to conversation:{id}<br/>message:new<br/>{full message object}
-    
+
     Note over Recipients: Message appears immediately<br/>for users viewing conversation
 ```
 
 ### Key Steps Explained
 
-1. **Client Emits** - User sends message via WebSocket with conversationId and content
-2. **TCP Forward** - Realtime Gateway forwards to Chat Core with authenticated senderId
-3. **Validate Conversation** - Chat Core fetches conversation details and member list
-4. **Check Membership** - Verifies sender is a member of the conversation
-5. **Check Friendship** - For DIRECT conversations, validates friendship status
-6. **Rate Limiting** - For non-friends, enforces 1 message/hour until recipient replies
-7. **Publish Event** - Chat Core publishes MESSAGE_ACCEPTED to Kafka
-8. **Quick Response** - Client receives success (~50-100ms) before persistence
-9. **Consume Event** - Message Store picks up event from Kafka
-10. **Idempotency Check** - Prevents duplicate messages if event replayed
-11. **Get Sequential Offset** - Atomic increment of conversation's maxOffset
-12. **Persist Message** - Insert message and delivery receipts in transaction
-13. **Publish Saved** - Message Store publishes MESSAGE_SAVED to Kafka
-14. **Batch Window** - Realtime Gateway batches events for 80ms to reduce broadcast storms
-15. **Tier 1 Broadcast** - Notify all members in their personal rooms (badge updates)
-16. **Tier 2 Broadcast** - Send full message to users currently viewing the conversation
+1. **Client Emits** — User sends message via WebSocket with conversationId, content, and type.
+2. **TCP Forward** — Realtime Gateway forwards to Chat Core with authenticated senderId.
+3. **Rate Limit** — Inline Redis counter check (per senderId).
+4. **Conversation + Members** — Fetched in parallel with singleflight coalescing:
+   - **L1 in-process cache** (15s conv / 30s members): eliminates TCP calls under burst traffic.
+   - **L0 Redis cache** (5min): fallback before TCP call.
+   - **Singleflight**: N concurrent cache-misses → exactly 1 TCP call to conversation-service.
+5. **Membership Check** — Sender must be a member (derived from already-fetched members list, 0 extra TCP calls).
+6. **Friendship / Block Check (DIRECT only)** — Single Redis `MGET` fetches 4 co-located keys:
+   - `{chat:rel:{lo}:{hi}}:block:{A}:{B}` — blocked by A
+   - `{chat:rel:{lo}:{hi}}:block:{B}:{A}` — blocked by B
+   - `{chat:rel:{lo}:{hi}}:friends` — LWW friend status (positive = friends, negative = tombstone)
+   - `{chat:rel:{lo}:{hi}}:proof` — 30s race-condition bridge (set at accept-friend time)
+   All 4 keys share the same hash tag → single Redis slot → safe on any cluster topology.
+7. **Kafka Publish (fire-and-forget + outbox)** — Chat Core publishes MESSAGE_ACCEPTED then **returns 201 immediately**. On transient Kafka error → push event to Redis list `chat:kafka:outbox`; background poller (500ms) retries.
+8. **Message Store Consumes** — MessageAcceptedConsumer picks up MESSAGE_ACCEPTED from Kafka.
+9. **Atomic Offset via Redis INCR** — Lua `INCR_IF_EXISTS` script:
+   - **Warm path**: Redis INCR → O(1), zero DB/TCP traffic. Adds conversationId to `dirty_offsets` set.
+   - **Cold path** (Redis restart / eviction): Lua returns -1 → one TCP call to conversation-service to seed the counter with `NX`.
+10. **Persist Message** — INSERT with the real offset (no more two-phase temp-offset pattern).
+11. **OffsetSyncJob** — `@Cron('*/5 * * * * *')` in conversation-service: reads `dirty_offsets`, batch-fetches Redis counters, batch-updates `conversations.max_offset` in PostgreSQL.
+12. **Publish Saved** — Message Store publishes MESSAGE_SAVED to Kafka.
+13. **Batch Window** — Realtime Gateway batches events for 80ms to reduce broadcast storms.
+14. **Tier 1 Broadcast** — Notify all members in their personal rooms (badge updates).
+15. **Tier 2 Broadcast** — Send full message to users currently viewing the conversation.
 
 ### Error Scenarios
 
 **Sender Not Member**
-- Rejected at step 4 with FORBIDDEN error
-- No Kafka event published
-- Client shows "You are not a member"
+- Rejected at membership check with FORBIDDEN error.
+- No Kafka event published. Client shows "You are not a member".
 
 **Recipient Blocked Sender**
-- Rejected at step 7 with BLOCKED error
-- No Kafka event published
-- Client shows "Unable to send message"
+- Rejected at Redis MGET block check with BLOCKED error.
+- No Kafka event published. Client shows "Unable to send message".
 
 **Rate Limit Exceeded**
-- Rejected at step 8 with RATE_LIMIT error
-- Applied only to non-friends
-- Client shows "You can send 1 message per hour to non-friends until they reply"
+- Rejected with RATE_LIMIT_EXCEEDED error.
+- Applied only to non-friends (friends key absent + proof key absent in Redis MGET).
 
-**Kafka Unavailable**
-- Chat Core fails to publish MESSAGE_ACCEPTED
-- Returns error to client
-- No persistence occurs (consistent failure)
+**Kafka Unavailable (transient)**
+- ChatCore pushes event to Redis outbox `chat:kafka:outbox`.
+- Background poller (500ms) retries. Eventual delivery within seconds.
+- Client already received 201; no error shown.
+
+**Kafka Unavailable (persistent)**
+- Outbox grows. Once Kafka recovers, poller drains the backlog in order.
+- Messages are stored in correct offset order when Consumer processes them.
 
 **Database Write Failure**
-- Message Store fails to persist
-- MESSAGE_SAVED never published
-- Recipients never receive message
-- Sender's client shows "sending..." indefinitely
+- Message Store fails to INSERT message. MESSAGE_SAVED never published.
+- Recipients never receive message. Sender's client shows "sending…" indefinitely.
+- Offset counter in Redis is already incremented → gap in offset sequence (recoverable by admin re-drive).
 
 ---
 
@@ -198,8 +221,8 @@ sequenceDiagram
     GW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId,<br/>type: "sticker", content: "",<br/>metadata: {url: "…"}}
 
     Note over ChatCore: Rate limit check (shared bucket with text)
-    Note over ChatCore: ACL chain — uses text chain (no mediaId)
-    Note over ChatCore: Content validation bypassed for type=sticker
+    Note over ChatCore: Membership + friendship checks same as text message
+    Note over ChatCore: Content validation: type=sticker skips text/mediaId checks<br/>metadata.url validated against sticker cache
 
     ChatCore->>Kafka: Publish: MESSAGE_ACCEPTED<br/>{messageId, type: "sticker",<br/>content: "", metadata: {url: "…"}}
     ChatCore-->>GW: {success: true, messageId}
@@ -914,11 +937,20 @@ sequenceDiagram
     FriendSvc->>UsersDB: INSERT INTO outbox_events (type=FRIENDSHIP_ACCEPTED)
     FriendSvc->>UsersDB: COMMIT
 
+    %% Gateway immediately writes FRIENDSHIP_PROOF key (race-condition bridge)
+    Gateway->>Redis: SET {chat:rel:{lo}:{hi}}:proof 1 EX 30
+    Note over Redis: FRIENDSHIP_PROOF key: 30s TTL<br/>Covers Kafka consumer lag so ChatCore<br/>doesn't incorrectly rate-limit "just-friends" messages
+
     FriendSvc-->>Gateway: {status: "FRIEND"}
     Gateway-->>UserB: 200
 
     Note over FriendSvc: OutboxProcessor (~30s)
-    FriendSvc->>Kafka: Publish friendship.request.accepted<br/>{userId: userB, friendId: userA}
+    FriendSvc->>Kafka: Publish friendship.request.accepted<br/>{userId: userB, friendId: userA, brokerTimestamp}
+
+    %% FriendshipFriendsConsumer caches friend status in Redis
+    Kafka->>ChatCore: Consume friendship.request.accepted<br/>(consumer group: nest-chat.chat-core.friend-cache)
+    ChatCore->>Redis: Lua CAS SET {chat:rel:{lo}:{hi}}:friends = +brokerTs EX 2592000
+    Note over Redis: LWW Register: positive Unix-ms = friends<br/>Immune to Kafka out-of-order delivery<br/>TTL: 30 days (safety-net; primary eviction is event-driven)
 
     %% Phase 3: Auto-create DIRECT conversation
     Kafka->>ConvSvc: Consume friendship.request.accepted
@@ -974,12 +1006,15 @@ sequenceDiagram
     ConvSvc-->>Gateway: {success: true, memberCount}
     Gateway-->>Admin: 200
 
+    %% Write-through: populate Redis membership cache immediately (no Kafka lag)
+    Note over ConvSvc: Write-through Redis immediately after DB commit<br/>SADD + SET role EX 7d (eliminates Kafka consumer lag for cache warm-up)
+
     Note over ConvSvc: OutboxProcessor (~30s)
     ConvSvc->>Kafka: Publish chat.event.member_added<br/>{conversationId, userId, role}
 
-    %% Cache invalidation
+    %% Cache invalidation (legacy consumer group — membership already warm)
     Kafka->>ConvSvc: Consume chat.event.member_added (cache-updater group)
-    ConvSvc->>Redis: SADD membership:{conversationId} userId
+    ConvSvc->>Redis: SADD membership:{conversationId} userId (idempotent)
 
     %% Realtime notification
     Kafka->>RealtimeGW: Consume chat.event.member_added

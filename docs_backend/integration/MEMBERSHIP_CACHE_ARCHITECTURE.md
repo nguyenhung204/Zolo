@@ -1,127 +1,157 @@
 # Membership Cache Architecture
 
 ## Problem
-ChatCore needs to validate membership quickly for every message:
-- **Before**: ChatCore queried Conversation Service via TCP (high latency, ~10 ms per message)
-- **Before**: ChatCore cached membership with a 1-hour TTL (stale cache issue)
-- **Problem**: User kicked from group could still send messages until TTL expiry
-- **Problem**: Role was not cached — every role-based check required a TCP call
+ChatCore cần validate membership nhanh cho mỗi message:
+- **Trước**: ChatCore query Conversation Service via TCP (~10ms/message)
+- **Trước**: Membership cache TTL 1 giờ → user bị kick vẫn gửi được message
+- **Trước**: Role không được cache → mỗi role check cần 1 TCP call
+- **Trước (DIRECT)**: Friendship status check qua TCP đến friendship-service mỗi message
 
-## Solution: Event-Driven Redis Cache (Cache-First)
+## Solution: Multi-Layer Cache (L1 in-process + L0 Redis + TCP fallback)
 
 ### Architecture
 
 ```
-Conversation Service (Source of Truth)
-    ↓ DB write + outbox event (same transaction)
-    ↓
-Kafka → MembershipCacheConsumer (CONVERSATION_CACHE_UPDATER group)
-    ↓
+Conversation Service (Source of Truth — PostgreSQL)
+    │
+    ├─ Write-through: sau DB commit → pipeline SADD + SET role vào Redis ngay
+    │    (loại bỏ phụ thuộc Kafka consumer lag cho cache warm-up)
+    │
+    └─ Outbox event → Kafka → MembershipCacheConsumer (cache-updater group)
+                                  (idempotent: SADD / SET là no-op nếu đã có)
+
 Redis:
-  chat:conversation:{id}:members            (Set of userIds)
-  chat:conversation:{id}:members:{uid}:role (String with member role)
+  {REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(id)}      (Set of userIds)
+  {REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(id)}:{uid}:role  (String role)
     ↑
-ChatCore MembershipValidatorService
-  1. redis.sismember(key, userId)     → O(1) membership
-  2. redis.get(roleKey)               → O(1) role (skips TCP if hit)
-  3. TCP fallback if Redis unavailable
+ChatCore MembershipValidatorService — 3 layers:
+  L1: in-process Map cache (30s TTL, singleflight)
+  L0: Redis pipeline SISMEMBER + GET role (1 round-trip)
+  L3: TCP fallback to conversation-service (singleflight)
 ```
 
-Additionally, to avoid a TCP call on every DIRECT-conversation block check:
+Friendship/block/friends cache (DIRECT message validation):
 
 ```
-Friendship Service
-    ↓ publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED events
-    ↓
-Kafka → FriendshipBlockConsumer (CHAT_CORE_BLOCK_CACHE group, in Chat Core)
-    ↓
-Redis: chat:friendship:block:{blockerId}:{blockedId}  (String "1", TTL 24h)
-    ↑
-MessageSendOrchestrator (fast-path before TCP to Friendship Service)
+FriendshipBlockConsumer (Chat Core, CHAT_CORE_BLOCK_CACHE group)
+  ← FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED
+  → {chat:rel:{lo}:{hi}}:block:{blockerId}:{blockedId}  TTL 24h
+
+FriendshipFriendsConsumer (Chat Core, CHAT_CORE_FRIEND_CACHE group)
+  ← FRIENDSHIP.REQUEST_ACCEPTED / FRIENDSHIP.REMOVED
+  → {chat:rel:{lo}:{hi}}:friends  (LWW +brokerTs / -brokerTs)  TTL 30d/60s
+
+FRIENDSHIP_PROOF (Gateway, set synchronously on accept-friend)
+  → {chat:rel:{lo}:{hi}}:proof = "1"  TTL 30s
+    (30s race-condition bridge: covers Kafka consumer lag at accept-friend moment)
+
+MessageSendOrchestrator
+  → Single Redis MGET(block_A_B, block_B_A, friends, proof)
+    All 4 keys share hash tag {chat:rel:{lo}:{hi}} → single Redis slot
 ```
 
 ---
 
 ## Flows
 
-### 1. Member Added
+### 1. Member Added (Write-through + Kafka)
 
 ```typescript
-// Conversation Service — conversation.service.ts
-// DB write and outbox save in the same transaction:
-await entityManager.save(ConversationMember, { conversationId, userId, role });
-await outboxRepository.create(entityManager, {
-  topic: KAFKA_TOPICS.MEMBER_ADDED,
-  payload: JSON.stringify({ conversationId, userIds: [userId], roles: { [userId]: role } }),
-});
-
-// → OutboxProcessor publishes after commit
-// → MembershipCacheConsumer.handleMemberAdded():
-const key = `chat:conversation:${conversationId}:members`;
-await redis.sadd(key, userId);
-await redis.set(`${key}:${userId}:role`, role, 'EX', 604800); // 7 days
-await redis.expire(key, 604800);
-
-// Immediate bust also happens in-process (before Kafka round-trip):
-// conversation.service.ts removes SREM / DEL role key directly after the DB commit
+// ConversationService.createConversation() / addMembers() — sau DB commit
+const memberCacheKey = REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(conversation.id);
+const pipeline = redis.pipeline();
+pipeline.sadd(memberCacheKey, ...memberIds);
+for (const uid of memberIds) {
+  const role = uid === createdBy ? MemberRole.OWNER : MemberRole.MEMBER;
+  pipeline.set(`${memberCacheKey}:${uid}:role`, role, 'EX', 7 * 24 * 3600);
+}
+pipeline.expire(memberCacheKey, 7 * 24 * 3600);
+await pipeline.exec().catch(err => logger.warn('Cache write-through non-critical', err));
+// Sau đó Kafka event cũng đến → idempotent (SADD / SET overwrite với cùng giá trị)
 ```
 
-### 2. Member Removed
+### 2. Member Removed (Two-path invalidation)
 
-Two invalidation paths run in parallel (defense-in-depth):
-
-**Path A — Immediate (in-process, conversation.service.ts)**:
+**Path A — Immediate (in-process)**: sau DB transaction commit, trước Kafka event đến:
 ```typescript
-// Runs right after the DB transaction commits, before Kafka event arrives
 const pipeline = redis.pipeline();
 pipeline.srem(membersKey, userId);
 pipeline.del(`${membersKey}:${userId}:role`);
 await pipeline.exec().catch(() => {}); // soft-fail
 ```
 
-**Path B — Event-driven (MembershipCacheConsumer)**:
+**Path B — Event-driven (MembershipCacheConsumer)**: đến sau qua Kafka:
 ```typescript
-// handleMemberRemoved() after MEMBER_REMOVED Kafka event
-const pipeline = redis.pipeline();
+// handleMemberRemoved() — idempotent
 pipeline.srem(key, ...userIds);
 for (const uid of userIds) pipeline.del(`${key}:${uid}:role`);
-await pipeline.exec();
 ```
 
-Both paths are idempotent: `SREM` and `DEL` on a non-existent key are no-ops.
-
-### 3. ChatCore Validation (implemented, cache-first)
+### 3. ChatCore Validation — 3 layers
 
 ```typescript
-// MembershipValidatorService
-const membersKey = REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(conversationId);
-const isMember = await redis.sismember(membersKey, userId);  // O(1)
+// MembershipValidatorService.validateMembership(userId, conversationId)
 
-// Role lookup (avoids TCP on cache hit)
-const roleKey = `${membersKey}:${userId}:role`;
-const cachedRole = await redis.get(roleKey);
-if (cachedRole) return { isMember: true, role: cachedRole };
+// Layer 1: in-process Map (30s TTL)
+const memKey = `${userId}:${conversationId}`;
+const cached = this.membershipCache.get(memKey);
+if (cached && Date.now() < cached.validUntil) return { isMember: cached.isMember, ... };
 
-// TCP fallback only when Redis misses
-const membership = await conversationServiceAdapter.getMembership(userId, conversationId);
-```
+// Layer 0: Redis pipeline (SISMEMBER + GET role — 1 round-trip)
+const cacheKey = REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(conversationId);
+const roleKey = `${cacheKey}:${userId}:role`;
+const [[, isMember], [, role]] = await redis.pipeline()
+  .sismember(cacheKey, userId)
+  .get(roleKey)
+  .exec();
 
-### 4. Friendship Block Check (fast-path in MessageSendOrchestrator)
-
-```typescript
-// Before TCP call to Friendship Service:
-const [isBlocked, isBlockedBy] = await redis
-  .mget(
-    REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(senderId, receiverId),
-    REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(receiverId, senderId),
-  )
-  .catch(() => [null, null]); // Redis failure → fall through to TCP
-
-if (isBlocked || isBlockedBy) {
-  throw new ForbiddenException('FORBIDDEN_BLOCKED_USER');
+if (isMember === 1) {
+  // Populate L1 cache
+  this.membershipCache.set(memKey, { isMember: true, role, validUntil: Date.now() + 30_000 });
+  return { isMember: true, role };
 }
-// TCP call only on cache miss:
-const status = await friendshipService.getFriendshipStatus(senderId, receiverId);
+
+// Layer 3: TCP fallback (singleflight — N concurrent misses = 1 TCP call)
+const pending = this.inflight.get(inflightKey);
+if (pending) return pending;
+const promise = this.fetchViaConversationService(userId, conversationId);
+this.inflight.set(inflightKey, promise);
+return promise;
+```
+
+### 4. Friendship Check (DIRECT) — Single Redis MGET
+
+```typescript
+// MessageSendOrchestrator.handleDirectConversation()
+const [blockAB, blockBA, friends, proof] = await redis.mget(
+  REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(senderId, receiverId),   // {chat:rel:{lo}:{hi}}:block:A:B
+  REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(receiverId, senderId),   // {chat:rel:{lo}:{hi}}:block:B:A
+  REDIS_KEYS.CHAT.FRIENDSHIP_FRIENDS(senderId, receiverId), // {chat:rel:{lo}:{hi}}:friends
+  REDIS_KEYS.CHAT.FRIENDSHIP_PROOF(senderId, receiverId),   // {chat:rel:{lo}:{hi}}:proof
+);
+// All 4 keys share hash tag {chat:rel:{lo}:{hi}} → single Redis Cluster slot → safe MGET
+
+if (blockAB || blockBA) throw new ForbiddenException('FORBIDDEN_BLOCKED_USER');
+
+const areFriends = friends !== null && parseInt(friends) > 0;
+const hasProof = proof !== null;
+if (!areFriends && !hasProof) {
+  // Strangers: apply rate limit (1 msg/hour) or TCP fallback if Redis MGET missed
+}
+```
+
+### 5. FriendshipFriendsConsumer — LWW Cache
+
+```typescript
+// FriendshipFriendsConsumer — consumer group: nest-chat.chat-core.friend-cache
+// FRIENDSHIP.REQUEST_ACCEPTED → Lua CAS SET với positive brokerTs
+// FRIENDSHIP.REMOVED          → Lua CAS SET với negative brokerTs (tombstone, TTL 60s)
+
+// LUA_CAS_SET (ACCEPTED):
+//   cur = GET KEYS[1]
+//   newTs = tonumber(ARGV[1])
+//   if cur == false or abs(cur) < newTs → SET KEYS[1] ARGV[1] EX ARGV[2]
+// → Immune to out-of-order Kafka delivery (broker timestamp, không phải app clock)
 ```
 
 ---
@@ -130,15 +160,14 @@ const status = await friendshipService.getFriendshipStatus(senderId, receiverId)
 
 | Key Pattern | Type | TTL | Set by | Read by |
 |-------------|------|-----|--------|---------|
-| `chat:conversation:{id}:members` | Set | 7 days | `MembershipCacheConsumer` + `conversation.service.ts` | `MembershipValidatorService` |
-| `chat:conversation:{id}:members:{uid}:role` | String | 7 days | `MembershipCacheConsumer` + `membership-validator.service.ts` | `MembershipValidatorService` |
-| `chat:friendship:block:{blockerId}:{blockedId}` | String | 24 hours | `FriendshipBlockConsumer` (Chat Core) | `MessageSendOrchestrator` |
-
-### Operations
-- **Check membership**: `SISMEMBER chat:conversation:123:members user456` → O(1)
-- **Get role**: `GET chat:conversation:123:members:user456:role` → O(1)
-- **Check block**: `MGET chat:friendship:block:A:B chat:friendship:block:B:A` → O(1)
-- **Remove member**: `SREM` + `DEL role key` in pipeline → O(1)
+| `chat:conversation:{id}:members` | Set | 7 days | `ConversationService` (write-through) + `MembershipCacheConsumer` | `MembershipValidatorService` |
+| `chat:conversation:{id}:members:{uid}:role` | String | 7 days | idem | `MembershipValidatorService` |
+| `{chat:rel:{lo}:{hi}}:block:{A}:{B}` | String "1" | 24h | `FriendshipBlockConsumer` | `MessageSendOrchestrator` |
+| `{chat:rel:{lo}:{hi}}:friends` | String (±Unix-ms) | 30d / 60s | `FriendshipFriendsConsumer` (Lua CAS) | `MessageSendOrchestrator` |
+| `{chat:rel:{lo}:{hi}}:proof` | String "1" | 30s | Gateway (synchronous, on accept-friend) | `MessageSendOrchestrator` |
+| `chat:conv:{id}:max_offset` | String (int) | permanent | `MessageAcceptedConsumer` (Redis INCR) | `MessageAcceptedConsumer` |
+| `chat:conv:dirty_offsets` | Set | — | `MessageAcceptedConsumer` | `OffsetSyncJob` |
+| `chat:kafka:outbox` | List | — | `MessageSendOrchestrator` (on Kafka fail) | `MessageSendOrchestrator` (outbox poller) |
 
 ---
 
@@ -148,6 +177,7 @@ const status = await friendshipService.getFriendshipStatus(senderId, receiverId)
 |----------|----------|--------|---------|
 | `MembershipCacheConsumer` | `nest-chat.conversation-service.cache-updater` | `MEMBER_ADDED`, `MEMBER_REMOVED` | Conversation Service |
 | `FriendshipBlockConsumer` | `nest-chat.chat-core.block-cache` | `FRIENDSHIP.BLOCKED`, `FRIENDSHIP.UNBLOCKED` | Chat Core |
+| `FriendshipFriendsConsumer` | `nest-chat.chat-core.friend-cache` | `FRIENDSHIP.REQUEST_ACCEPTED`, `FRIENDSHIP.REMOVED` | Chat Core |
 
 ---
 
@@ -155,10 +185,12 @@ const status = await friendshipService.getFriendshipStatus(senderId, receiverId)
 
 | Key family | TTL | Rationale |
 |------------|-----|-----------|
-| Members Set | 7 days | Long enough to survive weekend Kafka lag; event-driven invalidation is primary |
-| Role String | 7 days | Same as members set for consistency (also written by TCP fallback path) |
-| Role key written by TCP fallback | 7 days | Previously 1 hour — fixed to prevent TTL mismatch overwriting event cache |
-| Block key | 24 hours | Block/unblock cycles are infrequent; 24h cap prevents unbounded growth |
+| Members Set | 7 days | Event-driven invalidation là primary; TTL là safety-net |
+| Role String | 7 days | Đồng nhất với members set |
+| Block key | 24h | Block/unblock infrequent; 24h prevents unbounded growth |
+| Friends key (positive) | 30 days | Safety-net; eviction là tombstone event-driven |
+| Friends tombstone (negative) | 60s | Covers worst-case Kafka redelivery lag |
+| Proof key | 30s | Covers Kafka consumer lag sau accept-friend |
 
 ---
 
@@ -166,20 +198,22 @@ const status = await friendshipService.getFriendshipStatus(senderId, receiverId)
 
 | Scenario | Behaviour |
 |----------|-----------|
-| Consumer crash on `MEMBER_ADDED` | DLQ routing; TCP fallback in Chat Core remains authoritative |
-| Redis unavailable (read) | `catch(() => [null, null])` → fall through to TCP; system degrades gracefully |
-| Redis unavailable (write in consumer) | Log + swallow error; TCP fallback handles correctness |
-| Kafka lag > outbox interval | Immediate in-process bust guarantees timely invalidation for `removeMembers()` |
-| Block key expired before UNBLOCKED arrives | Safe: expired key = cache miss → TCP fallback re-checks Friendship Service |
+| Consumer crash (MEMBER_ADDED) | DLQ routing; TCP fallback trong Chat Core remains authoritative |
+| Redis unavailable (read) | MGET → `catch → null` → TCP fallback; fail-open với TCP |
+| Redis unavailable (write) | Log + swallow; TCP fallback đảm bảo correctness |
+| Kafka lag > outbox interval | Write-through cache trong ConversationService đảm bảo timely warm-up |
+| Friends key expired trước REMOVED event | Cache miss → TCP fallback → re-check friendship-service |
+| Proof key expired nhưng friends key chưa ghi | 30s window đủ cho FriendshipFriendsConsumer ghi friends key |
 
 ---
 
 ## Security Notes
 
-- **Fail-closed on membership**: cache miss falls back to authoritative TCP. A Redis outage cannot grant access.
-- **Fail-closed on block**: same pattern. Cache miss → TCP → block enforced.
-- **Immediate invalidation on remove**: the in-process `redis.pipeline()` bust in `conversation.service.ts` prevents the window where a kicked user sends messages before the Kafka event propagates (reduces stale window from ≤30 s to near-zero).
-- **Two-direction block check**: `MGET` checks both `A→B` and `B→A` simultaneously, ensuring `isBlockedBy` is also cached.
+- **Fail-closed on membership**: cache miss → TCP. Redis outage không thể grant access.
+- **Fail-closed on block**: same. Cache miss → TCP → block enforced.
+- **Immediate invalidation on remove**: write-through pipeline bust ngay sau DB commit → window từ kicked→can-still-send giảm từ ≤30s xuống near-zero.
+- **Two-direction block check**: MGET kiểm tra cả `A→B` lẫn `B→A` trong cùng 1 Redis call.
+- **Hash Tag alignment**: tất cả 4 friendship keys chia sẻ `{chat:rel:{lo}:{hi}}` → cùng Redis Cluster slot → MGET là single-slot operation (no cross-slot error).
 
 ---
 
@@ -187,9 +221,9 @@ const status = await friendshipService.getFriendshipStatus(senderId, receiverId)
 
 | Approach | Latency | Stale risk | Implementation complexity |
 |----------|---------|-----------|--------------------------|
-| Pure TCP call | ~10 ms | None | Low |
-| TTL cache (old) | < 1 ms | Yes (up to TTL) | Low |
-| Event-driven cache (current) | < 1 ms | Near-zero (dual invalidation) | Medium |
-- If both Redis and Conversation Service down → messages rejected (correct behavior)
+| Pure TCP call | ~10ms | None | Low |
+| TTL cache (old, 1h) | <1ms | Yes (up to 1h) | Low |
+| Event-driven Redis (current) | <1ms | Near-zero (write-through + dual invalidation) | Medium |
+| + L1 in-process (current) | ~0ms | ≤30s per Pod | Medium-high |
 
-This ensures security: **Cannot bypass membership validation** even during service failures.
+> **Kết luận**: L1 in-process cache + L0 Redis + TCP fallback cho phép ChatCore xử lý burst traffic (KOL-level) mà không tạo TCP storm đến conversation-service.

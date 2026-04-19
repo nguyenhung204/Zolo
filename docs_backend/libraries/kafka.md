@@ -101,6 +101,12 @@ Consumes conversation-related events such as member additions, member removals, 
 
 Publishes events when friendship relationships change, including friend request creation, acceptance, rejection, and unfriend operations. These events allow presence and chat services to update authorization caches and adjust real-time notification delivery without polling the friendship database. The service does not consume events from other services, acting only as a producer in the event topology.
 
+**Chat Core Service**
+
+Consumes friendship events to maintain in-process Redis caches for authorization:
+- `FriendshipBlockConsumer` (group: `nest-chat.chat-core.block-cache`): subscribes to `friendship.blocked` and `friendship.unblocked` to cache block status in Redis.
+- `FriendshipFriendsConsumer` (group: `nest-chat.chat-core.friend-cache`): subscribes to `friendship.request_accepted` and `friendship.removed` to maintain a **LWW Register** (`{chat:rel:{lo}:{hi}}:friends`) via Lua CAS using broker log-append timestamp as clock. Ensures `MessageSendOrchestrator` can check friendship status from Redis (single MGET) without any TCP call to friendship-service on warm path.
+
 **Realtime Gateway Service**
 
 Consumes events from multiple topics to drive WebSocket message delivery to connected clients. The service subscribes to message events, presence updates, and notification events with a dedicated consumer group, ensuring all events relevant to connected users are processed for real-time delivery. The service does not produce events itself, focusing solely on consumption and WebSocket fanout.

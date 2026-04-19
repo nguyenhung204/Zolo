@@ -17,6 +17,18 @@
 6. [Luồng FE](#6-luồng-fe)
 7. [WebSocket Session Revocation](#7-websocket-session-revocation)
 8. [Xử lý lỗi chuẩn](#8-xử-lý-lỗi-chuẩn)
+9. [Kiến trúc Session Guard](#9-kiến-trúc-session-guard)
+
+---
+
+## Ràng buộc chung (Email)
+
+> **Tất cả endpoint nhận email** đều áp dụng thêm ràng buộc sau (bên cạnh format hợp lệ):
+>
+> - Chỉ chấp nhận địa chỉ **Gmail** (kết thúc bằng `@gmail.com`, case-insensitive).
+> - Giá trị được **normalize** tự động: trim + lowercase trước khi validate và lưu trữ.
+> - Ví dụ hợp lệ: `nguyen.van.a@gmail.com`, `User@GMAIL.COM` → lưu thành `user@gmail.com`
+> - Ví dụ không hợp lệ: `user@yahoo.com`, `user@outlook.com` → `400 VALIDATION_FAILED`
 
 ---
 
@@ -43,11 +55,11 @@ curl -X POST https://api.bcn.id.vn/auth/register/init \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `email` | Valid email, unique (kiểm tra Keycloak) |
+| `email` | Valid email, **phải là Gmail** (`@gmail.com`), unique (kiểm tra Keycloak) |
 | `firstName` | 1–20 ký tự, cho phép tên tiếng Việt có dấu |
 | `lastName` | 1–20 ký tự, cho phép tên tiếng Việt có dấu |
 
-> `username` hiển thị sẽ được hệ thống tự sinh từ `firstName + " " + lastName`, có thể trùng và có thể đổi sau này trong profile.
+> `username` hiển thị sẽ được hệ thống tự sinh từ `firstName + " " + lastName`.
 
 **Response `200`:**
 ```json
@@ -57,15 +69,15 @@ curl -X POST https://api.bcn.id.vn/auth/register/init \
 ```
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | Email/firstName/lastName invalid |
-| `409` | Email đã được đăng ký |
-| `429` | Rate limit: 5 lần / 15 phút / email |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | Email không phải Gmail, firstName/lastName invalid |
+| `409` | `RESOURCE_ALREADY_EXISTS` | Email đã được đăng ký |
+| `429` | `RATE_LIMIT_EXCEEDED` | Rate limit: 5 lần / 15 phút / email |
 
 ---
 
-### Step 2 — Xác minh OTP
+### Step 2 — Xác minh OTP đăng ký
 
 ```
 POST /auth/register/verify-otp
@@ -85,8 +97,12 @@ curl -X POST https://api.bcn.id.vn/auth/register/verify-otp \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `email` | Phải khớp email ở step 1 |
+| `email` | **Phải là Gmail**, khớp email ở Step 1 |
 | `otp` | Đúng 6 chữ số |
+
+**OTP details:**
+- 6 chữ số ngẫu nhiên, ký bằng HMAC.
+- TTL: **10 phút** kể từ lúc gửi. One-time use. **Max 3 lần sai** → OTP bị xóa.
 
 **Response `200`:**
 ```json
@@ -96,14 +112,16 @@ curl -X POST https://api.bcn.id.vn/auth/register/verify-otp \
 }
 ```
 
-> `registrationToken` có TTL **10 phút**. Hết hạn → phải làm lại từ Step 1.
+> `registrationToken` là UUID v4, TTL **10 phút**. Hết hạn → phải làm lại từ Step 1.
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | OTP sai (kèm `còn N lần thử`) |
-| `400` | OTP đã hết hạn / đã dùng |
-| `400` | Quá 3 lần sai → phải restart từ Step 1 |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | Email không phải Gmail |
+| `400` | `OTP_INVALID` | OTP sai (kèm còn N lần thử) |
+| `400` | `OTP_EXPIRED` | OTP đã hết hạn |
+| `400` | `OTP_ALREADY_USED` | OTP đã được sử dụng |
+| `400` | `OTP_MAX_ATTEMPTS` | Quá 3 lần sai → phải restart từ Step 1 |
 
 ---
 
@@ -131,7 +149,7 @@ curl -X POST https://api.bcn.id.vn/auth/register/complete \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `registrationToken` | UUID từ Step 2, còn hạn |
+| `registrationToken` | UUID v4 từ Step 2, còn hạn |
 | `password` | Tối thiểu 8 ký tự |
 | `platform` | `"web"` hoặc `"mobile"` |
 | `deviceInfo` | Optional |
@@ -145,14 +163,14 @@ curl -X POST https://api.bcn.id.vn/auth/register/complete \
 }
 ```
 
-> Tài khoản được tạo trong Keycloak + users-service. Nếu users-service lỗi → Keycloak user tự động bị xoá (Saga-lite rollback) và trả về `500`.
+> Tài khoản tạo trong Keycloak + users-service. Nếu users-service lỗi → Keycloak user tự động bị xoá (Saga-lite rollback) và trả về `500`.
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | `registrationToken` hết hạn hoặc không hợp lệ |
-| `409` | Email đã tồn tại trong Keycloak (race condition) |
-| `500` | users-service lỗi (sau rollback) |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | `registrationToken` hết hạn hoặc không hợp lệ |
+| `409` | `RESOURCE_ALREADY_EXISTS` | Email đã tồn tại trong Keycloak (race condition) |
+| `500` | `INTERNAL_SERVER_ERROR` | users-service lỗi (sau rollback Keycloak) |
 
 ---
 
@@ -162,7 +180,7 @@ curl -X POST https://api.bcn.id.vn/auth/register/complete \
 POST /auth/login
 ```
 
-> Chỉ hỗ trợ đăng nhập bằng `email` + `password` (không hỗ trợ đăng nhập bằng `username`).
+> Chỉ hỗ trợ đăng nhập bằng `email` + `password`. **Chỉ chấp nhận Gmail**.
 
 **Request:**
 ```bash
@@ -179,6 +197,14 @@ curl -X POST https://api.bcn.id.vn/auth/login \
   }'
 ```
 
+**Validation:**
+| Field | Rule |
+|-------|------|
+| `email` | Valid email, **phải là Gmail** (`@gmail.com`) |
+| `password` | String, non-empty |
+| `platform` | `"web"` hoặc `"mobile"` |
+| `deviceInfo` | Optional |
+
 **Response `200`:**
 ```json
 {
@@ -188,13 +214,19 @@ curl -X POST https://api.bcn.id.vn/auth/login \
 }
 ```
 
-> **Session 1-per-platform**: Nếu đã có session `web` khác → session cũ bị thu hồi, WebSocket của session cũ nhận event `session_revoked` và bị disconnect ngay lập tức.
+**Session 1-per-platform — quy trình kick session cũ (theo thứ tự):**
+1. `deleteSession(Redis)` → thiết bị cũ bị `SessionGuard` từ chối ngay lập tức.
+2. `SessionCacheService.invalidate(userId, platform)` → in-memory cache không còn phục vụ SID cũ.
+3. `publishRevocation(channel)` → `realtime-gateway` disconnect WebSocket thiết bị cũ.
+4. `revokeKeycloakSession()` (non-fatal: nếu đã hết hạn thì bỏ qua).
+5. Tạo session mới cho thiết bị hiện tại.
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `401` | Sai email/mật khẩu |
-| `429` | Rate limit |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | Email không phải Gmail |
+| `401` | `AUTH_INVALID_CREDENTIALS` | Sai email/mật khẩu |
+| `429` | `RATE_LIMIT_EXCEEDED` | Rate limit |
 
 ---
 
@@ -223,11 +255,18 @@ curl -X POST https://api.bcn.id.vn/auth/refresh \
 }
 ```
 
+**SID Validation — bảo vệ chống session cũ tái chiếm slot:**
+
+`session_state` / `sid` trong JWT Keycloak là ID của SSO session và **không thay đổi** giữa các lần refresh trong cùng một phiên. Khi refresh:
+- **SID khớp Redis** → `resetTTL`, trả về tokens mới.
+- **SID không khớp** → `401 SESSION_REVOKED` ngay lập tức (refresh token thuộc về phiên đã bị thu hồi).
+
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `401` | refreshToken hết hạn hoặc không hợp lệ |
-| `401` | Session đã bị revoke (bị đăng nhập từ thiết bị khác) |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `401` | `AUTH_INVALID_TOKEN` | `refreshToken` hết hạn hoặc không hợp lệ |
+| `401` | `SESSION_REVOKED` | SID mismatch — thiết bị B đã đăng nhập, session này đã bị thu hồi |
+| `401` | `SESSION_NOT_FOUND` | Session không còn trong Redis |
 
 ---
 
@@ -240,7 +279,6 @@ POST /auth/logout
 **Request:**
 ```bash
 curl -X POST https://api.bcn.id.vn/auth/logout \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
   -H "X-Client-Platform: web"
 ```
@@ -252,15 +290,17 @@ curl -X POST https://api.bcn.id.vn/auth/logout \
 }
 ```
 
-> Xoá Redis session, revoke Keycloak session, WebSocket tự đóng. Không cần body.
+**Quy trình logout:**
+1. `deleteSession(Redis)`.
+2. `SessionCacheService.invalidate(userId, platform)`.
+3. `publishRevocation(channel)` → `realtime-gateway` disconnect WebSocket.
+4. `revokeKeycloakSession()`.
 
 ---
 
 ## 5. Quên mật khẩu
 
-Luồng gồm **3 bước**: gửi OTP → xác minh OTP → đặt mật khẩu mới.
-
----
+Luồng **3 bước**: gửi OTP → xác minh OTP → đặt mật khẩu mới.
 
 ### Step 1 — Gửi OTP reset
 
@@ -278,7 +318,7 @@ curl -X POST https://api.bcn.id.vn/auth/forgot-password \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `email` | Valid email |
+| `email` | Valid email, **phải là Gmail** (`@gmail.com`) |
 
 **Response `200`:**
 ```json
@@ -287,15 +327,15 @@ curl -X POST https://api.bcn.id.vn/auth/forgot-password \
 }
 ```
 
-> OTP có **6 chữ số**, TTL **10 phút**, được gửi qua email (fire-and-forget — không chặn response nếu email bị lỗi).
+> OTP **6 chữ số**, TTL **10 phút**, gửi qua email (fire-and-forget).
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | Email không hợp lệ |
-| `404` | Email chưa đăng ký trong hệ thống |
-| `429` | Rate limit: 5 lần / 15 phút / email |
-| `429` | Cooldown: phải đợi 60 giây giữa các lần yêu cầu |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | Email không phải Gmail / không hợp lệ |
+| `404` | `USER_NOT_FOUND` | Email chưa đăng ký |
+| `429` | `RATE_LIMIT_EXCEEDED` | Rate limit: 5 lần / 15 phút / email |
+| `429` | `OTP_COOLDOWN` | Cooldown: phải đợi 60 giây giữa các lần yêu cầu |
 
 ---
 
@@ -318,7 +358,7 @@ curl -X POST https://api.bcn.id.vn/auth/verify-otp \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `email` | Phải khớp email ở Step 1 |
+| `email` | **Phải là Gmail**, khớp email ở Step 1 |
 | `otp` | Đúng 6 chữ số |
 
 **Response `200`:**
@@ -329,14 +369,15 @@ curl -X POST https://api.bcn.id.vn/auth/verify-otp \
 }
 ```
 
-> `resetToken` là **UUID v4**, TTL **10 phút**. Hết hạn hoặc đã dùng → phải bắt đầu lại từ Step 1.
+> `resetToken` là UUID v4, TTL **10 phút**. One-time use.
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | OTP sai hoặc đã hết hạn |
-| `400` | OTP đã được sử dụng (one-time-use) |
-| `400` | Quá 3 lần sai → OTP bị xóa, phải yêu cầu mã mới |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | Email không phải Gmail |
+| `400` | `OTP_INVALID` | OTP sai hoặc đã hết hạn |
+| `400` | `OTP_ALREADY_USED` | OTP đã được sử dụng |
+| `400` | `OTP_MAX_ATTEMPTS` | Quá 3 lần sai → phải yêu cầu mã mới |
 
 ---
 
@@ -359,8 +400,8 @@ curl -X POST https://api.bcn.id.vn/auth/reset-password \
 **Validation:**
 | Field | Rule |
 |-------|------|
-| `resetToken` | UUID v4, còn hạn (max 10 phút sau Step 2), chỉ dùng được một lần |
-| `newPassword` | Tối thiểu 8 ký tự, bao gồm chữ hoa, chữ thường, chữ số và ký tự đặc biệt (`!@#$%^&*`) |
+| `resetToken` | UUID v4, còn hạn (max 10 phút), chỉ dùng một lần |
+| `newPassword` | Tối thiểu 8 ký tự, bao gồm chữ hoa, chữ thường, số và ký tự đặc biệt |
 
 **Response `200`:**
 ```json
@@ -369,14 +410,14 @@ curl -X POST https://api.bcn.id.vn/auth/reset-password \
 }
 ```
 
-> Sau khi đặt lại thành công, **toàn bộ Keycloak session** của user bị thu hồi (bao gồm cả các thiết bị đang đăng nhập). FE cần xóa tokens và redirect về login.
+> Toàn bộ Keycloak session bị thu hồi sau khi đặt lại. FE cần xóa tokens và redirect về login.
 
 **Errors:**
-| HTTP | Khi nào |
-|------|---------|
-| `400` | `resetToken` không hợp lệ, đã hết hạn, hoặc đã dùng |
-| `400` | `newPassword` không đúng chính sách mật khẩu |
-| `500` | Lỗi khi cập nhật mật khẩu Keycloak |
+| HTTP | Code | Khi nào |
+|------|------|---------|
+| `400` | `VALIDATION_FAILED` | `resetToken` không hợp lệ / hết hạn / đã dùng |
+| `400` | `PASSWORD_POLICY_VIOLATION` | `newPassword` không đúng chính sách |
+| `500` | `INTERNAL_SERVER_ERROR` | Lỗi khi cập nhật Keycloak |
 
 ---
 
@@ -388,8 +429,8 @@ curl -X POST https://api.bcn.id.vn/auth/reset-password \
 FE                              API (Gateway)               External
  |                                   |                          |
  |-- POST /auth/register/init ------>|                          |
- |   { email, firstName, lastName }  |-- check Keycloak ------->|
- |                                   |<-- 200 unique ------------|
+ |   { email(@gmail.com),            |-- check Keycloak ------->|
+ |     firstName, lastName }         |<-- 200 unique ------------|
  |                                   |-- store Redis (init+OTP) |
  |                                   |-- TCP -> notification --> email OTP
  |<-- { cooldownSeconds: 60 } -------|                          |
@@ -397,7 +438,9 @@ FE                              API (Gateway)               External
  |  [User nhập OTP từ email]          |                          |
  |                                   |                          |
  |-- POST /auth/register/verify-otp->|                          |
- |   { email, otp }                  |-- HMAC compare + Redis   |
+ |   { email, otp }                  |-- HMAC compare           |
+ |                                   |-- incrementAttempts      |
+ |                                   |-- one-time lock          |
  |<-- { registrationToken, 600s } ---|                          |
  |                                   |                          |
  |  [User nhập mật khẩu]             |                          |
@@ -405,16 +448,16 @@ FE                              API (Gateway)               External
  |-- POST /auth/register/complete -->|                          |
  |   { registrationToken, password,  |-- createUser Keycloak -->|
  |     platform, deviceInfo? }       |-- TCP CREATE_USER ------> users-service
- |                                   |   [nếu fail → deleteUser Keycloak]
+ |                                   |   [fail → deleteUser Keycloak (rollback)]
  |                                   |-- login auto (Keycloak)  |
  |                                   |-- store Redis session    |
  |<-- { accessToken, refreshToken } -|                          |
 ```
 
 **FE cần làm:**
-1. **Lưu** `registrationToken` ở `sessionStorage` (không localStorage — không muốn persist qua tab mới).
-2. **Bước 2** có thể hiện "Resend OTP" sau 60s (dùng `cooldownSeconds` từ step 1).
-3. **Bước 3**: Nếu response `409` → email tồn tại, redirect về login. Nếu `400` về `registrationToken` → token hết hạn, restart từ đầu.
+1. **Lưu** `registrationToken` ở `sessionStorage` (không localStorage).
+2. **Bước 2**: hiện "Resend OTP" sau 60s (dùng `cooldownSeconds`).
+3. **Bước 3**: Nếu `409` → redirect về login. Nếu `400 registrationToken` hết hạn → restart từ đầu.
 
 ---
 
@@ -424,85 +467,67 @@ FE                              API (Gateway)               External
 FE                              Gateway                     Redis / Keycloak
  |                                  |                             |
  |-- POST /auth/login -------------->|                             |
- |   { email, password,              |-- POST /token (passwd) ---->|
+ |   { email(@gmail.com), password,  |-- POST /token (passwd) ---->|
  |     platform: "web" }             |<-- { access_token, ... } ---|
- |                                  |-- decode JWT (sid)           |
+ |                                  |-- decode JWT (userId, sid)   |
  |                                  |-- getSession(userId, "web")  |
- |                                  |  [nếu có session cũ]         |
- |                                  |   publishRevocation(channel)|
- |                                  |   revokeKeycloakSession()   |
+ |                                  |                              |
+ |                                  |  [session cũ tồn tại]        |
+ |                                  |   1. deleteSession(Redis)   |
+ |                                  |   2. invalidate SessionCache|
+ |                                  |   3. publishRevocation(WS)  |
+ |                                  |   4. revokeKeycloak(non-fatal)
+ |                                  |                              |
  |                                  |-- createSession(userId,      |
- |                                  |     "web", keycloakSid)     |
+ |                                  |     "web", newSid)          |
  |<-- { accessToken, refreshToken }--|                             |
- |                                  |                             |
- | [Lưu tokens → kết nối WebSocket] |                             |
 ```
-
-**FE cần làm:**
-1. Lưu `accessToken` và `refreshToken` vào `localStorage` (web) hoặc SecureStorage (mobile).
-2. Gắn `Authorization: Bearer <accessToken>` cho **tất cả** request sau này.
-3. Gắn `X-Client-Platform: web` hoặc `X-Client-Platform: mobile` cho **tất cả** request.
-4. Kết nối WebSocket sau khi có `accessToken` (xem mục 7).
 
 ---
 
 ### 6.3 Luồng Refresh Token (Token Rotation)
 
 ```
-FE                              Gateway
- |                                 |
- | [accessToken sắp hết hạn]       |
- |-- POST /auth/refresh ----------->|
- |   Header: X-Client-Platform: web |
- |   { refreshToken }               |
- |<-- { accessToken (mới),          |
- |      refreshToken (mới) } -------|
- |                                 |
- | [Cập nhật tokens trong storage] |
+FE                              Gateway                    Redis
+ |                                 |                         |
+ | [accessToken sắp hết hạn]       |                         |
+ |-- POST /auth/refresh ----------->|                         |
+ |   Header: X-Client-Platform: web |                         |
+ |   { refreshToken }               |-- POST /token refresh ->Keycloak
+ |                                  |<-- new tokens           |
+ |                                  |-- decode newSid         |
+ |                                  |-- getSession(userId, p) |
+ |                                  |   SID khớp → resetTTL  |
+ |                                  |   SID lệch → 401 SESSION_REVOKED
+ |<-- { accessToken, refreshToken } |                         |
 ```
 
 **FE cần làm:**
-1. **Interceptor HTTP**: Nếu nhận `401` với `code: "AUTH_TOKEN_EXPIRED"` → tự động gọi `/auth/refresh` → retry request gốc.
-2. Nếu `/auth/refresh` trả về `401` (session revoked hoặc refreshToken hết hạn) → xoá tokens, redirect về login.
-3. Tránh **multiple concurrent refresh**: dùng single in-flight promise (refresh lock pattern):
-
-```typescript
-// Pseudo-code interceptor
-let refreshPromise: Promise<Tokens> | null = null;
-
-async function refreshIfNeeded(): Promise<Tokens> {
-  if (!refreshPromise) {
-    refreshPromise = callRefreshAPI().finally(() => {
-      refreshPromise = null;
-    });
-  }
-  return refreshPromise;
-}
-```
+1. **Interceptor**: `401 AUTH_TOKEN_EXPIRED` → gọi `/auth/refresh` → retry.
+2. `/auth/refresh` trả `401 SESSION_REVOKED` hoặc `SESSION_NOT_FOUND` → xoá tokens, redirect login.
+3. **Refresh lock pattern**: tránh nhiều request đồng thời gọi refresh.
 
 ---
 
 ### 6.4 Luồng Đăng xuất
 
 ```
-FE                              Gateway
- |                                 |
- |-- POST /auth/logout ------------>|
- |   Header: Authorization: Bearer  |
- |   Header: X-Client-Platform: web |
- |                                 |-- deleteSession(Redis)
- |                                 |-- publishRevocation (WS disconnect)
- |                                 |-- revokeKeycloakSession
- |<-- { message: "Đăng xuất..." }--|
- |                                 |
- | [Xoá tokens khỏi storage]       |
- | [Disconnect WebSocket (nếu có)] |
- | [Redirect về /login]            |
+FE                              Gateway                    Redis
+ |                                 |                         |
+ |-- POST /auth/logout ------------>|                         |
+ |   Authorization: Bearer ...      |                         |
+ |   X-Client-Platform: web         |                         |
+ |                                 |-- deleteSession(Redis)  |
+ |                                 |-- invalidate SessionCache
+ |                                 |-- publishRevocation     |
+ |                                 |-- revokeKeycloak        |
+ |<-- { message: "Đăng xuất..." }--|                         |
+ | [Xoá tokens, disconnect WS]     |                         |
 ```
 
 ---
 
-### 6.5 Luồng Session Bị Thu Hồi (Đăng nhập từ thiết bị khác)
+### 6.5 Luồng Session Bị Thu Hồi
 
 ```
 Device A (đang dùng)      Gateway           Device B (đăng nhập mới)
@@ -510,20 +535,21 @@ Device A (đang dùng)      Gateway           Device B (đăng nhập mới)
       |  [đang online]        |                        |
       |                      |<-- POST /auth/login ----|
       |                      |    { platform: "web" }  |
-      |                      |-- revoke Device A      |
-      |                      |-- publish Redis channel |
-      |                      |-- create session B      |
+      |                      | 1. deleteSession(Redis) |
+      |                      | 2. invalidate SessionCache
+      |                      | 3. publishRevocation    |
+      |                      | 4. revokeKeycloak       |
+      |                      | 5. createSession(B)     |
       |                      |<-- 200 tokens ----------|
       |                      |                        |
-realtime-gateway subscribes Redis channel             |
-      |<-- WS event: "session_revoked" -------------- |
-      |  { reason: "logged_in_elsewhere" }            |
-      |                      |                        |
-  [FE nhận sự kiện]          |                        |
-  [Xoá tokens]               |                        |
-  [Hiện thông báo]           |                        |
-  [Redirect /login]          |                        |
+realtime-gateway: nhận Redis channel
+      |<-- WS event: session_revoked --
+      |  { reason: "logged_in_elsewhere" }
+      |
+  [Xoá tokens, redirect /login]
 ```
+
+> **Quan trọng**: Ngay sau bước 1, mọi request của Device A bị `SessionGuard` từ chối `401 SESSION_REVOKED`.
 
 ---
 
@@ -533,7 +559,7 @@ realtime-gateway subscribes Redis channel             |
 FE                              Gateway                   Redis / Keycloak / Email
  |                                  |                              |
  |-- POST /auth/forgot-password ---->|                              |
- |   { email }                      |-- lookup Keycloak user ----->|
+ |   { email(@gmail.com) }          |-- lookup Keycloak user ----->|
  |                                  |<-- userId found --------------|
  |                                  |-- checkRateLimit (5/15min)   |
  |                                  |-- checkCooldown (60s)        |
@@ -541,39 +567,31 @@ FE                              Gateway                   Redis / Keycloak / Ema
  |                                  |-- TCP -> notification ------> email OTP
  |<-- { message } ------------------|                              |
  |                                  |                              |
- |  [User nhập OTP từ email]         |                              |
- |                                  |                              |
- |-- POST /auth/verify-otp ---------->|                              |
- |   { email, otp }                 |-- getOtp (Redis)             |
+ |-- POST /auth/verify-otp --------->|                              |
+ |   { email, otp }                 |-- getOtp(Redis)              |
  |                                  |-- incrementAttempts (max 3)  |
  |                                  |-- verifyHMAC                 |
- |                                  |-- markUsed (one-time lock)   |
+ |                                  |-- one-time lock              |
  |                                  |-- storeResetToken(UUID, 10m) |
  |                                  |-- deleteOtp                  |
- |<-- { resetToken (UUID), 600s } ---|                              |
- |                                  |                              |
- |  [User nhập mật khẩu mới]         |                              |
+ |<-- { resetToken, expiresIn:600 }--|                              |
  |                                  |                              |
  |-- POST /auth/reset-password ------>|                              |
  |   { resetToken, newPassword }    |-- getAndDeleteResetToken     |
- |                                  |-- setUserPassword (Keycloak)->|
+ |                                  |-- setUserPassword(Keycloak)->|
  |                                  |-- revokeAllSessions -------->|
  |<-- { message } ------------------|                              |
- |                                  |                              |
- | [Xoá tokens khỏi storage]        |                              |
- | [Redirect về /login]             |                              |
+ | [Xoá tokens, redirect /login]    |                              |
 ```
 
 **FE cần làm:**
-1. **Lưu** `resetToken` ở `sessionStorage` (không localStorage) trong suốt luồng 3 bước.
-2. **Step 2**: Sau 3 lần sai OTP → OTP bị xóa, phải gọi lại Step 1. Hiện nút "Gửi lại OTP" sau 60 giây (cooldown).
-3. **Step 3**: Nếu `400` về `resetToken` hết hạn → redirect về Step 1. Sau khi đặt lại thành công → xóa tokens cũ (nếu có), redirect về `/login`.
+1. Lưu `resetToken` ở `sessionStorage`.
+2. Sau 3 lần sai OTP → gọi lại Step 1. Hiện "Gửi lại OTP" sau 60 giây.
+3. `400 resetToken hết hạn` → redirect Step 1. Thành công → xóa tokens, redirect `/login`.
 
 ---
 
 ## 7. WebSocket Session Revocation
-
-Sau khi đăng nhập, kết nối WebSocket tại `wss://api.bcn.id.vn/chat`:
 
 ```javascript
 const socket = io('wss://api.bcn.id.vn', {
@@ -581,7 +599,6 @@ const socket = io('wss://api.bcn.id.vn', {
   transports: ['websocket'],
 });
 
-// 1. Xác thực sau khi connect
 socket.on('connect', () => {
   socket.emit('authenticate', {
     token: accessToken,
@@ -589,28 +606,18 @@ socket.on('connect', () => {
   });
 });
 
-// 2. Lắng nghe session bị thu hồi
 socket.on('session_revoked', (data) => {
-  console.warn('Session revoked:', data);
   // data = { reason: 'logged_in_elsewhere' | 'manual_logout' }
-
-  // Xoá tokens
   localStorage.removeItem('accessToken');
   localStorage.removeItem('refreshToken');
-
-  // Disconnect socket
   socket.disconnect();
-
-  // Thông báo user và redirect
   showNotification('Tài khoản đã đăng nhập từ thiết bị khác.');
   router.push('/login');
 });
 
-// 3. Xử lý disconnect bất ngờ
 socket.on('disconnect', (reason) => {
   if (reason === 'io server side') {
-    // Server chủ động disconnect (session revoked)
-    // Kiểm tra xem có nhận được 'session_revoked' chưa
+    // Server chủ động disconnect
   }
 });
 ```
@@ -618,8 +625,6 @@ socket.on('disconnect', (reason) => {
 ---
 
 ## 8. Xử lý lỗi chuẩn
-
-Tất cả lỗi trả về format:
 
 ```json
 {
@@ -629,7 +634,7 @@ Tất cả lỗi trả về format:
 }
 ```
 
-**Error codes quan trọng với auth:**
+**Error codes quan trọng:**
 
 | `code` | HTTP | Ý nghĩa | FE xử lý |
 |--------|------|---------|----------|
@@ -637,14 +642,14 @@ Tất cả lỗi trả về format:
 | `AUTH_TOKEN_EXPIRED` | 401 | accessToken hết hạn | Gọi `/auth/refresh` |
 | `AUTH_INVALID_TOKEN` | 401 | Token không hợp lệ | Xoá tokens, redirect login |
 | `AUTH_INVALID_CREDENTIALS` | 401 | Sai email/mật khẩu | Hiện lỗi form |
-| `SESSION_REVOKED` | 401 | Session bị thu hồi bởi đăng nhập khác | Xoá tokens, redirect login |
+| `SESSION_REVOKED` | 401 | Session bị thu hồi (kick, SID mismatch, logout) | Xoá tokens, redirect login |
+| `SESSION_NOT_FOUND` | 401 | Session không tồn tại trong Redis | Xoá tokens, redirect login |
 | `RESOURCE_ALREADY_EXISTS` | 409 | Email đã đăng ký | Gợi ý đăng nhập |
-| `VALIDATION_FAILED` | 400 | Input không hợp lệ | Highlight field lỗi |
+| `VALIDATION_FAILED` | 400 | Input không hợp lệ (kể cả email không phải Gmail) | Highlight field lỗi |
 
-**Interceptor axios mẫu:**
+**Axios interceptor mẫu:**
 
 ```typescript
-// axios interceptor
 let isRefreshing = false;
 let failedQueue: Array<{ resolve: (token: string) => void; reject: (err: unknown) => void }> = [];
 
@@ -676,14 +681,11 @@ axiosInstance.interceptors.response.use(
           { refreshToken: localStorage.getItem('refreshToken') },
           { headers: { 'X-Client-Platform': localStorage.getItem('platform') ?? 'web' } },
         );
-
         localStorage.setItem('accessToken', data.accessToken);
         localStorage.setItem('refreshToken', data.refreshToken);
-
         axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${data.accessToken}`;
         failedQueue.forEach(({ resolve }) => resolve(data.accessToken));
         failedQueue = [];
-
         originalRequest.headers!['Authorization'] = `Bearer ${data.accessToken}`;
         return axiosInstance(originalRequest);
       } catch (refreshError) {
@@ -697,10 +699,10 @@ axiosInstance.interceptors.response.use(
       }
     }
 
-    // SESSION_REVOKED: bị đá ra bởi WebSocket event hoặc trực tiếp từ API
     if (
       error.response?.status === 401 &&
-      error.response.data?.code === 'SESSION_REVOKED'
+      (error.response.data?.code === 'SESSION_REVOKED' ||
+       error.response.data?.code === 'SESSION_NOT_FOUND')
     ) {
       localStorage.clear();
       window.location.href = '/login';
@@ -710,3 +712,42 @@ axiosInstance.interceptors.response.use(
   },
 );
 ```
+
+---
+
+## 9. Kiến trúc Session Guard
+
+Mỗi request có `Authorization` đi qua pipeline:
+
+```
+Request
+  │
+  ▼
+KeycloakGuard
+  │  Validate JWT signature (JWKS), extract userId + sid
+  │  TokenValidationService: in-memory cache theo JWT signature
+  │    Cache TTL = min(token.exp, now+5min), cleanup mỗi 60s
+  │    → Cache hit: 0 RSA verify (~3ms saved)
+  ▼
+SessionGuard
+  │
+  ├─ Fast path: SessionCacheService.get(userId, platform)
+  │     Hit + expiresAt > now → SID match check → ✓ (0 Redis calls)
+  │     Miss/expired          → slow path
+  │
+  └─ Slow path: Redis GET session:{userId}:{platform}
+        Found   → SessionCacheService.set(TTL=30s) → SID match → ✓
+        Missing → 401 SESSION_NOT_FOUND
+        Mismatch → 401 SESSION_REVOKED
+```
+
+**SessionCacheService** (in-process, per-Pod):
+
+| Thuộc tính | Giá trị |
+|-----------|---------|
+| Storage | `Map<"userId:platform", { keycloakSid, expiresAt }>` |
+| TTL entry | 30 giây |
+| Cleanup interval | 60 giây |
+| Invalidated khi | login (kick cũ), logout, kick từ thiết bị mới |
+
+> **Multi-Pod**: Cache là per-Pod. Sau invalidate, các Pod khác còn phục vụ cache cũ tối đa 30s. Trade-off chấp nhận được: session đã bị xóa khỏi Redis nên Pod hết TTL sẽ từ chối.

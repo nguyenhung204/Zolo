@@ -42,18 +42,19 @@ sequenceDiagram
         end
     end
     
-    ChatCore->>Kafka: Publish MESSAGE_ACCEPTED
-    ChatCore-->>RealtimeGW: Success (messageId)
+    ChatCore->>Kafka: Publish MESSAGE_ACCEPTED (fire-and-forget; on Kafka fail → RPUSH chat:kafka:outbox)
+    ChatCore-->>RealtimeGW: Success (messageId, 201)
     RealtimeGW-->>Client: message:saved (messageId)
     
     Kafka->>MsgStore: Consume MESSAGE_ACCEPTED
-    MsgStore->>ConvSvc: TCP: INCREMENT_MAX_OFFSET
-    ConvSvc->>DB: Atomic offset++
-    DB-->>ConvSvc: New offset (e.g., 42)
-    ConvSvc-->>MsgStore: offset: 42
+    MsgStore->>Redis: Lua INCR_IF_EXISTS chat:conv:{id}:max_offset (warm path)
+    Redis-->>MsgStore: offset: 42
+    MsgStore->>Redis: SADD chat:conv:dirty_offsets {convId}
     
     MsgStore->>DB: INSERT message (offset=42)
     MsgStore->>Kafka: Publish MESSAGE_SAVED
+    
+    Note over ConvSvc: OffsetSyncJob @Cron(*/5s): SMEMBERS dirty_offsets → batch UPDATE PG
     
     Kafka->>RealtimeGW: Consume MESSAGE_SAVED
     RealtimeGW->>RealtimeGW: Batch for 80ms
@@ -75,26 +76,32 @@ sequenceDiagram
 
 **3. Chat Core Validates**
 
-**3a. Check Conversation Exists**
-- Calls Conversation Service: GET_CONVERSATION
-- Verifies conversation exists
-- Verifies sender is a member
-- If not member → reject with FORBIDDEN error
+**3a. Check Conversation Exists (L1 in-process → L0 Redis → TCP singleflight)**
+- L1: in-process `convCache` (15s TTL) → skip Redis on hit.
+- L0: Redis GET conversation metadata.
+- TCP fallback: GET_CONVERSATION to conversation-service (singleflight — N concurrent misses = 1 TCP call).
+- Verifies conversation exists and sender is a member.
+- If not member → reject with FORBIDDEN error.
 
-**3b. Check Friendship (DIRECT only)**
-- For DIRECT conversations, calls Friendship Service: IS_FRIEND
-- Checks friendship status between sender and recipient
-- If BLOCKED → reject with "User has blocked you"
-- If NOT_FRIEND → classify as "message request" (inbox vs primary)
-- Rate limits for strangers: 1 message per hour until replied
+**3b. Check Friendship / Block (DIRECT only) — Single Redis MGET**
+- Single `MGET` call on 4 co-located keys (same hash tag `{chat:rel:{lo}:{hi}}`):
+  - `{chat:rel:{lo}:{hi}}:block:{A}:{B}` — A blocked B?
+  - `{chat:rel:{lo}:{hi}}:block:{B}:{A}` — B blocked A?
+  - `{chat:rel:{lo}:{hi}}:friends` — are they friends? (LWW, set by FriendshipFriendsConsumer)
+  - `{chat:rel:{lo}:{hi}}:proof` — 30s race-condition bridge (set on accept-friend)
+- **No TCP call to friendship-service on cache hit.**
+- If blocked → reject with FORBIDDEN_BLOCKED_USER.
+- If not friends and no proof → classify as stranger; apply rate limit.
 
 **3c. Rate Limit Check (Strangers)**
 - For non-friends, calls Message Store: HAS_REPLIED
 - If recipient never replied → enforce strict limit
 - If limit exceeded → reject with "Rate limit exceeded"
 
-**4. Chat Core Publishes EVENT (Kafka)**
-- If all validations pass, publishes MESSAGE_ACCEPTED event
+**4. Chat Core Publishes EVENT (Kafka — fire-and-forget + outbox)**
+- If all validations pass, calls `publishWithReliability(event)`:
+  - Try Kafka publish.
+  - On Kafka failure: `RPUSH chat:kafka:outbox payload` → background poller retries every 500ms.
 - Event payload:
   ```
   {
@@ -102,31 +109,29 @@ sequenceDiagram
     conversationId: UUID,
     senderId: UUID,
     content: string,
-    type: 'TEXT' | 'IMAGE' | 'FILE',
+    type: 'TEXT' | 'IMAGE' | 'FILE' | 'STICKER',
     metadata: object,
     timestamp: ISO string
   }
   ```
-- Returns success immediately to Realtime Gateway
-- Does NOT wait for persistence
+- Returns 201 immediately to Realtime Gateway.
+- Does NOT wait for persistence.
 
 **5. Realtime Gateway Confirms to Client**
-- Sends `message:saved` event with messageId
-- Client shows "sending..." → "sent" checkmark
-- This happens ~50-100ms after send
+- Sends `message:saved` event with messageId.
+- Client shows "sending..." → "sent" checkmark.
+- This happens ~20–80ms after send.
 
 **6. Message Store Consumes Event**
-- Message Store consumer picks up MESSAGE_ACCEPTED
-- Checks idempotency: if messageId already exists, skip
-- Calls Conversation Service: INCREMENT_MAX_OFFSET
-- Receives sequential offset (atomic counter)
+- Message Store consumer picks up MESSAGE_ACCEPTED.
+- Checks idempotency: if messageId already exists, skip.
+- **Lua `INCR_IF_EXISTS` on Redis `chat:conv:{id}:max_offset`** (warm path, O(1)).
+- If key absent (cold path): TCP INCREMENT_MAX_OFFSET to Conversation Service → seed Redis with NX.
+- `SADD chat:conv:dirty_offsets {conversationId}`.
 
 **7. Message Store Persists**
-- Inserts message into messages table with offset
-- Creates delivery receipts for all conversation members:
-  - Status: delivered
-  - Timestamp: now
-- Transaction ensures atomicity
+- Inserts message into messages table with assigned offset.
+- Transaction ensures atomicity.
 
 **8. Message Store Publishes MESSAGE_SAVED**
 - Publishes to Kafka with lightweight payload:

@@ -1,270 +1,157 @@
 # Chat Core Service
 
-**Port**: 3004 (TCP Microservice)
-**Technology**: NestJS + TCP Transport
-**Database**: None — Chat Core does not own any database tables
-**Cache**: Redis (membership sets, role cache, idempotency, rate limiting)
+## Overview
 
----
+Chat Core là **validation orchestrator** — không lưu dữ liệu, không gọi TCP đến external services trừ khi cache miss. Nhận `SEND_MESSAGE` từ Gateway, validate toàn bộ nghiệp vụ, publish `MESSAGE_ACCEPTED` vào Kafka, rồi trả 201 ngay lập tức.
 
-## Purpose
+## Responsibilities
 
-Chat Core is the business validation engine for all message operations. It enforces all access control rules and business constraints before any message is accepted or operation is executed. It does not persist messages; it publishes `MESSAGE_ACCEPTED` to Kafka after validation passes.
+1. **Rate limiting** — Per-sender Redis counter.
+2. **Content validation** — Format, length, type-specific rules (text / media / sticker).
+3. **Conversation + membership validation** — L1 in-process cache → L0 Redis → TCP fallback (singleflight).
+4. **Friendship / block check (DIRECT)** — Single Redis `MGET` trên 4 co-located keys; không bao giờ gọi TCP đến friendship-service trừ khi MGET hoàn toàn miss.
+5. **Kafka publish (fire-and-forget + outbox)** — Publish `MESSAGE_ACCEPTED`; nếu Kafka fail → push vào Redis outbox list; background poller retry mỗi 500ms.
+6. **FriendshipFriendsConsumer** — Cache friend status từ Kafka events vào Redis (LWW register).
 
----
+## Key Components
 
-## Architecture: ACL Rule Chain
+### MessageSendOrchestrator
 
-The service implements a layered validation architecture built on three patterns:
+Orchestrator chính. Implements `OnModuleInit` / `OnModuleDestroy`.
 
-- **Chain of Responsibility** (ACL rules in priority order)
-- **Strategy Pattern** (conversation-kind-specific validation)
-- **Orchestrators** (per-operation workflow coordination)
+**In-process caches (Map + TTL):**
 
-### Validation Pipeline
+| Cache | Key | TTL | Mục đích |
+|-------|-----|-----|---------|
+| `convCache` | `conversationId` | 15s | Conversation metadata |
+| `membersCache` | `conversationId` | 30s | Members list (DIRECT receiver lookup) |
+| `friendshipCache` | sorted `senderId:receiverId` | 30s | TCP fallback friendship status |
 
-Each message operation flows through an orchestrator that assembles context and executes the validation chain:
+**Singleflight (Map<string, Promise>):**
+- `convInflight`: N concurrent conv-fetch → 1 TCP call
+- `membersInflight`: N concurrent members-fetch → 1 TCP call
 
+**Kafka Outbox:**
+- Redis list: `chat:kafka:outbox`
+- `onModuleInit`: setInterval 500ms → `processKafkaOutbox()`
+- `onModuleDestroy`: clearInterval tất cả intervals + clear caches
+
+**Validation pipeline (theo thứ tự):**
 ```
-Request (TCP)
-  → Orchestrator (assemble PermissionContext)
-    → Validators (fetch user, membership, media from cache/TCP)
-      → ACL Rule Chain (execute 4 rules, fail-fast)
-        → If OK: publish to Kafka
-        → If Error: throw RpcException with specific error code
-```
-
----
-
-## ACL Rule Chain
-
-Four rules execute in priority order (highest first). Execution stops at the first failure:
-
-| Priority | Rule | File | Error Codes |
-|----------|------|------|-------------|
-| CRITICAL | `AccountStatusRule` | `rules/account-status.rule.ts` | `FORBIDDEN_ACCOUNT_BANNED` |
-| HIGH | `MembershipRule` | `rules/membership.rule.ts` | `FORBIDDEN_NOT_MEMBER` |
-| HIGH | `TimeWindowRule` | `rules/time-window.rule.ts` | `FORBIDDEN_EDIT_WINDOW_EXPIRED`, `FORBIDDEN_NOT_MESSAGE_SENDER`, `INVALID_CONTEXT` |
-| HIGH | `MediaValidationRule` | `rules/media-validation.rule.ts` | `FORBIDDEN_MEDIA_FAILED` |
-
-**Applies-to filters**: `TimeWindowRule` only fires for `MSG.EDIT_OWN`, `MSG.DELETE_OWN`, `MSG.DELETE_ANY` actions. `MediaValidationRule` only fires for `MSG.SEND_MEDIA`, `DOC.UPLOAD`, `DOC.SHARE_EXISTING` actions and only when `context.media` is present.
-
-Error codes are defined in `libs/common/src/constants/permissions.constants.ts` (`ACLErrorCode` enum). Per-conversation-kind permission checks are handled by the **Strategy Pattern** (see below).
-
----
-
-## Strategy Pattern
-
-A `ConversationStrategyRegistry` maps each `ConversationKind` to a strategy class that implements kind-specific permission and validation logic:
-
-| Strategy | Kind | Special Logic |
-|----------|------|---------------|
-| `DirectConversationStrategy` | `direct` | Friendship check, block check, rate-limit for strangers; all members have equal permissions |
-| `GroupConversationStrategy` | `group` | Role-based permissions; OWNER/ADMIN/MODERATOR get elevated capabilities; MEMBER gets standard messaging |
-| `CommunityConversationStrategy` | `community` | Only OWNER/ADMIN/MODERATOR can post (`MSG.SEND_TEXT`/`MSG.SEND_MEDIA`); MEMBER/GUEST can only `MSG.REACT` |
-
----
-
-## Orchestrators
-
-| File | Operation | Entry Point Pattern |
-|------|-----------|---------------------|
-| `message-send.orchestrator.ts` | Send message | `SEND_MESSAGE` |
-| `message-edit.orchestrator.ts` | Edit message (10-min window) | `EDIT_MESSAGE` |
-| `message-delete.orchestrator.ts` | Delete message (24h for own; ADMIN only for any) | `DELETE_MESSAGE` |
-| `message-pin.orchestrator.ts` | Pin/unpin (max 3 per conversation) | `PIN_MESSAGE`, `UNPIN_MESSAGE` |
-| `media-precheck.orchestrator.ts` | Phase 1 of two-phase upload (validate before upload) | `PRE_CHECK_MEDIA` |
-
-### MessageSendOrchestrator Flow
-
-1. Validate user account status (`UserValidatorService` → Users TCP)
-2. Fetch conversation from `ConversationService` (TCP)
-3. Fetch membership + role from Redis (`SISMEMBER`) or TCP fallback to Conversation Service
-4. For `direct` kind: check friendship and block status via Friendship Service (TCP)
-5. For non-friend `direct` conversation: check `HAS_REPLIED` via Message Store (TCP) for stranger rate-limiting
-6. If `mediaId` present: validate via `MediaValidatorService` (Media Service TCP). **For `type=sticker`: no `mediaId` is present; the sticker URL lives in `metadata.url`. The text ACL chain is used and content-empty validation is bypassed.**
-7. Build immutable `PermissionContext`
-8. Execute ACL Rule Chain
-9. Check idempotency: Redis `GET idempotency:message:{clientMessageId}` (24h window)
-10. Atomic rate-limiting via Redis Lua script
-11. Publish `MESSAGE_ACCEPTED` to Kafka
-12. Store `clientMessageId` in Redis for deduplication
-13. Return `{ messageId }` to caller
-
----
-
-## AclContext (Permission Context)
-
-```typescript
-export interface AclContext {
-  /** Actor performing the action */
-  actor: {
-    userId: string;
-    isActive: boolean;       // false = banned; AccountStatusRule blocks all actions
-    isMember: boolean;       // MembershipRule checks this
-    role?: string;           // MemberRole ('owner'|'admin'|'moderator'|'member'|'guest')
-  };
-
-  /** Conversation context */
-  conversation: {
-    id: string;
-    kind?: string;           // 'direct' | 'group' | 'community'
-    settings?: Record<string, any>;
-  };
-
-  /** Message context — required for edit/delete operations */
-  message?: {
-    id: string;
-    senderId: string;
-    createdAtMs: number;     // epoch ms; used by TimeWindowRule
-    conversationId: string;
-  };
-
-  /** Media context — present only when mediaId is in message metadata */
-  media?: {
-    id: string;
-    status: MediaStatus;     // FAILED status is rejected; all others allowed
-    mimeType: string;
-    sizeBytes: number;
-  };
-
-  /** Current timestamp in epoch ms */
-  nowMs: number;
-}
+Step 1: rateLimiter.checkLimitOrThrow(senderId)
+Step 2: validateMessageContent(content, type, mediaId)
+Step 3: getAndValidateConversation(conversationId)  ← L1 → L0 Redis → TCP
+Step 4: getMembers(conversationId)                  ← L1 → TCP (singleflight)
+Step 5: check sender is member
+Step 6 [DIRECT only]: handleDirectConversation()
+  → Redis MGET(block_A_B, block_B_A, friends, proof)
+  → check blocked, check areFriends/hasProof, apply rate limit for strangers
+Step 7: publishWithReliability(event) → Kafka or Redis outbox
+Step 8: return { messageId, success: true }         ← 201 to Gateway
 ```
 
-`AclContext` is assembled by each orchestrator from cache/TCP lookups before the rule chain executes.
+### MembershipValidatorService
 
----
+3 layers:
+1. **L1 in-process Map** (TTL 30s, cleanup 30s) — skip Redis entirely.
+2. **L0 Redis pipeline** (SISMEMBER + GET role — 1 round-trip).
+3. **TCP singleflight** — N concurrent misses → 1 call to conversation-service.
 
-## TCP Patterns
+### UserValidatorService
 
-| Pattern | Description |
-|---------|-------------|
-| `SEND_MESSAGE` | Validate and publish message |
-| `EDIT_MESSAGE` | Validate edit (10-min window) and publish |
-| `DELETE_MESSAGE` | Validate delete (24h own / ADMIN for any) and publish |
-| `PIN_MESSAGE` | Validate pin (MSG.PIN permission, max 3 per conversation) and publish |
-| `UNPIN_MESSAGE` | Validate unpin and publish |
-| `PRE_CHECK_MEDIA` | Phase 1 media validation before client uploads to MinIO |
-| `VALIDATE_MEMBERSHIP` | Check membership (used by other services) |
-| `CHECK_BLOCK_STATUS` | Check bidirectional block status |
-| `CHECK_RATE_LIMIT` | Check rate limit status for a user/conversation |
-| `GET_CIRCUIT_BREAKER_HEALTH` | Circuit breaker + downstream health status |
+2 layers:
+1. **In-process Map** (60s valid / 5s invalid, cleanup 60s).
+2. **TCP singleflight** — N concurrent misses → 1 call to users-service.
+- `invalidateUser(userId)`: evict on deactivation event.
 
----
+### MessageRateLimiterService
+
+Redis INCR + EXPIRE. Per-sender bucket. Shared cho text + sticker.
+
+### FriendshipFriendsConsumer
+
+- Consumer group: `nest-chat.chat-core.friend-cache`
+- Topics: `FRIENDSHIP.REQUEST_ACCEPTED`, `FRIENDSHIP.REMOVED`
+- Writes/tombstones `{chat:rel:{lo}:{hi}}:friends` key via **Lua CAS** (EVALSHA).
+- Clock source: Kafka broker log-append timestamp → immune to app Pod clock skew.
+- `ACCEPTED` → positive Unix-ms, TTL 30 days.
+- `REMOVED` → negative Unix-ms (tombstone), TTL 60s.
+
+### ACL & Strategy
+
+ACL chain và ConversationStrategy đã được **inlined** vào `MessageSendOrchestrator` để loại bỏ overhead. Không còn `AclRuleChainFactory` hay `ConversationStrategyRegistry` trên hot path.
+
+## Luồng Send Message (tóm tắt)
+
+```
+Gateway TCP → MessageSendOrchestrator.execute(dto)
+  │
+  ├─ 1. Rate limit (Redis)
+  ├─ 2. Content validation
+  ├─ 3. Fetch conv+members parallel (L1 → Redis → TCP singleflight)
+  ├─ 4. Membership check
+  ├─ 5. [DIRECT] Redis MGET(4 keys) → block/friend check
+  ├─ 6. publishWithReliability(event)
+  │      → Kafka publish (try)
+  │      → on fail: RPUSH chat:kafka:outbox payload
+  └─ 7. Return { messageId } (201) immediately
+```
+
+Background:
+```
+setInterval(500ms) → processKafkaOutbox()
+  → LPOP chat:kafka:outbox → retry Kafka publish → success → done
+```
+
+## Redis Keys Used
+
+| Key | Operation | Purpose |
+|-----|-----------|---------|
+| `chat:conv:meta:{id}` | GET/SET | Conversation metadata L0 cache |
+| `chat:conversation:{id}:members` | SISMEMBER | Membership check |
+| `{chat:rel:{lo}:{hi}}:block:{A}:{B}` | MGET | Block status A→B |
+| `{chat:rel:{lo}:{hi}}:block:{B}:{A}` | MGET | Block status B→A |
+| `{chat:rel:{lo}:{hi}}:friends` | MGET | Friend status (LWW) |
+| `{chat:rel:{lo}:{hi}}:proof` | MGET | Race-condition bridge |
+| `chat:kafka:outbox` | RPUSH/LPOP | Kafka retry outbox |
+| Rate limit keys | INCR/EXPIRE | Per-sender rate limiting |
 
 ## Kafka Events Published
 
-| Topic | Trigger |
-|-------|---------|
-| `chat.event.message_accepted` | Message passed all validation; consumed by Message Store |
+| Topic | When | Consumer |
+|-------|------|---------|
+| `MESSAGE_ACCEPTED` | Validation passed | Message Store |
 
-`MESSAGE_ACCEPTED` payload**:
-```json
-{
-  "messageId": "uuid",
-  "conversationId": "uuid",
-  "conversationType": "direct | group | community",
-  "senderId": "keycloak-id",
-  "content": "...",
-  "type": "text | image | file | audio | video | sticker",
-  "timestamp": "2026-04-02T10:00:00.000Z",
-  "metadata": { "replyToMessageId?": "...", "mediaId?": "..." }
-}
-```
+## Kafka Events Consumed
 
-`conversationType` and `timestamp` allow Message Store and downstream consumers to apply conversation-specific logic without an extra round-trip to Conversation Service.
+| Topic | Consumer | Action |
+|-------|---------|--------|
+| `FRIENDSHIP.BLOCKED` | `FriendshipBlockConsumer` | SET block key Redis TTL 24h |
+| `FRIENDSHIP.UNBLOCKED` | `FriendshipBlockConsumer` | DEL block key |
+| `FRIENDSHIP.REQUEST_ACCEPTED` | `FriendshipFriendsConsumer` | Lua CAS SET friends +brokerTs |
+| `FRIENDSHIP.REMOVED` | `FriendshipFriendsConsumer` | Lua CAS SET friends -brokerTs (tombstone) |
 
-Message Store consumes `MESSAGE_ACCEPTED`, increments conversation offset, persists the message, then publishes `MESSAGE_SAVED` for Realtime Gateway.
+## Error Codes
 
----
+| Code | HTTP | Khi nào |
+|------|------|---------|
+| `FORBIDDEN` | 403 | Không phải member |
+| `FORBIDDEN_BLOCKED_USER` | 403 | Bị block bởi receiver |
+| `RATE_LIMIT_EXCEEDED` | 429 | Vượt rate limit (người lạ hoặc global) |
+| `CONVERSATION_NOT_FOUND` | 404 | Conversation không tồn tại |
+| `CONVERSATION_SERVICE_UNAVAILABLE` | 503 | conversation-service không phản hồi |
+| `INVALID_MESSAGE` | 400 | Content không hợp lệ |
 
-## Service Dependencies
+## Performance Characteristics
 
-| Service | Usage | Pattern |
-|---------|-------|---------|
-| Conversation Service | Fetch conversation, membership, member IDs | TCP |
-| Friendship Service | Friend status, block status (direct conversations only) | TCP |
-| Message Store | `HAS_REPLIED` check for stranger rate-limiting | TCP |
-| Media Service | Validate media metadata, ownership, classification | TCP |
-| Users Service | Validate account status | TCP |
-
-All integrations use `IConversationService`, `IFriendshipService`, etc. interfaces from `@app/service-contracts` with TCP adapters — no direct `ClientProxy` in business logic.
-
----
-
-## Redis Usage
-
-| Key Pattern | Purpose | TTL |
-|-------------|---------|-----|
-| `chat:conversation:{id}:members` | Membership Set (`SISMEMBER`) | Event-driven (no TTL expiry; updated by Conversation Service consumers) |
-| `idempotency:message:{clientMessageId}` | Deduplication for sent messages | 24 hours |
-| `ratelimit:{userId}:{conversationId}` | Atomic rate limit counter (Lua script) | Configurable window |
-
----
-
-## Database
-
-Chat Core does **NOT** own any database tables. All validation is done using data fetched at runtime via TCP calls (conversation metadata, membership, media status, user account status). The `policy_rules` table **does not exist** — per-conversation-kind permission logic is embedded in the Strategy classes (`DirectConversationStrategy`, `GroupConversationStrategy`, `CommunityConversationStrategy`).
-
----
-
-## Test Coverage
-
-| Suite | Tests |
-|-------|-------|
-| ACL rules (`acl/__tests__/`) | 145 passing |
-| Orchestrators (`orchestrators/__tests__/`) | 64 passing |
-| Strategies (`strategies/__tests__/`) | 122 passing |
-
----
-
-## Configuration
-
-```bash
-CHAT_CORE_SERVICE_HOST=localhost
-CHAT_CORE_SERVICE_PORT=3004
-
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5433
-POSTGRES_USERNAME=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DATABASE=chat_db
-
-KAFKA_BROKERS=localhost:9092
-KAFKA_CLIENT_ID=chat-core
-
-REDIS_CHAT_HOST=localhost
-REDIS_CHAT_PORT=6380
-REDIS_CHAT_DB=0
-
-CONVERSATION_SERVICE_HOST=localhost
-CONVERSATION_SERVICE_PORT=3007
-FRIENDSHIP_SERVICE_HOST=localhost
-FRIENDSHIP_SERVICE_PORT=3008
-MESSAGE_STORE_SERVICE_HOST=localhost
-MESSAGE_STORE_SERVICE_PORT=3005
-USERS_SERVICE_HOST=localhost
-USERS_SERVICE_PORT=3001
-```
-
----
-
-## Important Behaviors
-
-### Membership Validation Strategy
-
-Chat Core validates membership using the Redis Set (`SISMEMBER`) maintained by Conversation Service's `MembershipCacheConsumer`. On cache miss or Redis unavailability, it falls back to a direct TCP call to `CONVERSATION_PATTERNS.IS_MEMBER`. This ensures membership is always checked against current state — there is no stale-TTL problem because Redis is updated synchronously on every MEMBER_ADDED/MEMBER_REMOVED event.
-
-### Two-Phase Media Upload
-
-`PRE_CHECK_MEDIA` (phase 1) validates media metadata on the Media Service before the client uploads the file to MinIO. This prevents unauthorized uploads and validates classification/ownership constraints upfront. After the client completes the upload, it calls `POST /media/upload/complete` on Media Service, which transitions status to `UPLOADED` → `PROCESSING` → `READY`.
-
-### Idempotency
-
-Each `SEND_MESSAGE` request must include a `clientMessageId`. Chat Core checks Redis for this ID (24h window). If found, the previous `messageId` is returned immediately without re-processing — this makes the operation safe to retry on network failures.
-
-### Circuit Breaker
-
-`CircuitBreakerService` (from `@app/common`, cockatiel-based) wraps calls to dependent services. On timeout or failed call, it returns `503 ServiceUnavailableException` rather than silently degrading — preventing ghost messages from being accepted.
+| Metric | Value |
+|--------|-------|
+| Latency (cache hit) | ~5–20ms |
+| Latency (Redis hit) | ~10–30ms |
+| Latency (TCP fallback) | ~30–80ms |
+| TCP calls to conv-service (warm) | 0 per message |
+| TCP calls to friendship-service (warm) | 0 per message |
+| Kafka outbox retry interval | 500ms |
+| Conv cache TTL | 15s |
+| Members cache TTL | 30s |
+| Friendship cache TTL | 30s |

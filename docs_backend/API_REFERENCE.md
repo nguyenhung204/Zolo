@@ -92,6 +92,9 @@ Roles are assigned by Keycloak and embedded in the JWT. The system uses conversa
 | `FORBIDDEN_MEDIA_NOT_READY` | File chưa xử lý xong |
 | `FORBIDDEN_MEDIA_OWNERSHIP` | Không sở hữu file này |
 | `FORBIDDEN_MEDIA_CLASSIFICATION` | File bị hạn chế, kênh không cho phép |
+| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | Quá cửa sổ thời gian thu hồi tin nhắn (~2 phút) |
+| `FORBIDDEN_NOT_OWNER` | Tin nhắn không thuộc về bạn |
+| `SOURCE_MESSAGE_NOT_FOUND` | Tin nhắn gốc không tồn tại hoặc đã bị xóa (khi forward) |
 
 ---
 
@@ -128,9 +131,9 @@ curl -X POST http://localhost:3000/auth/login \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `email` | string |  | Email tài khoản |
-| `password` | string |  | Mật khẩu |
-| `platform` | `'web'\|'mobile'` |  | Loại thiết bị |
+| `email` | string | ✓ | Email tài khoản — **phải là @gmail.com** |
+| `password` | string | ✓ | Mật khẩu |
+| `platform` | `'web'\|'mobile'` | ✓ | Loại thiết bị |
 | `deviceInfo.deviceName` | string |  | Tên thiết bị hiển thị |
 | `deviceInfo.userAgent` | string |  | User-Agent (tự động lấy nếu không gửi) |
 
@@ -153,6 +156,7 @@ curl -X POST http://localhost:3000/auth/login \
 
 | HTTP | Trường hợp |
 |------|------------|
+| 400 | Email không phải @gmail.com |
 | 401 | Sai email hoặc mật khẩu |
 | 500 | Keycloak không phản hồi |
 
@@ -178,7 +182,7 @@ curl -X POST http://localhost:3000/auth/refresh \
 | HTTP | Trường hợp |
 |------|------------|
 | 401 | `refreshToken` hết hạn hoặc bị revoke |
-| 401 `SESSION_REVOKED` | Phiên bị kick bởi đăng nhập ở thiết bị khác |
+| 401 `SESSION_REVOKED` | Phiên bị kick bởi đăng nhập ở thiết bị khác, hoặc SID mismatch (Keycloak session_state không khớp với session đã lưu) |
 
 ---
 
@@ -223,9 +227,9 @@ curl -X POST http://localhost:3000/auth/register/init \
 
 | Field | Type | Bắt buộc | Mô tả |
 |-------|------|----------|-------|
-| `email` | string |  | Email đăng ký (phải chưa tồn tại) |
-| `firstName` | string |  | Tên, 1–20 ký tự |
-| `lastName` | string |  | Họ, 1–20 ký tự |
+| `email` | string | ✓ | Email đăng ký — **phải là @gmail.com**, phải chưa tồn tại |
+| `firstName` | string | ✓ | Tên, 1–20 ký tự |
+| `lastName` | string | ✓ | Họ, 1–20 ký tự |
 
 > `username` hiển thị được hệ thống tự sinh từ `firstName + " " + lastName`, có thể trùng và có thể thay đổi sau này.
 
@@ -242,6 +246,7 @@ curl -X POST http://localhost:3000/auth/register/init \
 
 | HTTP | Trường hợp |
 |------|------------|
+| 400 | Email không phải @gmail.com |
 | 409 | Email đã được đăng ký |
 | 429 | Vượt rate limit (5 lần/15 phút/email) hoặc cooldown 60s |
 
@@ -368,7 +373,7 @@ curl -X POST http://localhost:3000/auth/forgot-password \
 
 | HTTP | Trường hợp |
 |------|------------|
-| 400 | Email không đúng định dạng |
+| 400 | Email không đúng định dạng hoặc không phải @gmail.com |
 | 429 | Vượt rate limit hoặc cooldown |
 
 ---
@@ -872,6 +877,26 @@ curl -X POST http://localhost:3000/chat/messages \\
   }'
 ```
 
+```bash
+# Gửi nhiều ảnh/video cùng lúc (type: 'media' với attachments[])
+curl -X POST http://localhost:3000/chat/messages \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "conversationId": "conv-uuid-here",
+    "content": "Album ảnh chuyến đi",
+    "type": "media",
+    "clientMessageId": "client-gen-uuid-v4-003",
+    "attachments": [
+      { "mediaId": "media-uuid-001", "type": "image" },
+      { "mediaId": "media-uuid-002", "type": "image" },
+      { "mediaId": "media-uuid-003", "type": "video" }
+    ]
+  }'
+```
+
+Khi `type: 'media'`, `content` là tùy chọn. Tối đa **30 attachments** mỗi tin nhắn. Khi `type: 'sticker'`, `content` cũng là tùy chọn.
+
 `clientMessageId` là UUID do client tự tạo, dùng để dedup — nếu mạng timeout nhưng server đã lưu, gửi lại với cùng `clientMessageId` sẽ không tạo tin trùng.
 
 Luồng backend: Gateway → ChatCore (validate quyền) → Kafka `chat.event.message_accepted` → MessageStore (lưu vào DB) → Kafka `chat.event.message_saved` → RealtimeGW (broadcast WebSocket).
@@ -940,12 +965,74 @@ Mỗi conversation ghim tối đa 3 tin nhắn.
 
 ### DELETE /messages/:id/pin — Bỏ ghim tin nhắn
 
+> `conversationId` truyền qua **query param** (không phải request body).
+
 ```bash
-curl -X DELETE "http://localhost:3000/messages/msg-uuid-001/pin" \\
+curl -X DELETE "http://localhost:3000/messages/msg-uuid-001/pin?conversationId=conv-uuid-here" \\
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /conversations/:id/pinned — Danh sách tin nhắn đã ghim
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \\
+  "http://localhost:3000/conversations/conv-uuid-here/pinned"
+```
+
+Trả về tối đa 3 tin nhắn đang được ghim, kèm metadata `pinnedBy`, `pinnedAt`.
+
+---
+
+### POST /messages/:id/revoke — Thu hồi tin nhắn
+
+An tin nhắn với tất cả mọi người (hiển thị thành "Tin nhắn đã thu hồi"). Chỉ hoạt động trong cửa sổ thời gian ~2 phút kể từ khi gửi.
+
+```bash
+curl -X POST "http://localhost:3000/messages/msg-uuid-001/revoke" \\
   -H "Authorization: Bearer $TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{ "conversationId": "conv-uuid-here" }'
 ```
+
+| Lỗi | HTTP | Mô tả |
+|-----|------|-------|
+| `FORBIDDEN_NOT_OWNER` | 403 | Tin nhắn không thuộc về bạn |
+| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | 403 | Quá ~2 phút kể từ khi gửi |
+| `MESSAGE_NOT_FOUND` | 404 | Tin nhắn không tồn tại |
+
+---
+
+### DELETE /messages/:id/for-me — Xóa tin nhắn phía tôi
+
+Ẩn tin nhắn khỏi lịch sử của riêng bạn. Người khác vẫn thấy bình thường. Không có giới hạn thời gian.
+
+> `conversationId` truyền qua **query param** (không phải request body).
+
+```bash
+curl -X DELETE "http://localhost:3000/messages/msg-uuid-001/for-me?conversationId=conv-uuid-here" \\
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /messages/forward — Chuyển tiếp tin nhắn
+
+Chuyển tiếp một tin nhắn sang một hoặc nhiều conversation khác.
+
+```bash
+curl -X POST http://localhost:3000/messages/forward \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "sourceMessageId": "msg-uuid-001",
+    "sourceConversationId": "conv-uuid-source",
+    "targetConversationIds": ["conv-uuid-target-1", "conv-uuid-target-2"]
+  }'
+```
+
+Phải là thành viên của cả conversation nguồn và đích. Tối đa 10 conversation đích mỗi lần gọi.
 
 ---
 
@@ -1182,6 +1269,75 @@ curl -X POST "http://localhost:3000/media/media-uuid-abc123/cross-share" \\
 ```
 
 Chỉ ADMIN mới có quyền cross-share giữa các conversation. File gốc không bị nhân đôi, chỉ tạo reference mới, giữ nguyên phân quyền truy cập.
+
+---
+
+### Multipart Upload — Upload file lớn (≥ 10 MB)
+
+Dùng cho video và file lớn. Chia file thành nhiều phần 10MB, upload song song, server ghép lại. Giới hạn: `IMAGE` ≤ 15MB, `VIDEO`/`FILE` ≤ 1GB.
+
+#### POST /media/multipart/init — Khởi tạo phiên
+
+```bash
+curl -X POST http://localhost:3000/media/multipart/init \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "filename": "demo-video.mp4",
+    "mimeType": "video/mp4",
+    "type": "VIDEO",
+    "totalSize": 52428800
+  }'
+```
+
+> Trường `type` dùng chữ **HOA** (`'IMAGE'`, `'VIDEO'`, `'FILE'`) cho multipart — khác với upload thông thường dùng chữ thường.
+
+Response:
+```json
+{ "data": { "mediaId": "uuid", "uploadId": "VXBsb2FkSWQ=", "objectKey": "owner-id/uuid/original.mp4" } }
+```
+
+#### POST /media/multipart/presign-parts — Lấy URL cho từng phần
+
+```bash
+curl -X POST http://localhost:3000/media/multipart/presign-parts \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "mediaId": "uuid-from-init",
+    "partNumbers": [1, 2, 3, 4, 5]
+  }'
+```
+
+Response: mảng `[{ partNumber: 1, uploadUrl: "...", ... }, ...]`
+
+Sau đó `PUT <uploadUrl>` để upload từng phần, lưu lại **ETag** từ response header của mỗi PUT.
+
+#### POST /media/multipart/complete — Hoàn tất ghép phần
+
+```bash
+curl -X POST http://localhost:3000/media/multipart/complete \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "mediaId": "uuid-from-init",
+    "parts": [
+      { "partNumber": 1, "eTag": "d41d8cd98f00b204e9800998ecf8427e" },
+      { "partNumber": 2, "eTag": "a87ff679a2f3e71d9181a67b7542122c" }
+    ]
+  }'
+```
+
+Sau bước này Media Worker bắt đầu xử lý (giống upload thông thường).
+
+#### DELETE /media/multipart/:mediaId — Hủy upload
+
+```bash
+curl -X DELETE "http://localhost:3000/media/multipart/media-uuid" \\
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Hủy phiên multipart đang dở, giải phóng tất cả phần đã upload. Gọi khi user hủy upload giữa chừng.
 
 ---
 
@@ -2056,7 +2212,10 @@ newPassword yếu                  → 400 Bad Request
 | Messages | PATCH | `/messages/:id` | JWT | Sửa tin nhắn |
 | Messages | DELETE | `/messages/:id` | JWT | Xóa tin nhắn |
 | Messages | POST | `/messages/:id/pin` | JWT | Ghim tin nhắn |
-| Messages | DELETE | `/messages/:id/pin` | JWT | Bỏ ghim tin nhắn |
+| Messages | DELETE | `/messages/:id/pin?conversationId=` | JWT | Bỏ ghim tin nhắn |
+| Messages | POST | `/messages/:id/revoke` | JWT | Thu hồi tin nhắn (ẩn tất cả, ~2 phút) |
+| Messages | DELETE | `/messages/:id/for-me?conversationId=` | JWT | Xóa tin nhắn phía tôi |
+| Messages | POST | `/messages/forward` | JWT | Chuyển tiếp tin nhắn |
 | Friendships | POST | `/friendships/requests/:targetUserId` | JWT | Gửi lời mời |
 | Friendships | POST | `/friendships/requests/:fromUserId/accept` | JWT | Chấp nhận |
 | Friendships | POST | `/friendships/requests/:fromUserId/reject` | JWT | Từ chối |
@@ -2072,6 +2231,10 @@ newPassword yếu                  → 400 Bad Request
 | Media | GET | `/media/:mediaId/url` | JWT | Lấy URL truy cập |
 | Media | DELETE | `/media/:mediaId` | JWT | Xóa file |
 | Media | POST | `/media/:mediaId/cross-share` | JWT | Chia sẻ file |
+| Media | POST | `/media/multipart/init` | JWT | Khởi tạo multipart upload |
+| Media | POST | `/media/multipart/presign-parts` | JWT | Lấy pre-signed URLs cho từng phần |
+| Media | POST | `/media/multipart/complete` | JWT | Hoàn tất ghép phần |
+| Media | DELETE | `/media/multipart/:mediaId` | JWT | Hủy multipart upload |
 | Notifications | GET | `/notifications/vapid-public-key` | Public | VAPID key |
 | Notifications | POST | `/notifications/devices` | JWT | Đăng ký thiết bị |
 | Notifications | DELETE | `/notifications/devices/:deviceId` | JWT | Hủy đăng ký thiết bị |

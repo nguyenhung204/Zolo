@@ -10,11 +10,11 @@ Gateway uses the **Facade Pattern** with Gateway Services (UsersGatewayService, 
 
 **TCP Clients Injected:**
 - `SERVICES.USERS` - User profile operations (also used by AuthModule for registration)
-- `SERVICES.CONVERSATION` - Conversation management
-- `SERVICES.FRIENDSHIP` - Social relationships
+- `SERVICES.CONVERSATION` - Conversation management — **PooledTcpClientProxy** (round-robin N connections)
+- `SERVICES.FRIENDSHIP` - Social relationships — **PooledTcpClientProxy** (round-robin N connections)
 - `SERVICES.MESSAGE_STORE` - Message queries
 - `SERVICES.PRESENCE` - Online/offline status
-- `SERVICES.CHAT_CORE` - Message validation (send message)
+- `SERVICES.CHAT_CORE` - Message validation (send message) — **PooledTcpClientProxy** (round-robin N connections)
 - `SERVICES.NOTIFICATION` - Email OTP dispatch (registration, password reset)
 
 **HTTP Proxy:**
@@ -27,7 +27,7 @@ Gateway uses the **Facade Pattern** with Gateway Services (UsersGatewayService, 
 - Authenticating JWT tokens from Keycloak via JWKS (RS256 signature verification)
 - **Login / Registration / Refresh / Logout** — full auth lifecycle with session management
 - **Session Management**: exactly 1 web session + 1 mobile session per user, backed by Redis; kicks old session on conflict
-- **Session Guard (APP_GUARD)**: validates `session_state` (sid) claim on every authenticated request against the Redis session store
+- **Session Guard (APP_GUARD)**: validates `session_state` (sid) claim on every authenticated request. **Fast path**: checks `SessionCacheService` (in-memory Map, 30s TTL) — 0 Redis calls on hit. **Slow path** (cache miss): Redis GET, then populates SessionCacheService for 30s.
 - Managing access control based on roles (Role-Based Access Control - RBAC)
 - Routing HTTP requests to microservices via TCP transport
 - Aggregating and transforming data from multiple microservices when needed
@@ -71,14 +71,15 @@ Gateway uses the **Facade Pattern** with Gateway Services (UsersGatewayService, 
 
 - **POST /auth/login** — Login with email + password
   - Body: `{ email, password, platform: 'web'|'mobile', deviceInfo?: { deviceName?, userAgent?, ipAddress? } }`
+  - **Email must be @gmail.com** (validated via `@Matches(/@gmail\.com$/i)` on DTO). Non-Gmail emails return 400.
   - Returns: `{ accessToken, refreshToken, expiresIn }`
-  - Creates / replaces session for the given platform (at most 1 web + 1 mobile per user). If a session already exists on that platform, it is revoked and the previous WebSocket connection is notified and disconnected.
+  - Creates / replaces session for the given platform (at most 1 web + 1 mobile per user). If a session already exists on that platform, it is kicked: Redis session deleted → `SessionCacheService.invalidate()` → WS revocation published → Keycloak session revoked (non-fatal).
 
 - **POST /auth/refresh** — Refresh access token
   - Header: `X-Client-Platform: web | mobile`
   - Body: `{ refreshToken: string }`
   - Returns: `{ accessToken, refreshToken, expiresIn }`
-  - Validates session still exists in Redis. Handles Keycloak `session_state` rotation transparently.
+  - Validates session still exists in Redis. **SID mismatch** (Keycloak session_state rotated unexpectedly) now throws `401 SESSION_REVOKED` instead of silently accepting the new SID.
 
 - **POST /auth/logout** — Logout (**requires JWT**)
   - Header: `Authorization: Bearer <accessToken>`, `X-Client-Platform: web | mobile`
@@ -87,6 +88,7 @@ Gateway uses the **Facade Pattern** with Gateway Services (UsersGatewayService, 
 
 - **POST /auth/register/init** — Step 1: Initiate registration
   - Body: `{ email, firstName, lastName }`
+  - **Email must be @gmail.com** (validated on DTO). Non-Gmail returns 400.
   - Checks email uniqueness against Keycloak; generates display `username = firstName + ' ' + lastName`; stores init data in Redis (`auth:reg:init:{emailHash}`, TTL 900s); sends 6-digit OTP email (TTL 10 min)
   - Returns: `{ cooldownSeconds: 60 }`
   - Rate limit: 5 requests / 15 min / email, 60s cooldown
@@ -103,7 +105,7 @@ Gateway uses the **Facade Pattern** with Gateway Services (UsersGatewayService, 
 
 - **POST /auth/forgot-password** — Request OTP for password reset
   - No authentication required
-  - Body: `{ email: string }`
+  - Body: `{ email: string }` — **must be @gmail.com**.
   - Returns 404 if email not registered
   - Rate limited: 5 requests / 15 minutes / email, 60s cooldown
 
@@ -576,9 +578,11 @@ None.
 
 ## Data Model
 
-Gateway is a **stateless service** - it has no dedicated database.
+Gateway is a **stateless service** — it has no dedicated database.
 
 **Cache Usage:**
+- **`SessionCacheService`** (in-process Map, per-Pod): caches validated session `keycloakSid` per `userId:platform`, TTL 30s. Eliminates Redis GET on every authenticated request (cache hit = 0 Redis calls). Invalidated explicitly on login, logout, and session kick.
+- **`TokenValidationService`** in-process cache: caches JWT validation result by signature (last JWT segment), TTL = min(token.exp, now+5min). Eliminates repeated RSA verify (~3ms each).
 - Redis cache for JWT public keys (JWKS) from Keycloak
   - TTL: 3600 seconds (1 hour), key: `jwks:{realm}`
 - Redis cache for avatar presigned URLs (ConversationGatewayModule)

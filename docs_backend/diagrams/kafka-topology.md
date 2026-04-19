@@ -62,6 +62,8 @@ graph LR
         EVT9["chat.event.message_unpinned (6 partitions)"]
         EVT10["chat.event.deleted (12 partitions)"]
         EVT11["chat.event.read (12 partitions)"]
+        EVT12["chat.event.message_revoked (3 partitions)"]
+        EVT13["chat.event.message_deleted_for_user (3 partitions)"]
     end
 
     subgraph "Conversation Topics (7 day retention)"
@@ -116,7 +118,7 @@ graph LR
     classDef media fill:#009688,stroke:#004D40,color:#fff
 
     class CMD1,CMD2,CMD3 cmd
-    class EVT1,EVT2,EVT3,EVT6,EVT7,EVT8,EVT9,EVT10,EVT11 evt
+    class EVT1,EVT2,EVT3,EVT6,EVT7,EVT8,EVT9,EVT10,EVT11,EVT12,EVT13 evt
     class CONV1,CONV2,CONV4,CONV5,CONV6 conv
     class FRIEND1,FRIEND2,FRIEND3,FRIEND4,FRIEND5,FRIEND6 friend
     class RT1,RT2,RT3 rt
@@ -138,7 +140,12 @@ graph LR
 | `chat.event.message_saved` | 12 | 3 | 7 days | 2 | Message persisted in DB |
 | `chat.event.message_rejected` | 12 | 3 | 7 days | 2 | Message validation failed |
 | `chat.event.read` | 12 | 3 | 7 days | 2 | Read receipt updated |
-| `chat.event.deleted` | 12 | 3 | 7 days | 2 | Message deleted |
+| `chat.event.deleted` | 12 | 3 | 7 days | 2 | Message hard-deleted |
+| `chat.event.message_edited` | 12 | 3 | 7 days | 2 | Message content edited |
+| `chat.event.message_pinned` | 6 | 3 | 30 days | 2 | Message pinned in conversation |
+| `chat.event.message_unpinned` | 6 | 3 | 30 days | 2 | Message unpinned |
+| `chat.event.message_revoked` | 3 | 3 | 7 days | 2 | Message revoked by sender (~2 min window) |
+| `chat.event.message_deleted_for_user` | 3 | 3 | 7 days | 2 | Message deleted for specific user only |
 
 **Why 12 partitions?**
 - High throughput topic (thousands of messages/sec)
@@ -327,7 +334,21 @@ graph TB
 | `friendship.blocked` | `userId` | Notify block |
 | `friendship.unblocked` | `userId` | Notify unblock |
 
-#### Realtime Gateway Service
+#### Chat Core Service
+**Role**: Producer + Consumer (friendship/block cache)
+
+**Consumes**:
+| Topic | Consumer Group | Partitions | Purpose |
+|-------|----------------|------------|---------|
+| `friendship.blocked` | `nest-chat.chat-core.block-cache` | All 6 | Cache block status in Redis |
+| `friendship.unblocked` | `nest-chat.chat-core.block-cache` | All 6 | Evict block cache key |
+| `friendship.request.accepted` | `nest-chat.chat-core.friend-cache` | All 6 | LWW CAS SET friends key (+brokerTs) |
+| `friendship.removed` | `nest-chat.chat-core.friend-cache` | All 6 | LWW CAS SET friends tombstone (-brokerTs) |
+
+**Produces**:
+| Topic | Partition Key | Purpose |
+|-------|---------------|---------|
+| `chat.event.message_accepted` | `conversationId` | Validated message ready for persistence |
 **Role**: Consumer + Producer (limited)
 
 **Consumes**:
@@ -510,6 +531,8 @@ graph TB
 | `nest-chat.conversation-service` | Conversation Service | `friendship.request.accepted` | 6 instances | Auto-create DIRECT conversations |
 | `nest-chat.conversation-service.friendship-events` | Conversation Service | `friendship.*` events | 6 instances | Handle friendship lifecycle |
 | `nest-chat.conversation-service.cache-updater` | Conversation Service | `chat.event.member_added`, `chat.event.member_removed` | 6 instances | Update Redis membership cache |
+| `nest-chat.chat-core.block-cache` | Chat Core | `friendship.blocked`, `friendship.unblocked` | 6 instances | Cache block status in Redis |
+| `nest-chat.chat-core.friend-cache` | Chat Core | `friendship.request.accepted`, `friendship.removed` | 6 instances | LWW friends cache (FriendshipFriendsConsumer) |
 | `nest-chat.call-service` | Call Service | `chat.event.member_removed` | 6 instances | Auto-kick participants on membership removal |
 | `nest-chat.call-service.realtime` | Realtime Gateway | All `call.event.*` topics | 6 instances | Broadcast call events to WebSocket clients |
 | `nest-chat.media-worker` | Media Worker | `media.uploaded` | 6 instances | Process uploaded files |

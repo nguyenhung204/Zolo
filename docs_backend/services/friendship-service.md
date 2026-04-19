@@ -94,14 +94,16 @@ UNIQUE(userId, blockedUserId)
 4. Write to `outbox`: `eventType='friend.request_accepted'`
 5. Invalidate cache for both users
 6. **Commit transaction**
+7. **Write `FRIENDSHIP_PROOF` key** (synchronous, after commit): Gateway sets `{chat:rel:{lo}:{hi}}:proof = "1"` TTL 30s in Redis. This key bridges the lag between Kafka event publish and `FriendshipFriendsConsumer` processing in Chat Core, ensuring the two new friends can message immediately.
 
 **Outbox Event** → Kafka:
 - Topic: `friendship.request_accepted`
 - Payload: `{ eventId, userA, userB, timestamp }`
 - Kafka Key: `friendship:${pairKey}`
 
-**Downstream Effect**:
-- Conversation Service creates DIRECT conversation automatically
+**Downstream Effects**:
+- `FriendshipFriendsConsumer` (Chat Core): Lua CAS SET `{chat:rel:{lo}:{hi}}:friends = +brokerTs` (TTL 30 days)
+- Conversation Service: creates DIRECT conversation automatically
 
 ---
 

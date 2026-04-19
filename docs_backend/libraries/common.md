@@ -23,6 +23,12 @@ This library solves the problem of scattered business logic and inconsistent imp
 - Checks for Public decorator to allow unauthenticated routes
 - Validates role requirements from Roles decorator
 
+**TokenValidationService** (in `libs/common/src/auth/services/`)
+- In-memory JWT validation result cache keyed by **JWT signature** (last segment of the token).
+- TTL = `min(token.exp, now + 5min)`. Cleanup every 60s.
+- Eliminates repeated RSA verify operations (~3ms each) on the same token within its TTL window.
+- Cache is **Pod-local** (not distributed) — correct because each pod independently validates the same JWT.
+
 **Decorators:**
 - **@Public()** - Marks routes as publicly accessible (bypasses KeycloakGuard)
 - **@Roles(...roles)** - Defines required roles for route access (admin, manager, user)
@@ -88,6 +94,18 @@ This library solves the problem of scattered business logic and inconsistent imp
 **REDIS_KEYS**
 - `REDIS_KEYS.CACHE.CONVERSATION(conversationId)` — `cache:conversation:{id}`
 - `REDIS_KEYS.CACHE.AVATAR_URL(mediaId)` — `media:avatar_url:{mediaId}` — Value: JSON `{ url: string; expiresAt: number }` (Unix ms). TTL set by ConversationGatewayService as `expiresAt - now - 5 min buffer`.
+- `REDIS_KEYS.CHAT.CONVERSATION_MEMBERS(id)` — `chat:conversation:{id}:members` (Redis Set of member userIds)
+- `REDIS_KEYS.CHAT.FRIENDSHIP_BLOCK(userA, userB)` — `{chat:rel:{lo}:{hi}}:block:{A}:{B}` (hash-tagged for Redis Cluster slot co-location)
+- `REDIS_KEYS.CHAT.FRIENDSHIP_FRIENDS(userA, userB)` — `{chat:rel:{lo}:{hi}}:friends` (LWW ±Unix-ms; TTL 30d / 60s tombstone)
+- `REDIS_KEYS.CHAT.FRIENDSHIP_PROOF(userA, userB)` — `{chat:rel:{lo}:{hi}}:proof` (TTL 30s, race-condition bridge)
+- `REDIS_KEYS.CHAT.CONVERSATION_MAX_OFFSET(id)` — `chat:conv:{id}:max_offset` (Redis INCR counter for offset assignment)
+- `REDIS_KEYS.CHAT.CONVERSATION_OFFSET_DIRTY_SET` — `chat:conv:dirty_offsets` (Set of convIds pending OffsetSyncJob write-behind)
+- `REDIS_KEYS.CHAT.KAFKA_OUTBOX` — `chat:kafka:outbox` (Redis List for Kafka retry outbox)
+
+**TTL constants (REDIS_TTLS):**
+- `FRIENDSHIP_FRIENDS` = 2592000 (30 days)
+- `FRIENDSHIP_FRIENDS_TOMBSTONE` = 60 (60 seconds)
+- `FRIENDSHIP_PROOF` = 30 (30 seconds)
 
 **KAFKA_TOPICS**
 - MESSAGE_ACCEPTED: chat.event.message_accepted
@@ -334,6 +352,21 @@ The Common library should ONLY contain:
 - Cross-cutting concerns (auth, logging, metrics)
 - Communication protocol definitions
 
+### Utilities in `libs/common/src/utils/`
+
+**`PooledTcpClientProxy` (`tcp-connection-pool.ts`)**
+- Round-robin pooled NestJS `ClientProxy`.
+- Constructor: `new PooledTcpClientProxy([{ host, port }, ...], poolSize)` or `new PooledTcpClientProxy(host, port, poolSize)`.
+- `send<T>(pattern, data)` and `emit(pattern, data)` delegate to the next proxy in round-robin order.
+- Used by Gateway for `SERVICES.CHAT_CORE`, `SERVICES.CONVERSATION`, `SERVICES.FRIENDSHIP`.
+
+**`ProxyHelper` (`proxy.helper.ts`)**
+- Wraps TCP `ClientProxy.send()` with circuit breaker + retry.
+- Propagates `_deadline` field: effective timeout = `Math.min(configured_timeout, remaining_deadline_budget)`.
+
+**`CircuitBreakerService` (`circuit-breaker/circuit-breaker.service.ts`)**
+- Compound cache key: `serviceName:ft=X:hoa=Y:t=Z:r=A:rd=B` — different configs for the same service each get their own `IPolicy` instance.
+
 ### When NOT to Use
 
 **Do NOT add to Common library:**
@@ -362,6 +395,9 @@ The Common library should ONLY contain:
 
 **Performance Considerations:**
 - JWKS caching reduces Keycloak calls by 99%
+- `TokenValidationService` in-memory cache eliminates repeated RSA verify per token
+- `SessionCacheService` (Gateway) eliminates Redis GET on every authenticated request
+- `PooledTcpClientProxy` spreads load across N TCP connections per target
 - Message pattern constants are compile-time (zero runtime cost)
 - Pagination utilities are lightweight (no heavy processing)
 
@@ -370,9 +406,7 @@ The Common library should ONLY contain:
 **Planned improvements:**
 - OpenAPI schema decorators for auto-documentation
 - Request ID propagation middleware
-- Circuit breaker utilities
 - Distributed tracing integration (Jaeger/Zipkin)
-- Service mesh configuration helpers
 - Advanced rate limiting utilities
 - Webhooks event schemas
 - GraphQL resolvers base classes

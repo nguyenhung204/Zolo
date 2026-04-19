@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Message Store Service is the persistent storage layer and read interface for all chat messages in the system. It consumes MESSAGE_ACCEPTED events from Chat Core Service, assigns conversation-level offsets, persists messages to PostgreSQL, and publishes MESSAGE_SAVED notifications for real-time delivery. This service is the single source of truth for message history and provides efficient read access to conversation messages with pagination, read receipt tracking, and unread count calculations.
+The Message Store Service is the persistent storage layer and read interface for all chat messages in the system. It consumes MESSAGE_ACCEPTED events from Chat Core Service, assigns conversation-level offsets via **Redis atomic INCR** (warm path) or TCP fallback (cold path), persists messages to PostgreSQL, and publishes MESSAGE_SAVED notifications for real-time delivery. This service is the single source of truth for message history and provides efficient read access to conversation messages with pagination, read receipt tracking, and unread count calculations.
 
 This service does not perform message validation or business rule enforcement. It exclusively handles message persistence and retrieval after messages have been validated by Chat Core Service.
 
@@ -11,7 +11,7 @@ This service does not perform message validation or business rule enforcement. I
 ### What This Service IS Responsible For
 
 - Consuming MESSAGE_ACCEPTED events from Kafka
-- Assigning sequential message offsets within conversations via Conversation Service
+- Assigning sequential message offsets within conversations via **Redis INCR** (warm path) / Conversation Service TCP (cold path)
 - Persisting messages to PostgreSQL with full content and metadata
 - Publishing MESSAGE_SAVED events for real-time notification broadcasting
 - Providing paginated message retrieval by conversation ID
@@ -174,16 +174,20 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 
 ### Event Processing Details
 
-**MESSAGE_ACCEPTED Processing Flow:**
+**MESSAGE_ACCEPTED Processing Flow (Redis Atomic INCR):**
 
-1. Consume event from Kafka
-2. Check if message already exists by messageId (deduplication)
-3. If exists, skip processing and acknowledge event (idempotency)
-4. Call Conversation Service to atomically increment maxOffset
-5. Receive assigned offset from Conversation Service
-6. Persist message to PostgreSQL with assigned offset
-7. Publish MESSAGE_SAVED notification to Kafka (without content)
-8. Acknowledge Kafka event
+1. Consume event from Kafka.
+2. Check if message already exists by messageId (deduplication).
+3. If exists, skip processing and acknowledge event (idempotency).
+4. **Assign offset via Lua `INCR_IF_EXISTS` on Redis key `chat:conv:{id}:max_offset`**:
+   - **Warm path**: Redis key exists → `INCR` → O(1), zero DB traffic.
+   - **Cold path**: Redis key absent → TCP `INCREMENT_MAX_OFFSET` to Conversation Service → seed Redis with result using `SET NX`.
+5. `SADD chat:conv:dirty_offsets {conversationId}` — marks conv for OffsetSyncJob write-behind.
+6. Persist message to PostgreSQL with assigned offset.
+7. Publish MESSAGE_SAVED notification to Kafka (without content).
+8. Acknowledge Kafka event.
+
+> **Note**: `OffsetSyncJob` trong Conversation Service đọc `chat:conv:dirty_offsets` mỗi 5 giây và batch-UPDATE `conversations.max_offset` trong PostgreSQL. Không còn two-phase INSERT (temp offset=-1 rồi UPDATE).
 
 **Key Characteristics:**
 
@@ -274,12 +278,12 @@ None currently implemented. All queries go directly to PostgreSQL. Future optimi
 
 ### Internal Microservices
 
-**Conversation Service (TCP):**
+**Conversation Service (TCP) — cold path only:**
 
-- Purpose: Atomic offset increment and cursor updates
-- Patterns Used: `CONVERSATION_PATTERNS.INCREMENT_MAX_OFFSET`, `CONVERSATION_PATTERNS.UPDATE_SEEN_CURSOR`, `CONVERSATION_PATTERNS.UPDATE_DELIVERED_CURSOR`, `CONVERSATION_PATTERNS.GET_UNREAD_COUNT`
-- Required: Yes (cannot assign offsets without Conversation Service)
-- Fallback: Retry or fail event processing if unavailable
+- Purpose: Seed Redis offset counter on cold start (key absent after restart)
+- Patterns Used: `CONVERSATION_PATTERNS.INCREMENT_MAX_OFFSET` (cold path only), `CONVERSATION_PATTERNS.UPDATE_SEEN_CURSOR`, `CONVERSATION_PATTERNS.UPDATE_DELIVERED_CURSOR`, `CONVERSATION_PATTERNS.GET_UNREAD_COUNT`
+- Required: Only for cold path offset seeding; warm path (Redis INCR) has no TCP dependency.
+- Fallback: Retry or fail event processing if unavailable during cold path.
 
 ### Shared Libraries
 
@@ -305,12 +309,14 @@ None currently implemented. All queries go directly to PostgreSQL. Future optimi
 
 ### Message Offset Assignment
 
-- Offsets are 1-indexed (first message has offset 1)
-- Offsets are sequential and monotonically increasing within a conversation
-- Offset assignment is atomic via Conversation Service INCREMENT_MAX_OFFSET
-- Offsets are conversation-scoped, not global
-- Offset gaps may occur if message persistence fails after offset increment (rare)
-- No offset reuse; offsets never decrease
+- Offsets are 1-indexed (first message has offset 1).
+- Offsets are sequential and monotonically increasing within a conversation.
+- **Warm path**: Redis `INCR` on `chat:conv:{id}:max_offset` (O(1), zero DB traffic).
+- **Cold path**: TCP `INCREMENT_MAX_OFFSET` to Conversation Service → seed Redis with result using `SET NX`.
+- After each INCR: `SADD chat:conv:dirty_offsets {conversationId}` → `OffsetSyncJob` in Conversation Service syncs to PostgreSQL every 5s.
+- Offsets are conversation-scoped, not global.
+- Offset gaps may occur if message persistence fails after offset increment (rare).
+- No offset reuse; offsets never decrease.
 
 ### Message Deduplication
 
@@ -348,16 +354,17 @@ None currently implemented. All queries go directly to PostgreSQL. Future optimi
 
 1. Consume MESSAGE_ACCEPTED event from Kafka
 2. Check message existence by messageId (deduplication)
-3. Call Conversation Service INCREMENT_MAX_OFFSET
-4. Receive assigned offset
-5. Insert message to PostgreSQL with offset
-6. Publish MESSAGE_SAVED notification (lightweight, no content)
-7. Acknowledge Kafka event
+3. Run Redis Lua `INCR_IF_EXISTS` on `chat:conv:{id}:max_offset` (warm path)
+4. If key missing, call Conversation Service `INCREMENT_MAX_OFFSET` once (cold path) and seed Redis (`SET NX`)
+5. `SADD chat:conv:dirty_offsets {conversationId}`
+6. Insert message to PostgreSQL with offset
+7. Publish MESSAGE_SAVED notification (lightweight, no content)
+8. Acknowledge Kafka event
 
 ### Consistency Model
 
 - Strong consistency within database transaction (message persistence)
-- Offset assignment is atomic via Conversation Service
+- Offset assignment is atomic via Redis INCR (warm path) with Conversation Service cold-path seeding
 - Kafka event processing is at-least-once with deduplication (effectively once)
 - MESSAGE_SAVED publishing is fire-and-forget (eventual consistency with Realtime Gateway)
 - Read receipts are eventually consistent across clients
@@ -365,9 +372,9 @@ None currently implemented. All queries go directly to PostgreSQL. Future optimi
 ### Error Handling
 
 - Duplicate messageId: Skip processing, acknowledge event (idempotency)
-- Conversation Service timeout: Retry event processing via consumer group
+- Conversation Service timeout (cold path only): Retry event processing via consumer group
 - Database insert failure: Retry event processing via consumer group
-- Offset increment failure: Retry event processing (may create offset gaps)
+- Redis INCR failure: Retry event processing (may create offset gaps)
 - MESSAGE_SAVED publish failure: Log error, acknowledge event (notification lost, client resyncs)
 - Unhandled exceptions: Log error, do not acknowledge event (automatic retry)
 

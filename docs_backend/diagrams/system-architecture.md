@@ -13,16 +13,16 @@ C4Context
     Person(client, "Client", "Web/Mobile Application")
     
     System_Boundary(api, "API Layer") {
-        Container(gateway, "Gateway", "NestJS", "HTTP REST API, JWT verification, TCP routing")
-        Container(realtime, "Realtime Gateway", "NestJS + Socket.IO", "WebSocket connections, real-time events")
+        Container(gateway, "Gateway", "NestJS", "HTTP REST API, JWT verification, TCP routing, SessionGuard fast-path cache")
+        Container(realtime, "Realtime Gateway", "NestJS + Socket.IO", "WebSocket connections, real-time events, local ConnectionManager")
     }
     
     System_Boundary(services, "Microservices") {
         Container(users, "Users Service", "NestJS TCP", "User profile management")
         Container(friendship, "Friendship Service", "NestJS TCP", "Social relationships, friend requests")
-        Container(conversation, "Conversation Service", "NestJS TCP", "Conversation lifecycle")
-        Container(chatcore, "Chat Core", "NestJS TCP", "Message validation, rate limiting")
-        Container(msgstore, "Message Store", "NestJS TCP", "Message persistence")
+        Container(conversation, "Conversation Service", "NestJS TCP", "Conversation lifecycle, membership write-through, OffsetSyncJob")
+        Container(chatcore, "Chat Core", "NestJS TCP", "Message validation, in-process caches, Kafka outbox")
+        Container(msgstore, "Message Store", "NestJS TCP", "Message persistence, Redis atomic offset")
         Container(presence, "Presence Service", "NestJS TCP", "Online/offline status")
         Container(media, "Media Service", "NestJS TCP", "File uploads, MinIO storage")
         Container(mediaworker, "Media Worker", "NestJS Worker", "Background media processing")
@@ -61,10 +61,10 @@ C4Context
     Rel(realtime, conversation, "RPC", "TCP")
     Rel(realtime, presence, "RPC", "TCP")
     
-    Rel(chatcore, conversation, "RPC", "TCP")
-    Rel(chatcore, friendship, "RPC", "TCP")
+    Rel(chatcore, conversation, "RPC", "TCP (cache miss fallback)")
+    Rel(chatcore, friendship, "RPC", "TCP (cache miss fallback)")
     Rel(chatcore, media, "RPC", "TCP")
-    Rel(msgstore, conversation, "RPC", "TCP")
+    Rel(msgstore, conversation, "RPC", "TCP (cold-path counter seed)")
     
     Rel(gateway, keycloak, "Verify JWT", "JWKS endpoint")
     Rel(realtime, keycloak, "Verify JWT", "JWKS endpoint")
@@ -93,7 +93,11 @@ C4Context
     
     Rel(presence, redis, "Read/Write", "DB 0: presence")
     Rel(friendship, redis, "Cache", "DB 1: friend lists")
-    Rel(gateway, redis, "Cache", "DB 0: general cache")
+    Rel(gateway, redis, "Cache", "sessions + auth OTP + JWKS + avatar URL")
+    Rel(realtime, redis, "Read/Write", "ws:connection keys + revocation pub/sub")
+    Rel(chatcore, redis, "Read/Write", "conversation/friendship caches + kafka outbox")
+    Rel(msgstore, redis, "Read/Write", "chat:conv:{id}:max_offset + dirty set")
+    Rel(conversation, redis, "Read/Write", "membership write-through + offset sync")
 
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
 ```
@@ -142,7 +146,7 @@ graph TB
         PG_Chat[(PostgreSQL<br/>chat+conversation DB)]
         MongoDB[(MongoDB<br/>media_db)]
         MinIO[(MinIO<br/>Object Storage)]
-        Redis[(Redis<br/>DB 0: Cache/Presence<br/>DB 1: Friendship Cache)]
+        Redis[(Redis<br/>DB 0: Cache/Presence/Chat Keys<br/>DB 1: Friendship Cache)]
     end
     
     %% External connections
@@ -167,10 +171,10 @@ graph TB
     RealtimeGW -->|TCP| Presence
     
     %% Inter-service communication (TCP)
-    ChatCore -->|Validate| Conversation
-    ChatCore -->|Check Friendship| Friendship
+    ChatCore -->|Validate on cache miss| Conversation
+    ChatCore -->|Friend status fallback only| Friendship
     ChatCore -->|Validate Media| Media
-    MsgStore -->|Get Offset| Conversation
+    MsgStore -->|Cold-path offset seed only| Conversation
     CallSvc -->|Issue Token| LiveKit
     CallSvc -->|Own| PG_Chat
     
@@ -200,7 +204,11 @@ graph TB
     %% Redis connections
     Presence -->|Presence Data| Redis
     Friendship -->|Friend Lists| Redis
-    Gateway -->|General Cache| Redis
+    Gateway -->|Session/JWKS/OTP/Avatar cache| Redis
+    RealtimeGW -->|WS connection keys + revocation| Redis
+    ChatCore -->|Conv/Friend cache + Outbox| Redis
+    MsgStore -->|Offset INCR + Dirty Set| Redis
+    Conversation -->|Write-through + OffsetSync| Redis
     
     classDef gateway fill:#4A90E2,stroke:#2E5C8A,color:#fff
     classDef service fill:#7CB342,stroke:#558B2F,color:#fff
@@ -289,19 +297,21 @@ graph TB
 - **Partitioning Strategy**: By `conversationId` for message ordering
 
 ### Redis (2 Databases)
-- **DB 0**: General cache, presence data
-  - User online status
+- **DB 0**: General cache + chat hot-path data
   - Presence TTL keys
-  - API response cache
-- **DB 1**: Friendship cache
-  - Friend lists (for fast lookups)
-  - Block lists
+  - Auth/session keys (Gateway)
+  - Conversation membership/role cache (`chat:conversation:{id}:members`)
+  - Friendship relation keys with hash tag (`{chat:rel:{lo}:{hi}}:*`)
+  - Kafka outbox retry list (`chat:kafka:outbox`)
+  - Offset counters + dirty set (`chat:conv:{id}:max_offset`, `chat:conv:dirty_offsets`)
+- **DB 1**: Friendship Service local cache
+  - Friend lists used by Friendship Service read paths
 
 ### PostgreSQL (3 Containers)
 - **keycloak_db**: Owned by Keycloak
 - **users_db**: Owned by Users Service + Friendship Service
   - User profiles, settings, friendships, friend requests, blocks
-- **chat_db**: Owned by Conversation Service, Message Store, Call Service (Chat Core has no tables — permission logic is embedded in Strategy classes)
+- **chat_db**: Owned by Conversation Service, Message Store, Call Service (Chat Core has no tables)
   - Conversations, members, offsets, messages
   - Meetings, participants, waiting_participants, recordings, meeting_summaries
 
@@ -326,10 +336,11 @@ graph TB
 - **Use Case**: Request/response operations requiring immediate feedback
 - **Protocol**: NestJS TCP transport with message patterns
 - **Timeout**: 5000ms default
+- **Gateway transport optimization**: `PooledTcpClientProxy` (round-robin) for Chat Core, Conversation, and Friendship clients
 - **Examples**:
   - Gateway → Users: Get user profile
-  - Chat Core → Friendship: Check if users are friends
-  - Message Store → Conversation: Increment message offset
+  - Chat Core → Friendship: Check friend status (fallback only when Redis MGET misses)
+  - Message Store → Conversation: Seed offset counter on cold path only
 
 ### Asynchronous Communication (Kafka)
 - **Use Case**: Event notifications, eventual consistency
@@ -339,6 +350,7 @@ graph TB
   - Chat Core → Message Store: MESSAGE_ACCEPTED event
   - Message Store → Realtime Gateway: MESSAGE_SAVED event
   - Friendship → Conversation: FRIENDSHIP_REQUEST_ACCEPTED event
+  - Friendship → Chat Core: FRIENDSHIP.REQUEST_ACCEPTED / FRIENDSHIP.REMOVED for Redis LWW friends cache (`nest-chat.chat-core.friend-cache`)
 
 ## Architecture Principles
 
@@ -367,7 +379,8 @@ graph TB
 - Example: Message saved → Notify clients
 
 ### 5. Stateless Microservices
-- No in-memory state (except Realtime Gateway socket connections)
+- No durable in-memory state; only bounded ephemeral caches/maps
+- Examples: SessionCacheService (Gateway, 30s), Chat Core in-process caches (15s/30s), ConnectionManager (Realtime)
 - Presence state stored in Redis
 - Conversation state in PostgreSQL
 - Horizontally scalable
@@ -391,10 +404,11 @@ graph TB
 - Friendships: Shard by userId
 
 ### Caching Strategy
-- Friend lists cached in Redis (DB 1)
-- User profiles cached in Redis (DB 0)
-- Conversation membership cached in Redis
-- Cache invalidation on write events from Kafka
+- Friend lists cached in Redis (DB 1) for Friendship Service
+- Session/auth/OTP/JWKS/avatar caches in Redis (Gateway)
+- Conversation membership + role cached in Redis with write-through + event-driven invalidation
+- DIRECT friendship check uses single Redis MGET on 4 hash-tag-aligned keys (block A->B, block B->A, friends, proof)
+- Message offset uses Redis atomic INCR + dirty set + Conversation OffsetSyncJob write-behind
 
 ## Monitoring & Observability
 

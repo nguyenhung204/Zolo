@@ -158,6 +158,8 @@ Authorization: Bearer <token>
   - `GET /friendships/requests`
   - nếu đang có màn danh sách bạn bè: `GET /friendships`
 
+> **Backend note**: Khi accept, Gateway ghi `FRIENDSHIP_PROOF` key (`{chat:rel:{lo}:{hi}}:proof`, TTL 30s) vào Redis ngay lập tức (synchronous). Key này là **race-condition bridge** — cover khoảng lag trước khi `FriendshipFriendsConsumer` (Chat Core) nhận và xử lý Kafka event `FRIENDSHIP.REQUEST_ACCEPTED`. Đảm bảo 2 người bạn mới có thể gửi tin nhắn cho nhau ngay mà không bị từ chối do cache miss.
+
 **Kỳ vọng UI sau cùng**
 - `status` sẽ trở thành `FRIEND`.
 

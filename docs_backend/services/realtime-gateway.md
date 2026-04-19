@@ -235,11 +235,24 @@ None. This service does not persist data to a database.
 - Presence data is managed by Presence Service; this service only triggers presence updates
 - No local caching of presence state
 
-### In-Memory State
+### In-Memory State — ConnectionManager
 
-- Active Socket.IO connections managed by Socket.IO adapter
-- Connection metadata temporarily stored during request lifecycle
-- No persistent in-memory state across restarts
+`ConnectionManager` tracks active local socket connections per user:
+```
+Map<userId, Set<socketId>>
+```
+- `register(userId, socketId)`: adds socketId to the user's Set.
+- `unregister(userId, socketId)`: removes socketId; deletes the Set if empty.
+- `getSockets(userId)`: returns `Set<socketId>` for a user (undefined if offline locally).
+- `isConnectedLocally(userId)`: returns true if any socket exists for that userId on this Pod.
+
+Used by `ChatGateway` on `connect`/`disconnect` events and by WS revocation subscriber (Redis pub/sub) to find which local sockets to forcibly disconnect when a session is kicked.
+
+### SoftLimitService
+
+Per-namespace configurable connection thresholds. When a namespace exceeds `softLimit`, new connections are accepted but a warning metric is recorded. Does not drop connections.
+
+**No persistent in-memory state survives across restarts.** `ConnectionManager` is rebuilt from live Socket.IO adapter on startup.
 
 ## Dependencies
 

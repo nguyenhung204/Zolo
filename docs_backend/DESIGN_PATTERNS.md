@@ -311,8 +311,8 @@ Chat Core membership check (MembershipValidatorService):
   3. TCP fallback if Redis miss/down
 
 Friendship block check (MessageSendOrchestrator DIRECT path):
-  redis.mget(block:A:B, block:B:A)       → O(1) MGET both directions
-  TCP fallback if both keys are null
+  redis.mget(block:A:B, block:B:A, friends, proof)  → single-slot O(1) MGET
+  TCP fallback only when relationship keys are unavailable
 ```
 
 Event flows:
@@ -337,8 +337,14 @@ Path B (event-driven):
 [Block / Unblock]
 Friendship Service publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED
   → FriendshipBlockConsumer (Chat Core, group: chat-core.block-cache)
-    → BLOCKED:   SET chat:friendship:block:A:B 1 EX 86400
-    → UNBLOCKED: DEL chat:friendship:block:A:B
+    → BLOCKED:   SET {chat:rel:{lo}:{hi}}:block:A:B 1 EX 86400
+    → UNBLOCKED: DEL {chat:rel:{lo}:{hi}}:block:A:B
+
+[Friendship Accepted / Removed]
+Friendship Service publishes FRIENDSHIP.REQUEST_ACCEPTED / FRIENDSHIP.REMOVED
+  → FriendshipFriendsConsumer (Chat Core, group: nest-chat.chat-core.friend-cache)
+    → Lua CAS SET {chat:rel:{lo}:{hi}}:friends = +brokerTs (accept, TTL 30d)
+    → Lua CAS SET {chat:rel:{lo}:{hi}}:friends = -brokerTs (remove tombstone, TTL 60s)
 ```
 
 ### What it Solves
@@ -346,7 +352,7 @@ Friendship Service publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED
 - **Hot-path latency**: membership + role check drops from ~10 ms (TCP) to < 1 ms (Redis)
 - **No stale state after kick**: `removeMembers()` busts Redis immediately (Path A), before the Kafka event arrives
 - **Role available without TCP**: role String keys eliminate the TCP round-trip needed previously to get the member's role
-- **Block check without TCP**: `FriendshipBlockConsumer` caches block status so `MessageSendOrchestrator` skips the Friendship Service TCP call on the hot path
+- **Relationship check without TCP**: block/friends/proof Redis keys allow `MessageSendOrchestrator` to skip Friendship Service TCP on warm path
 - **TTL consistency**: both members Set and role String use 7 days (previously role TTL was 1 h, causing stale writes to overwrite the event cache)
 - **Graceful degradation**: Redis unavailability falls through safely to TCP
 
@@ -364,7 +370,9 @@ Friendship Service publishes FRIENDSHIP.BLOCKED / FRIENDSHIP.UNBLOCKED
 
 ### Problem
 
-Message authorization in Chat Core involves multiple independent checks: tenant isolation, account status, membership, time windows, media classification, and role-based policy. Without a pattern, this becomes a single `validateMessage()` method with deeply nested conditionals. Adding a new rule (e.g., rate limiting) means editing the central method, risking regressions in all other checks.
+Message authorization in Chat Core involves multiple independent checks: tenant isolation, account status, membership, time windows, media classification, and role-based policy. Without a pattern, this becomes a single `validateMessage()` method with deeply nested conditionals.
+
+> **Note (v2)**: `AclRuleChainFactory` and `ConversationStrategyRegistry` have been **removed from the `MessageSendOrchestrator` hot path** in v2. The orchestrator now inlines validation steps for maximum performance (L1 cache → L0 Redis → TCP singleflight). ACL rules remain available for non-hot-path operations (edit, delete, pin).
 
 ### Pattern Applied
 
@@ -435,7 +443,7 @@ Each `ConversationKind` (`direct`, `group`, `community`) has its own permission 
 
 ### Pattern Applied
 
-**Strategy Pattern** — each `ConversationKind` maps to a dedicated strategy class.  A `ConversationStrategyRegistry` selects the right strategy at runtime.
+**Strategy Pattern** — each `ConversationKind` maps to a dedicated strategy class. In v2, strategy lookup was removed from the `MessageSendOrchestrator` hot path for performance, but strategy classes are still useful for non-hot-path operations and permission modeling.
 
 ```
 apps/chat-core/src/strategies/conversation/
@@ -501,17 +509,17 @@ apps/chat-core/src/orchestrators/
   media-precheck.orchestrator.ts   ← pre-upload DLP + classification check
 ```
 
-`MessageSendOrchestrator` coordination sequence:
+`MessageSendOrchestrator` coordination sequence (v2 hot path):
 
 ```
-1. UserValidatorService.validate(senderId)             → account status
-2. MembershipValidatorService.validate(...)            → member + role (Redis O(1) first, TCP fallback)
-3. [direct kind only] redis.mget(block:A:B, block:B:A)  → O(1) block check from Redis cache
-                  → TCP fallback to FriendshipService on cache miss
-4. MessageRateLimiterService.check(...)                → per-user throttle
-5. MediaValidatorService.validate(...)                 → only if mediaId present
-6. AclRuleChainFactory.build() → chain.execute(ctx)    → full authorization
-7. KafkaProducerService.publish('MESSAGE_ACCEPTED')    → hand off to Message Store
+1. MessageRateLimiterService.check(...)                           → per-user throttle
+2. getAndValidateConversation(...)                                → L1 in-process cache → L0 Redis → TCP fallback
+3. getMembers(...)                                                → L1 in-process cache → TCP fallback (singleflight)
+4. Membership check                                               → sender must be member
+5. [direct kind only] redis.mget(block:A:B, block:B:A, friends, proof)
+                  → fallback TCP to FriendshipService only on relationship cache miss
+6. validateMessageContent(...) / MediaValidatorService.validate(...) as needed
+7. publishWithReliability('MESSAGE_ACCEPTED')                     → Kafka, or Redis outbox fallback
 ```
 
 The orchestrator imports all dependencies via `@app/service-contracts` interfaces — it never imports transport-specific classes.
@@ -596,6 +604,141 @@ HTTP Request (Client)
 | New business rule in Chat Core validation | Chain of Responsibility (add rule class, register in factory) |
 | New `ConversationKind` or permission change | Strategy (add strategy class, update permission map in `getPermissionsForRole()`) |
 | New multi-step operation in Chat Core | Orchestrator (add orchestrator class, add controller handler) |
+| N concurrent TCP calls for same resource | Singleflight (inflight Map<string, Promise>) |
+| Kafka failure must not lose messages | Kafka Outbox + Redis List + background poller |
+| Friend/block status lookup per message | LWW Register (FriendshipFriendsConsumer + Lua CAS) |
+| Write DB counter but reduce PG row-lock | Redis INCR + write-behind (OffsetSyncJob) |
+
+---
+
+## 9. Singleflight (Concurrent Deduplication)
+
+### Problem
+
+Under burst traffic, N concurrent requests for the same resource (e.g., conversation metadata) each trigger a separate TCP call, causing a "TCP storm" to the downstream service.
+
+### Pattern Applied
+
+An **inflight Map** deduplicates in-flight Promises:
+
+```typescript
+private readonly convInflight = new Map<string, Promise<ConversationDto>>();
+
+async getConversation(id: string): Promise<ConversationDto> {
+  const cached = this.convCache.get(id);
+  if (cached) return cached;
+
+  let promise = this.convInflight.get(id);
+  if (!promise) {
+    promise = this.fetchConversationTcp(id).finally(() => this.convInflight.delete(id));
+    this.convInflight.set(id, promise);
+  }
+  return promise; // All concurrent callers await the same Promise
+}
+```
+
+**Used in**: `MessageSendOrchestrator` (`convInflight`, `membersInflight`), `MembershipValidatorService`, `UserValidatorService`.
+
+---
+
+## 10. Kafka Outbox (Redis List Retry)
+
+### Problem
+
+If the Kafka broker is temporarily unavailable during `MessageSendOrchestrator.execute()`, the message would be lost because ChatCore returns 201 to the client before persistence.
+
+### Pattern Applied
+
+On Kafka publish failure, push payload to Redis list; background poller retries:
+
+```typescript
+async publishWithReliability(event: MessageAcceptedEvent): Promise<void> {
+  try {
+    await this.kafka.emit(TOPICS.MESSAGE_ACCEPTED, event);
+  } catch {
+    await this.redis.rpush(REDIS_KEYS.CHAT.KAFKA_OUTBOX, JSON.stringify(event));
+  }
+}
+
+// Background (500ms interval):
+async processKafkaOutbox(): Promise<void> {
+  const raw = await this.redis.lpop(REDIS_KEYS.CHAT.KAFKA_OUTBOX);
+  if (!raw) return;
+  await this.kafka.emit(TOPICS.MESSAGE_ACCEPTED, JSON.parse(raw));
+}
+```
+
+**Key**: `chat:kafka:outbox` (Redis List). **Retry interval**: 500ms. **Lifecycle**: `onModuleInit` starts interval, `onModuleDestroy` clears it.
+
+---
+
+## 11. LWW Register (FriendshipFriendsConsumer)
+
+### Problem
+
+Kafka delivers events **at-least-once** and potentially **out-of-order**. A `FRIENDSHIP.REMOVED` event arriving before `FRIENDSHIP.REQUEST_ACCEPTED` would incorrectly show users as friends.
+
+### Pattern Applied
+
+**Last-Write-Wins Register** using broker log-append timestamp as the clock (immune to Pod clock skew):
+
+```lua
+-- Lua CAS script (EVALSHA):
+local cur = redis.call('GET', KEYS[1])
+local newTs = math.abs(tonumber(ARGV[1]))
+if cur == false or math.abs(tonumber(cur)) < newTs then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+  return 1
+end
+return 0
+```
+
+- `ACCEPTED` event → store `+brokerTs` (TTL 30d).
+- `REMOVED` event → store `-brokerTs` as tombstone (TTL 60s).
+- Read: `value > 0` means friends, `value < 0` means tombstone (not friends), `nil` = unknown (TCP fallback).
+
+**Used in**: `FriendshipFriendsConsumer` (Chat Core).
+
+---
+
+## 12. Write-Through Cache (ConversationService)
+
+### Problem
+
+After Kafka publishes `MEMBER_ADDED`, there is a lag before `MembershipCacheConsumer` processes the event and warms the Redis membership cache. During this lag, membership validation in ChatCore falls back to TCP for every request.
+
+### Pattern Applied
+
+After each DB transaction commit, immediately pipeline-write to Redis (non-blocking, soft-fail):
+
+```typescript
+// After DB commit in createConversation() / addMembers():
+const pipeline = redis.pipeline();
+pipeline.sadd(membersKey, ...memberIds);
+for (const uid of memberIds) {
+  pipeline.set(`${membersKey}:${uid}:role`, role, 'EX', 7 * 24 * 3600);
+}
+pipeline.expire(membersKey, 7 * 24 * 3600);
+await pipeline.exec().catch(err => logger.warn('Cache write-through non-critical', err));
+```
+
+**Result**: Cache is warm _immediately_ after DB commit. Kafka consumer is idempotent (SADD/SET with same values = no-op).
+
+---
+
+## 13. Redis INCR + Write-Behind (Offset Assignment)
+
+### Problem
+
+The old `INCREMENT_MAX_OFFSET` pattern creates a PostgreSQL row-lock per message at high throughput (each `UPDATE conversations SET max_offset = max_offset + 1` holds the row lock for the duration of the DB round-trip).
+
+### Pattern Applied
+
+1. **Redis INCR** (atomic, O(1), no locks): `INCR chat:conv:{id}:max_offset` via Lua `INCR_IF_EXISTS`.
+2. **Dirty set**: `SADD chat:conv:dirty_offsets {convId}` after each INCR.
+3. **OffsetSyncJob** (`@Cron('*/5 * * * * *')`): batch-UPDATE PostgreSQL every 5 seconds using `WHERE max_offset < :val`.
+
+**Cold path**: Redis key absent after restart → TCP `INCREMENT_MAX_OFFSET` once → seed Redis with `SET NX`.
 
 ---
 
