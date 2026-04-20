@@ -90,16 +90,10 @@ graph LR
     end
 
     subgraph "Call Topics (7 day retention)"
-        CALL1["call.event.started (6 partitions)"]
-        CALL2["call.event.join_requested (6 partitions)"]
-        CALL3["call.event.participant_joined (6 partitions)"]
-        CALL4["call.event.participant_left (6 partitions)"]
-        CALL5["call.event.waiting_approved (6 partitions)"]
-        CALL6["call.event.waiting_rejected (6 partitions)"]
-        CALL7["call.event.media_state_updated (6 partitions)"]
-        CALL8["call.event.recording_state_updated (6 partitions)"]
-        CALL9["call.event.participant_moderated (6 partitions)"]
-        CALL10["call.event.ended (6 partitions)"]
+        CALL1["call.event.ringing (6 partitions)"]
+        CALL2["call.event.accepted (6 partitions)"]
+        CALL3["call.event.declined (6 partitions)"]
+        CALL4["call.event.ended (6 partitions)"]
     end
 
     subgraph "User Events (7 day retention)"
@@ -134,7 +128,7 @@ graph LR
     class FRIEND1,FRIEND2,FRIEND3,FRIEND4,FRIEND5,FRIEND6 friend
     class RT1,RT2,RT3 rt
     class DLQ1,DLQ2 dlq
-    class CALL1,CALL2,CALL3,CALL4,CALL5,CALL6,CALL7,CALL8,CALL9,CALL10 call
+    class CALL1,CALL2,CALL3,CALL4 call
     class MED1,MED2,MED3 media
     class USR1,USR2,USR3 user
 
@@ -213,23 +207,20 @@ graph LR
 
 | Topic | Partitions | Replication | Retention | Min ISR | Purpose |
 |-------|------------|-------------|-----------|---------|--------|
-| `call.event.started` | 6 | 3 | 7 days | 2 | Meeting started |
-| `call.event.join_requested` | 6 | 3 | 7 days | 2 | Participant waits in waiting room |
-| `call.event.participant_joined` | 6 | 3 | 7 days | 2 | Participant approved and joined |
-| `call.event.participant_left` | 6 | 3 | 7 days | 2 | Participant left or was kicked |
-| `call.event.waiting_approved` | 6 | 3 | 7 days | 2 | Host approved waiting participant |
-| `call.event.waiting_rejected` | 6 | 3 | 7 days | 2 | Host rejected waiting participant |
-| `call.event.media_state_updated` | 6 | 3 | 7 days | 2 | Participant mic/camera/screen state changed |
-| `call.event.recording_state_updated` | 6 | 3 | 7 days | 2 | Recording started/paused/resumed/stopped |
-| `call.event.participant_moderated` | 6 | 3 | 7 days | 2 | Participant kicked by host |
-| `call.event.ended` | 6 | 3 | 7 days | 2 | Meeting ended |
+| `call.event.ringing` | 6 | 3 | 7 days | 2 | Call initiated — callee(s) notified |
+| `call.event.accepted` | 6 | 3 | 7 days | 2 | Callee accepted — call transitions to ACTIVE |
+| `call.event.declined` | 6 | 3 | 7 days | 2 | Callee declined — call transitions to REJECTED |
+| `call.event.ended` | 6 | 3 | 7 days | 2 | Call ended (any terminal transition: ENDED/MISSED) |
 
-**Producer**: Call Service (via Transactional Outbox, same `chat_db`)
-**Consumers**: Realtime Gateway (consumer group `nest-chat.call-service.realtime`), Call Service itself (consumer group `nest-chat.call-service` for `chat.event.member_removed`)
+**Producer**: Call Service (via Transactional Outbox — events written to `outbox_events` in same DB transaction as state change, then published to Kafka by `CallOutboxProcessor`). Partition key: `callId`.
+
+**Consumers**:
+- Realtime Gateway (consumer group `nest-chat.call-service.realtime`) — consumes all 4 topics, broadcasts WebSocket events to clients
+- Notification Service (consumer group `nest-chat.notification-service`) — consumes `call.event.ringing`, sends push notification for incoming call
 
 **Why 6 partitions?**
-- Lower throughput than message topics (meetings are less frequent than messages)
-- Partition key: `conversationId` for per-conversation ordering
+- Lower throughput than message topics (calls are far less frequent than messages)
+- Partition key: `callId` for per-call event ordering
 
 #### User Events
 
@@ -416,26 +407,21 @@ graph TB
 **Consumes**:
 | Topic | Consumer Group | Partitions | Purpose |
 |-------|----------------|------------|--------|
-| `chat.event.member_removed` | `nest-chat.call-service` | All 6 | Auto-kick participant removed from conversation |
+| `chat.event.member_removed` | `nest-chat.call-service` | All 6 | Auto-end any active/ringing call when a member is removed from the conversation (`endReason: membership_revoked`) |
 
-**Produces**:
+**Produces** (via Transactional Outbox → `CallOutboxProcessor`):
 | Topic | Partition Key | Purpose |
 |-------|---------------|--------|
-| `call.event.started` | `conversationId` | Meeting created |
-| `call.event.join_requested` | `conversationId` | Waiting room entry |
-| `call.event.participant_joined` | `conversationId` | Participant joined meeting |
-| `call.event.participant_left` | `conversationId` | Participant left or kicked |
-| `call.event.waiting_approved` | `conversationId` | Host approved join |
-| `call.event.waiting_rejected` | `conversationId` | Host rejected join |
-| `call.event.media_state_updated` | `conversationId` | Mic/camera/screen state change |
-| `call.event.recording_state_updated` | `conversationId` | Recording lifecycle event |
-| `call.event.participant_moderated` | `conversationId` | Participant kicked via moderation |
-| `call.event.ended` | `conversationId` | Meeting ended |
+| `call.event.ringing` | `callId` | Call initiated by caller — triggers push notification and WS ring on callee devices |
+| `call.event.accepted` | `callId` | Callee accepted — call is now ACTIVE |
+| `call.event.declined` | `callId` | Callee declined or call auto-rejected |
+| `call.event.ended` | `callId` | Call terminated (user ended, ringing timeout, ghost cleanup, membership revoked) |
 
 **Configuration**:
 - `acks: all` — call events must not be lost
 - `retries: 5`
 - `idempotence: true`
+- All events written to `outbox_events` (aggregate_type `call`) in the same DB transaction as the state change; `CallOutboxProcessor` polls and publishes
 
 ## Partitioning Strategy
 

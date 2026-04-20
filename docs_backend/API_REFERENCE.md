@@ -93,7 +93,17 @@
 11. [Stickers — Sticker Catalog](#11-stickers--sticker-catalog)
     - [GET /stickers/packages](#get-stickerspackages)
     - [GET /stickers/packages/:packageId/stickers](#get-stickerspacka gespackageidstickers)
-12. [Client Implementation Guides](#12-client-implementation-guides)
+12. [Calls — Instant Call](#12-calls--instant-call)
+    - [GET /calls/health](#get-callshealth)
+    - [POST /calls/start](#post-callsstart)
+    - [POST /calls/:callId/accept](#post-callscallidaccept)
+    - [POST /calls/:callId/decline](#post-callscalliddecline)
+    - [POST /calls/:callId/end](#post-callscallidend)
+    - [GET /calls/:callId](#get-callscallid)
+    - [GET /calls/:callId/token](#get-callscallidtoken)
+    - [GET /calls/history/:conversationId](#get-callshistoryconversationid)
+    - [GET /calls/:callId/summary](#get-callscallidsummary)
+13. [Client Implementation Guides](#13-client-implementation-guides)
     - [Guide 1: Fast-Ack Message Send Flow](#guide-1-fast-ack-message-send-flow)
     - [Guide 2: Single-File Media Upload (≤ 10 MB)](#guide-2-single-file-media-upload--10-mb)
     - [Guide 3: Multipart Media Upload (> 10 MB)](#guide-3-multipart-media-upload--10-mb)
@@ -2102,7 +2112,100 @@ curl "http://localhost:3000/stickers/packages/pck_sprite/stickers?limit=50&offse
 
 ---
 
-## 12. Client Implementation Guides
+## 12. Calls — Instant Call
+
+> Full field-level documentation: [docs/api/call-api.md](../docs/api/call-api.md)
+
+All endpoints require `Authorization: Bearer <token>` except `GET /calls/health`.
+
+| Method | Path | Auth | Rate limit | Description |
+|---|---|---|---|---|
+| `GET` | `/calls/health` | Public | None | Service health summary |
+| `POST` | `/calls/start` | ✓ | 5/min | Initiate a call (RINGING) |
+| `POST` | `/calls/:callId/accept` | ✓ | 30/min | Callee accepts → ACTIVE + LiveKit JWT |
+| `POST` | `/calls/:callId/decline` | ✓ | 30/min | Callee declines → REJECTED |
+| `POST` | `/calls/:callId/end` | ✓ | 30/min | End or cancel a call |
+| `GET` | `/calls/:callId` | ✓ | 60/min | Get call record |
+| `GET` | `/calls/:callId/token` | ✓ | 30/min | Get LiveKit JWT (caller / reconnect) |
+| `GET` | `/calls/history/:conversationId` | ✓ | 60/min | Paginated call history |
+| `GET` | `/calls/:callId/summary` | ✓ | 30/min | Post-call summary |
+
+### POST /calls/start
+
+**Body**:
+```json
+{ "conversationId": "conv-uuid", "calleeIds": ["user-uuid"] }
+```
+
+**201** → `CallDto` with `status: "RINGING"`
+
+**409** `CALL_CALLEE_BUSY` — callee already in a live call  
+**409** `CALL_CALLER_BUSY` — caller already in a live call  
+**403** `FORBIDDEN_NOT_MEMBER` — not a conversation member
+
+### POST /calls/:callId/accept
+
+**200** → `CallAcceptResponseDto`
+```json
+{
+  "call": { ...CallDto },
+  "token": "<LiveKit JWT>",
+  "roomName": "call-<callId>",
+  "livekitUrl": "wss://livekit.example.com"
+}
+```
+
+Pass `token` to `new Room().connect(livekitUrl, token)` to join the SFU room.
+
+**409** `CALL_NO_LONGER_RINGING` — call already ended or accepted by another device
+
+### POST /calls/:callId/decline
+
+**200** → `CallDto` with `status: "REJECTED"`
+
+### POST /calls/:callId/end
+
+**200** → `CallDto` with terminal status (`"ENDED"` or `"MISSED"` if caller cancels while RINGING)
+
+**409** `CALL_ALREADY_ENDED` — already in a terminal state
+
+### GET /calls/:callId/token
+
+Issues a fresh LiveKit JWT for a participant in an ACTIVE call. Use this for the caller side and for reconnection.
+
+**200**:
+```json
+{ "token": "<LiveKit JWT>", "roomName": "call-<callId>", "livekitUrl": "wss://..." }
+```
+
+**409** `CALL_NOT_ACTIVE` — call is not ACTIVE  
+**403** `CALL_NOT_PARTICIPANT` — user is not a participant
+
+### GET /calls/history/:conversationId
+
+**Query**: `page` (default 1), `limit` (default 20, max 50)  
+**200** → `CallDto[]` sorted newest first
+
+### GET /calls/:callId/summary
+
+**200**:
+```json
+{
+  "callId": "...",
+  "conversationId": "...",
+  "startedAt": "...",
+  "endedAt": "...",
+  "durationMs": 330000,
+  "endedBy": "user-uuid",
+  "endReason": "user_ended",
+  "participantCount": 2,
+  "generatedAt": "..."
+}
+```
+
+---
+
+## 13. Client Implementation Guides
 
 Implement these flows in the exact order shown to avoid race conditions and data inconsistencies.
 

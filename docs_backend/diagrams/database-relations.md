@@ -16,11 +16,12 @@ graph TB
         Conversation[Conversation Service]
         MsgStore[Message Store]
         ChatCore[Chat Core]
+        CallSvc[Call Service]
     end
 
     subgraph "Database Layer"
         UsersDB[(users-db<br/>host: 5434<br/>users + friendship tables)]
-        ChatDB[(chat-db<br/>host: 5433<br/>conversations + messages)]
+        ChatDB[(chat-db<br/>host: 5433<br/>conversations + messages + calls)]
     end
 
     Users -->|OWNS| UsersDB
@@ -28,15 +29,16 @@ graph TB
     Conversation -->|OWNS| ChatDB
     MsgStore -->|OWNS| ChatDB
     ChatCore -->|READ-ONLY| ChatDB
+    CallSvc -->|OWNS| ChatDB
 
     classDef service fill:#4CAF50,stroke:#2E7D32,color:#fff
     classDef database fill:#2196F3,stroke:#1565C0,color:#fff
 
-    class Users,Friendship,Conversation,MsgStore,ChatCore service
+    class Users,Friendship,Conversation,MsgStore,ChatCore,CallSvc service
     class UsersDB,ChatDB database
-| **chat-db** | Conversation Service + Message Store + Chat Core (no tables) | 5433 (host) | Conversation lifecycle, messages | conversations, conversation_members, messages, message_edit_history, pinned_messages, outbox_events |
+| **chat-db** | Conversation Service + Message Store + Chat Core (no tables) + Call Service | 5433 (host) | Conversation lifecycle, messages, calls | conversations, conversation_members, messages, message_edit_history, pinned_messages, outbox_events, calls, call_participants, call_summaries |
 
-**Note**: Users Service and Friendship Service share the `users-db` container (host port 5434). Conversation Service and Message Store share the `chat-db` container (host port 5433). Chat Core does **not** own any database tables — all validation data is fetched at runtime via TCP. In production, each service should have its own dedicated PostgreSQL instance.
+**Note**: Users Service and Friendship Service share the `users-db` container (host port 5434). Conversation Service, Message Store, and Call Service share the `chat-db` container (host port 5433). Chat Core does **not** own any database tables — all validation data is fetched at runtime via TCP. In production, each service should have its own dedicated PostgreSQL instance.
 
 ---
 
@@ -517,6 +519,101 @@ FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
 - Drop old partitions (GDPR compliance: delete data after 7 years)
 - Query performance (only scan relevant partitions)
 - Easier maintenance (vacuum per partition)
+
+---
+
+### 5. call tables (in chat-db)
+
+Owned by **Call Service**. All three tables live in the same `chat-db` PostgreSQL container that Conversation Service and Message Store use.
+
+#### Entity-Relationship Diagram
+
+```mermaid
+erDiagram
+    calls {
+        UUID id PK
+        UUID conversationId "Conversation this call belongs to"
+        UUID callerId "User who initiated the call"
+        VARCHAR status "RINGING | ACTIVE | REJECTED | MISSED | ENDED"
+        TIMESTAMP startedAt "Nullable — set when ACTIVE"
+        TIMESTAMP endedAt "Nullable — set when terminal"
+        TIMESTAMP createdAt
+    }
+
+    call_participants {
+        UUID id PK
+        UUID callId FK
+        UUID userId
+        VARCHAR role "CALLER | CALLEE"
+        TIMESTAMP joinedAt "Nullable — set when user joins SFU"
+        TIMESTAMP leftAt "Nullable — set when user disconnects from SFU"
+        TIMESTAMP createdAt
+    }
+
+    call_summaries {
+        UUID id PK
+        UUID callId UK "One summary per call"
+        UUID conversationId
+        TIMESTAMP startedAt
+        TIMESTAMP endedAt
+        BIGINT durationMs
+        UUID endedBy
+        VARCHAR endReason
+        INTEGER participantCount
+        TIMESTAMP generatedAt
+        TIMESTAMP updatedAt
+    }
+
+    calls ||--|{ call_participants : "has"
+    calls ||--o| call_summaries : "produces"
+```
+
+#### Table Details
+
+**calls**
+- **Purpose**: Core call record — one row per call attempt
+- **Primary Key**: `id` (UUID)
+- **Indexes**:
+  - `idx_calls_conversation_id_status` on `(conversationId, status)` — find active/ringing call for a conversation
+  - `idx_calls_caller_id` on `callerId`
+  - `idx_calls_created_at` on `createdAt`
+- **Status lifecycle**: `RINGING` → `ACTIVE` (on accept) | `REJECTED` (on decline) | `MISSED` (ringing timeout) | `ENDED` (explicit end or cleanup)
+
+**call_participants**
+- **Purpose**: Tracks each participant's join/leave time and role
+- **Primary Key**: `id` (UUID)
+- **Foreign Key**: `callId` → `calls.id`
+- **Indexes**:
+  - `idx_call_participants_call_id` on `callId`
+  - `idx_call_participants_user_id` on `userId` — find live call for a user
+- **Notable columns**:
+  - `role`: `CALLER` or `CALLEE`
+  - `joinedAt`: set when the participant connects to the LiveKit SFU room
+  - `leftAt`: set when the participant disconnects from LiveKit
+
+**call_summaries**
+- **Purpose**: Immutable post-call aggregate written atomically on every terminal transition (`REJECTED`, `MISSED`, `ENDED`). Used for call history display and analytics.
+- **Primary Key**: `id` (UUID)
+- **Unique Constraint**: `callId` — one summary per call
+- **Notable columns**:
+  - `durationMs`: `0` for declined/missed calls; calculated from `startedAt` → `endedAt` for answered calls
+  - `endReason`: one of `user_ended`, `declined`, `caller_cancelled`, `ringing_timeout`, `ghost_call_cleanup`, `membership_revoked`
+  - `participantCount`: number of rows in `call_participants` for this call
+
+#### Transactional Outbox Integration
+
+All call state transitions also insert a row into `outbox_events` (owned by Conversation Service / shared table) within the **same database transaction**:
+
+```sql
+-- Example: accept call
+BEGIN;
+  UPDATE calls SET status = 'ACTIVE', started_at = NOW() WHERE id = $1;
+  INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    VALUES ('call', $1, 'call.event.accepted', $payload);
+COMMIT;
+```
+
+The `OutboxProcessor` polls `outbox_events WHERE aggregate_type = 'call'` and publishes to Kafka topics (`call.event.ringing`, `call.event.accepted`, `call.event.declined`, `call.event.ended`).
 
 ---
 

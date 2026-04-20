@@ -38,41 +38,21 @@
    - [session_revoked](#session_revoked)
    - [account:status-changed](#accountstatus-changed)
 4. [Call — Client-to-Server Events](#4-call--client-to-server-events)
-   - [meeting:start](#meetingstart)
-   - [meeting:get_active](#meetingget_active)
-   - [meeting:join](#meetingjoin)
-   - [meeting:approve_waiting](#meetingapprove_waiting)
-   - [meeting:reject_waiting](#meetingreject_waiting)
-   - [meeting:leave](#meetingleave)
-   - [meeting:end](#meetingend)
-   - [meeting:media_state](#meetingmedia_state)
-   - [meeting:snapshot](#meetingsnapshot)
-   - [meeting:hand_raise](#meetinghand_raise)
-   - [meeting:invite](#meetinginvite)
-   - [meeting:moderate](#meetingmoderate)
-   - [webrtc:offer](#webrtcoffer)
-   - [webrtc:answer](#webrtcanswer)
-   - [webrtc:ice_candidate](#webrtcice_candidate)
-   - [webrtc:leave](#webrtcleave)
+   - [call:accept](#callaccept)
+   - [call:decline](#calldecline)
+   - [call:end](#callend)
+   - [call:join_room](#calljoin_room)
+   - [call:leave_room](#callleave_room)
 5. [Call — Server-to-Client Events](#5-call--server-to-client-events)
-   - [meeting:updated](#meetingupdated)
-   - [meeting:ended](#meetingended)
-   - [meeting:participant_joined](#meetingparticipant_joined)
-   - [meeting:participant_moderated](#meetingparticipant_moderated)
-   - [meeting:hand_raise (broadcast)](#meetinghand_raise-broadcast)
-   - [meeting:invited](#meetinginvited)
-   - [meeting:kicked](#meetingkicked)
-   - [meeting:moderated_you](#meetingmoderated_you)
-   - [webrtc:offer (incoming)](#webrtcoffer-incoming)
-   - [webrtc:answer (incoming)](#webrtcanswer-incoming)
-   - [webrtc:ice_candidate (incoming)](#webrtcice_candidate-incoming)
-   - [webrtc:peer_left](#webrtcpeer_left)
+   - [call:ringing](#callringing)
+   - [call:accepted](#callaccepted)
+   - [call:declined](#calldeclined)
+   - [call:ended](#callended)
 6. [Call — Rate Limits](#6-call--rate-limits)
 7. [Client Implementation Guides](#7-client-implementation-guides)
    - [Guide 1: Fast-Ack Message Send Flow](#guide-1-fast-ack-message-send-flow)
    - [Guide 2: Cursor Tracking & Read Receipts](#guide-2-cursor-tracking--read-receipts)
-   - [Guide 3: Voice / Video Call Flow](#guide-3-voice--video-call-flow)
-   - [Guide 4: WebRTC P2P Connection Setup](#guide-4-webrtc-p2p-connection-setup)
+   - [Guide 3: Instant Call Flow (Zalo/Messenger style)](#guide-3-instant-call-flow-zalomessenger-style)
 
 ---
 
@@ -128,7 +108,7 @@ socket.on('conversation:joined', ({ conversationId, success, latestOffset }) => 
 3. callSocket.on('authenticated', ({ success, userId, socketId }) => { ... })
 ```
 
-After authentication the socket joins `user:{userId}` (personal room) to receive meeting invitations.
+After authentication the socket joins `user:{userId}` (personal room) to receive **incoming call notifications** (`call:ringing`).
 
 **authenticate payload:**
 
@@ -641,501 +621,210 @@ All Call namespace events require `authenticate` first. All are guarded by `WsKe
 
 ---
 
-### meeting:start
+### call:accept
 
-Start a new meeting for a conversation. The caller becomes the **host**.
-
-```typescript
-callSocket.emit('meeting:start', {
-  conversationId: 'conv-uuid',
-  allowWaitingRoom: false    // Optional: enable waiting room
-});
-```
-
-**ACK event: `meeting:started`**
-```typescript
-{ event: 'meeting:started', data: Meeting }
-```
-
-Side effects: all meeting members receive `meeting:updated` broadcast.
-
----
-
-### meeting:get_active
-
-Get the active meeting for a conversation (if any).
+Accept an incoming ringing call. The server atomically transitions the call to `ACTIVE`, issues a LiveKit token for the callee, and broadcasts `call:accepted` to the `call:{callId}` room.
 
 ```typescript
-callSocket.emit('meeting:get_active', { conversationId: 'conv-uuid' });
+callSocket.emit('call:accept', { callId: 'call-uuid' });
 ```
 
-**ACK event: `meeting:active`**
-```typescript
-{ event: 'meeting:active', data: Meeting | null }
-```
-
----
-
-### meeting:join
-
-Request to join a meeting. If a waiting room is enabled, the request may go to `meeting:waiting` state until the host approves.
-
-```typescript
-callSocket.emit('meeting:join', { meetingId: 'meeting-uuid' });
-```
-
-**ACK event: `meeting:joined` or `meeting:waiting`**
-```typescript
-// Joined immediately:
-{ event: 'meeting:joined', data: Meeting }
-
-// Waiting for host approval:
-{ event: 'meeting:waiting', data: Meeting }
-```
-
-Side effects on join: `meeting:participant_joined` is broadcast to the meeting room.
-
----
-
-### meeting:approve_waiting
-
-Host approves a waiting participant.
-
-```typescript
-callSocket.emit('meeting:approve_waiting', {
-  meetingId: 'meeting-uuid',
-  userId: 'waiting-user-id'
-});
-```
-
-**ACK event: `meeting:waiting_approved`**
-
-Side effects: `meeting:updated` broadcast to meeting room.
-
----
-
-### meeting:reject_waiting
-
-Host rejects a waiting participant.
-
-```typescript
-callSocket.emit('meeting:reject_waiting', {
-  meetingId: 'meeting-uuid',
-  userId: 'waiting-user-id',
-  reason: 'optional reason'    // optional
-});
-```
-
-**ACK event: `meeting:waiting_rejected`**
-
----
-
-### meeting:leave
-
-Leave the current meeting.
-
-```typescript
-callSocket.emit('meeting:leave', { meetingId: 'meeting-uuid' });
-```
-
-**ACK event: `meeting:left`**
-```typescript
-{ event: 'meeting:left', data: Meeting }
-```
-
-Side effects: `meeting:updated` broadcast to meeting room.
-
----
-
-### meeting:end
-
-End the meeting (host only).
-
-```typescript
-callSocket.emit('meeting:end', { meetingId: 'meeting-uuid' });
-```
-
-**ACK event: `meeting:ended`**
-
-Side effects: `meeting:ended` broadcast to all meeting participants.
-
----
-
-### meeting:media_state
-
-Update the current user's media state (mic, camera, screen share).
-
-```typescript
-callSocket.emit('meeting:media_state', {
-  meetingId: 'meeting-uuid',
-  micOn: true,
-  cameraOn: false,
-  screenSharing: false
-});
-```
-
-**ACK event: `meeting:media_updated`**
-```typescript
-{ event: 'meeting:media_updated', data: Meeting }
-```
-
-> Side effects: if `CALL_WS_LOCAL_MEDIA_SNAPSHOT_FANOUT=true` (env), `meeting:updated` is also broadcast to the meeting room.
-
----
-
-### meeting:snapshot
-
-Get the current meeting state (participant list, media states, status). Also re-joins the meeting room if the caller is an active participant.
-
-```typescript
-callSocket.emit('meeting:snapshot', { meetingId: 'meeting-uuid' });
-```
-
-**ACK event: `meeting:snapshot`**
+**ACK event: `call:accepted`**
 ```typescript
 {
-  event: 'meeting:snapshot',
+  event: 'call:accepted',
   data: {
-    meeting: Meeting;
-    participants: Participant[];
+    callId: string;
+    conversationId: string;
+    calleeId: string;
+    acceptedAt: string;       // ISO-8601
+    livekitToken: string;     // LiveKit JWT — callee connects to SFU with this
+    livekitUrl: string;       // Public LiveKit server URL
   }
 }
 ```
 
-Use this on reconnect or when rejoining an active call.
+Side effects: `call:accepted` broadcast to the `call:{callId}` room so the caller receives it and can fetch their own token via `GET /calls/:callId/token`.
+
+Errors: `CALL_NOT_RINGING` if the call is not in `RINGING` status; `CALL_CALLEE_BUSY` if the callee is already in an active call.
 
 ---
 
-### meeting:hand_raise
+### call:decline
 
-Raise or lower hand in a meeting.
-
-```typescript
-callSocket.emit('meeting:hand_raise', {
-  meetingId: 'meeting-uuid',
-  raised: true    // false to lower
-});
-```
-
-**ACK event: `meeting:hand_raise_ack`**
-
-Side effects: `meeting:hand_raise` is broadcast to the entire meeting room.
-
----
-
-### meeting:invite
-
-Invite another user to join the current meeting. The target receives a `meeting:invited` event in their personal room.
+Decline an incoming ringing call. Transitions the call to `REJECTED` and writes a call summary with `durationMs: 0`.
 
 ```typescript
-callSocket.emit('meeting:invite', {
-  meetingId: 'meeting-uuid',
-  toUserId: 'target-user-id',
-  message: 'Join our call!'    // optional
-});
+callSocket.emit('call:decline', { callId: 'call-uuid' });
 ```
 
-**ACK event: `meeting:invite_sent`**
+**ACK event: `call:declined`**
 ```typescript
 {
-  event: 'meeting:invite_sent',
-  data: { meetingId, toUserId, sentAt }
+  event: 'call:declined',
+  data: {
+    callId: string;
+    conversationId: string;
+    declinedBy: string;       // userId
+    finalStatus: 'REJECTED';
+    declinedAt: string;
+  }
 }
 ```
 
-Constraints: caller must be in the meeting; cannot invite themselves.
+Side effects: `call:declined` broadcast to the `call:{callId}` room.
 
 ---
 
-### meeting:moderate
+### call:end
 
-Host/co-host action to moderate a participant (mute, disable camera/screen, or kick).
+End an active (or still-ringing) call. Transitions the call to `ENDED`, closes the LiveKit room, and writes a call summary.
 
 ```typescript
-callSocket.emit('meeting:moderate', {
-  meetingId: 'meeting-uuid',
-  targetUserId: 'target-user-id',
-  action: 'MUTE_AUDIO',    // 'MUTE_AUDIO' | 'MUTE_VIDEO' | 'DISABLE_SCREEN' | 'KICK'
-  reason: 'optional'
-});
+callSocket.emit('call:end', { callId: 'call-uuid' });
 ```
 
-**ACK event: `meeting:moderate_applied`**
+**ACK event: `call:ended`**
+```typescript
+{
+  event: 'call:ended',
+  data: {
+    callId: string;
+    conversationId: string;
+    endedBy: string;
+    endReason: 'user_ended' | 'caller_cancelled';
+    durationMs: number;
+    endedAt: string;
+  }
+}
+```
 
-Side effects:
-- `meeting:participant_moderated` broadcast to meeting room
-- For `KICK`: `meeting:kicked` sent to target's personal room
-- For `MUTE_*`/`DISABLE_*`: `meeting:moderated_you` sent to target's personal room
+Side effects: `call:ended` broadcast to the `call:{callId}` room.
 
 ---
 
-### webrtc:offer
+### call:join_room
 
-Send a WebRTC offer to another participant. Relayed via the server through the target's personal room.
+Join the Socket.IO room `call:{callId}` to receive call-level broadcast events (`call:accepted`, `call:declined`, `call:ended`). Call this after `POST /calls/start` (caller) or after receiving `call:ringing` (callee).
 
 ```typescript
-callSocket.emit('webrtc:offer', {
-  meetingId: 'meeting-uuid',
-  toUserId: 'peer-user-id',
-  offer: RTCSessionDescriptionInit    // { type: 'offer', sdp: '...' }
-});
+callSocket.emit('call:join_room', { callId: 'call-uuid' });
 ```
 
-**ACK event: `webrtc:offer_sent`**
-
-Constraints: payload size limit enforced (rejects oversized SDPs). Caller must be in the meeting.
+**ACK event: `call:room_joined`**
+```typescript
+{ event: 'call:room_joined', data: { callId: string } }
+```
 
 ---
 
-### webrtc:answer
+### call:leave_room
 
-Send a WebRTC answer back to the initiating peer.
-
-```typescript
-callSocket.emit('webrtc:answer', {
-  meetingId: 'meeting-uuid',
-  toUserId: 'peer-user-id',
-  answer: RTCSessionDescriptionInit    // { type: 'answer', sdp: '...' }
-});
-```
-
-**ACK event: `webrtc:answer_sent`**
-
----
-
-### webrtc:ice_candidate
-
-Send an ICE candidate to a peer during connection negotiation.
+Leave the Socket.IO room `call:{callId}`. Call this after the call ends and the UI has cleaned up.
 
 ```typescript
-callSocket.emit('webrtc:ice_candidate', {
-  meetingId: 'meeting-uuid',
-  toUserId: 'peer-user-id',
-  candidate: RTCIceCandidateInit
-});
+callSocket.emit('call:leave_room', { callId: 'call-uuid' });
 ```
 
-**ACK event: `webrtc:ice_sent`**
-
-Rate limit: 300 ICE events per 10 s window.
-
----
-
-### webrtc:leave
-
-Signal P2P departure to a specific peer (before closing the peer connection).
-
+**ACK event: `call:room_left`**
 ```typescript
-callSocket.emit('webrtc:leave', {
-  meetingId: 'meeting-uuid',
-  toUserId: 'peer-user-id'
-});
+{ event: 'call:room_left', data: { callId: string } }
 ```
-
-**ACK event: `webrtc:left`**
-
-Side effects: `webrtc:peer_left` is sent to `toUserId`'s personal room.
 
 ---
 
 ## 5. Call — Server-to-Client Events
 
-### meeting:updated
+### call:ringing
 
-**Target**: `meeting:{meetingId}` room.
+**Target**: each callee's **personal room** `user:{calleeId}` (one push per callee).
 
-Broadcast after any meeting state change (join, leave, media state update, waiting room actions).
+Delivered by the Realtime Gateway when it consumes the `call.event.ringing` Kafka event produced by Call Service. Because it is delivered to personal rooms (not a shared room), each callee receives it independently regardless of whether they have joined any call room.
 
 ```typescript
-callSocket.on('meeting:updated', (meeting: Meeting) => { ... });
+callSocket.on('call:ringing', (payload: {
+  callId: string;
+  conversationId: string;
+  callerId: string;
+  calleeIds: string[];
+  startedAt: string;          // ISO-8601
+}) => {
+  // Show incoming call UI
+  // Emit call:join_room to start receiving call-level broadcasts
+  callSocket.emit('call:join_room', { callId: payload.callId });
+});
 ```
 
-Use this to re-render the participant grid, media state icons, and meeting status.
+**FE behavior:** display the incoming call banner. Offer "Accept" (`POST /calls/:callId/accept`) and "Decline" (`POST /calls/:callId/decline`) actions.
 
 ---
 
-### meeting:ended
+### call:accepted
 
-**Target**: `meeting:{meetingId}` room.
+**Target**: `call:{callId}` room.
 
-Broadcast when the host calls `meeting:end`.
+Broadcast by the Realtime Gateway when it consumes the `call.event.accepted` Kafka event. Both the caller and any other callees in the room receive this.
 
 ```typescript
-callSocket.on('meeting:ended', (meeting: Meeting) => { ... });
+callSocket.on('call:accepted', (payload: {
+  callId: string;
+  conversationId: string;
+  calleeId: string;
+  acceptedAt: string;
+}) => {
+  // Caller: fetch LiveKit token via GET /calls/:callId/token
+  // Connect to LiveKit SFU room
+});
 ```
 
-**FE behavior:** show "Meeting has ended" modal, disconnect from meeting room, stop all local media tracks.
+**FE behavior (caller):** call `GET /calls/:callId/token`, receive `{ token, roomName, livekitUrl }`, connect to LiveKit SFU.
 
 ---
 
-### meeting:participant_joined
+### call:declined
 
-**Target**: `meeting:{meetingId}` room.
+**Target**: `call:{callId}` room.
 
-Broadcast when a new participant successfully joins.
+Broadcast when the callee declines or when the call is auto-declined (ringing timeout, membership revoked).
 
 ```typescript
-callSocket.on('meeting:participant_joined', (payload: {
-  meetingId: string;
-  userId: string;
-}) => { ... });
+callSocket.on('call:declined', (payload: {
+  callId: string;
+  conversationId: string;
+  declinedBy: string;
+  finalStatus: 'REJECTED' | 'MISSED';
+  declinedAt: string;
+}) => {
+  // Dismiss call UI, show "Call declined" or "Missed call" indicator
+});
 ```
 
-**FE behavior:** add the participant to the grid, initiate WebRTC offer to the new peer (if mesh topology).
+**FE behavior:** dismiss the ringing/calling UI. Display appropriate status in the conversation history.
 
 ---
 
-### meeting:participant_moderated
+### call:ended
 
-**Target**: `meeting:{meetingId}` room.
+**Target**: `call:{callId}` room.
 
-Broadcast when a participant is moderated by the host.
-
-```typescript
-callSocket.on('meeting:participant_moderated', (payload: {
-  meetingId: string;
-  targetUserId: string;
-  action: 'MUTE_AUDIO' | 'MUTE_VIDEO' | 'DISABLE_SCREEN' | 'KICK';
-  appliedAt: string;
-}) => { ... });
-```
-
-**FE behavior:** update the participant's media state indicators in the UI.
-
----
-
-### meeting:hand_raise (broadcast)
-
-**Target**: `meeting:{meetingId}` room.
-
-Broadcast when a participant raises or lowers their hand.
+Broadcast when any participant ends the call, or when cleanup processes terminate a ghost/stuck call.
 
 ```typescript
-callSocket.on('meeting:hand_raise', (payload: {
-  meetingId: string;
-  userId: string;
-  raised: boolean;
-  raisedAt: string;
-}) => { ... });
+callSocket.on('call:ended', (payload: {
+  callId: string;
+  conversationId: string;
+  endedBy: string;
+  endReason: 'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'membership_revoked';
+  durationMs: number;
+  endedAt: string;
+}) => {
+  // Disconnect from LiveKit SFU
+  // Stop local media tracks
+  // Leave call room: callSocket.emit('call:leave_room', { callId })
+});
 ```
 
----
-
-### meeting:invited
-
-**Target**: invitee's personal room `user:{toUserId}`.
-
-Delivered when another meeting participant sends an invitation.
-
-```typescript
-callSocket.on('meeting:invited', (payload: {
-  meetingId: string;
-  fromUserId: string;
-  message: string | null;
-  sentAt: string;
-}) => { ... });
-```
-
-**FE behavior:** show an incoming call / meeting invitation banner. Offer "Join" and "Decline" actions. Joining: emit `meeting:join { meetingId }`.
-
----
-
-### meeting:kicked
-
-**Target**: kicked user's personal room `user:{targetUserId}`.
-
-```typescript
-callSocket.on('meeting:kicked', (payload: {
-  meetingId: string;
-  moderatorId: string;
-  reason?: string;
-}) => { ... });
-```
-
-**FE behavior:** stop local media tracks, leave the meeting room, show "You were removed from the meeting" message.
-
----
-
-### meeting:moderated_you
-
-**Target**: moderated user's personal room `user:{targetUserId}`.
-
-Sent for `MUTE_AUDIO`, `MUTE_VIDEO`, `DISABLE_SCREEN` actions so the client can immediately stop the local media track.
-
-```typescript
-callSocket.on('meeting:moderated_you', (payload: {
-  meetingId: string;
-  action: 'MUTE_AUDIO' | 'MUTE_VIDEO' | 'DISABLE_SCREEN';
-  reason?: string;
-}) => { ... });
-```
-
-**FE behavior:** immediately stop the relevant local track (mic.stop(), camera.stop(), screenShare.stop()). Update UI to show muted state.
-
----
-
-### webrtc:offer (incoming)
-
-**Target**: `toUserId`'s personal room — relayed by server.
-
-```typescript
-callSocket.on('webrtc:offer', (payload: {
-  meetingId: string;
-  fromUserId: string;
-  offer: RTCSessionDescriptionInit;
-}) => { ... });
-```
-
-**FE behavior:** call `pc.setRemoteDescription(offer)`, create an answer, emit `webrtc:answer`.
-
----
-
-### webrtc:answer (incoming)
-
-**Target**: `toUserId`'s personal room.
-
-```typescript
-callSocket.on('webrtc:answer', (payload: {
-  meetingId: string;
-  fromUserId: string;
-  answer: RTCSessionDescriptionInit;
-}) => { ... });
-```
-
-**FE behavior:** call `pc.setRemoteDescription(answer)`.
-
----
-
-### webrtc:ice_candidate (incoming)
-
-**Target**: `toUserId`'s personal room.
-
-```typescript
-callSocket.on('webrtc:ice_candidate', (payload: {
-  meetingId: string;
-  fromUserId: string;
-  candidate: RTCIceCandidateInit;
-}) => { ... });
-```
-
-**FE behavior:** call `pc.addIceCandidate(candidate)`.
-
----
-
-### webrtc:peer_left
-
-**Target**: `toUserId`'s personal room.
-
-Sent when a peer calls `webrtc:leave` before closing their connection.
-
-```typescript
-callSocket.on('webrtc:peer_left', (payload: {
-  meetingId: string;
-  fromUserId: string;
-}) => { ... });
-```
-
-**FE behavior:** close the `RTCPeerConnection` for `fromUserId`, remove their video tile from the UI.
+**FE behavior:** disconnect from LiveKit, stop all local media tracks, leave the `call:{callId}` Socket.IO room, show call duration summary.
 
 ---
 
@@ -1145,11 +834,8 @@ The Call gateway enforces per-client sliding-window rate limits to prevent abuse
 
 | Event(s) | Window | Max events |
 |---|---|---|
-| `meeting:start`, `meeting:join`, `meeting:leave`, `meeting:end`, `meeting:snapshot`, `meeting:hand_raise`, `meeting:approve_waiting`, `meeting:reject_waiting`, `meeting:invite`, `meeting:moderate` | 10 s | 20 |
-| `meeting:media_state` | 10 s | 40 |
-| `webrtc:offer`, `webrtc:answer` | 10 s | 60 |
-| `webrtc:ice_candidate` | 10 s | 300 |
-| `webrtc:leave` | 10 s | 30 |
+| `call:accept`, `call:decline`, `call:end` | 10 s | 20 |
+| `call:join_room`, `call:leave_room` | 10 s | 30 |
 
 When a limit is exceeded the server returns:
 ```typescript
@@ -1199,147 +885,58 @@ See the HTTP API Reference [Guide 4](../API_REFERENCE.md#guide-4-cursor-tracking
 
 ---
 
-### Guide 3: Voice / Video Call Flow
+### Guide 3: Instant Call Flow (Zalo/Messenger style)
 
-Complete lifecycle for a peer-to-peer voice/video call through the Call namespace.
-
-```
-Host                          Server                         Participant
- │                               │                               │
- ├─ meeting:start ──────────────►│                               │
- │◄─ meeting:started ────────────┤                               │
- │                               │──── meeting:invited ─────────►│
- │                               │                               │
- │                               │◄──── meeting:join ────────────┤
- │                               │──── meeting:joined ──────────►│
- │                               │                               │
- │◄─────────────── meeting:participant_joined (room broadcast) ──┤
- │                               │                               │
- │──── webrtc:offer ────────────►│──── webrtc:offer ────────────►│
- │                               │                               │
- │◄──── webrtc:answer ───────────┤◄──── webrtc:answer ───────────┤
- │                               │                               │
- │──── webrtc:ice_candidate ────►│──── webrtc:ice_candidate ────►│ (repeated)
- │◄─── webrtc:ice_candidate ─────┤◄─── webrtc:ice_candidate ─────┤ (repeated)
- │                               │                               │
- │         [ Connected: P2P media flowing ]                      │
- │                               │                               │
- │──── meeting:end ─────────────►│                               │
- │                               │──────── meeting:ended (room broadcast) ──────►│
- │◄─ meeting:ended ──────────────┤                               │
-```
-
-**Step-by-step:**
-
-1. **Connect to Call namespace** and `authenticate`.
-2. **Host starts meeting** — emit `meeting:start { conversationId }`. Save `meetingId` from response.
-3. **Invite participants** — emit `meeting:invite { meetingId, toUserId }` for each participant.
-4. **Participants join** — on receiving `meeting:invited`, show call banner. On "Accept": emit `meeting:join { meetingId }`.
-5. **On `meeting:participant_joined`** — initiate WebRTC handshake (see Guide 4).
-6. **Media state** — emit `meeting:media_state` whenever mic/camera/screen changes.
-7. **End call** — host emits `meeting:end { meetingId }`. All participants receive `meeting:ended`.
-8. **Cleanup** — on `meeting:ended` or `meeting:kicked`: stop all local tracks, close all `RTCPeerConnection` objects.
-
----
-
-### Guide 4: WebRTC P2P Connection Setup
-
-The server acts as a **signaling relay** only. Actual media flows peer-to-peer.
+Complete lifecycle for a 1-to-1 instant call using the LiveKit SFU. There is no waiting room or host role — calls ring immediately and participants connect to the SFU directly.
 
 ```
-Peer A (new joiner)             Server              Peer B (existing member)
-    │                              │                        │
-    │── (joins meeting) ──────────►│                        │
-    │                              │── meeting:participant_joined ──►│
-    │                              │                        │
-    │                              │◄─ webrtc:offer ────────┤  (B initiates offer to A)
-    │◄─ webrtc:offer ──────────────┤                        │
-    │                              │                        │
-    │─ webrtc:answer ─────────────►│─ webrtc:answer ───────►│
-    │                              │                        │
-    │─ webrtc:ice_candidate ──────►│─ webrtc:ice_candidate ►│ (repeated until connected)
-    │◄─ webrtc:ice_candidate ──────┤◄─ webrtc:ice_candidate ┤ (repeated)
-    │                              │                        │
-    │     ════════ P2P media stream (direct) ════════       │
+Caller                        Server                        Callee
+  │                              │                              │
+  ├─ POST /calls/start ─────────►│                              │
+  │◄─ 201 { callId, ... } ───────┤                              │
+  │                              │── call:ringing ─────────────►│ (personal WS room user:{calleeId})
+  │                              │                              │ (shows incoming call UI)
+  │                              │                              │
+  ├─ call:join_room { callId } ─►│                              │
+  │◄─ call:room_joined ──────────┤                              │
+  │                              │                              │
+  │  [waiting for call:accepted] │◄─ POST /calls/:id/accept ───┤
+  │                              │── call:accepted (room) ─────►│ (callee receives livekitToken in ACK)
+  │◄─ call:accepted (room) ──────┤                              │
+  │                              │                              │
+  ├─ GET /calls/:id/token ──────►│                              │
+  │◄─ { token, roomName, url } ──┤                              │
+  │                              │                              │
+  │  [both connect to LiveKit SFU independently]                │
+  │                              │                              │
+  ├─ POST /calls/:id/end ───────►│                              │
+  │                              │── call:ended (room) ────────►│
+  │◄─ call:ended (room) ─────────┤                              │
+  │                              │                              │
+  ├─ call:leave_room { callId } ►│                              │
 ```
 
-**Implementation (existing member — Peer B — initiates offer to new joiner Peer A):**
+**Step-by-step (Caller):**
 
-```javascript
-callSocket.on('meeting:participant_joined', async ({ userId: newUserId }) => {
-  // Create a new RTCPeerConnection for each peer
-  const pc = new RTCPeerConnection(iceConfig);
-  peerConnections.set(newUserId, pc);
+1. `POST /calls/start` with `{ conversationId, calleeIds }` → receive `CallDto` with `callId`.
+2. Emit `call:join_room { callId }` to subscribe to call-level broadcasts.
+3. Wait for `call:accepted` event on the `call:{callId}` room.
+4. On `call:accepted`: call `GET /calls/:callId/token` → receive `{ token, roomName, livekitUrl }`.
+5. Connect to LiveKit SFU using the token.
+6. When done: `POST /calls/:callId/end` → receive `call:ended` broadcast.
+7. Disconnect from LiveKit, emit `call:leave_room { callId }`.
 
-  // Add local tracks
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+**Step-by-step (Callee):**
 
-  // Collect ICE candidates
-  pc.onicecandidate = ({ candidate }) => {
-    if (candidate) {
-      callSocket.emit('webrtc:ice_candidate', {
-        meetingId,
-        toUserId: newUserId,
-        candidate: candidate.toJSON()
-      });
-    }
-  };
+1. Receive `call:ringing` in personal room `user:{userId}` — display incoming call UI.
+2. Emit `call:join_room { callId }` to subscribe to call-level broadcasts.
+3. On "Accept": `POST /calls/:callId/accept` → ACK contains `livekitToken` and `livekitUrl`.
+4. Connect to LiveKit SFU using the token from the accept response.
+5. On "Decline": `POST /calls/:callId/decline` → `call:declined` broadcast to room.
+6. When done: `POST /calls/:callId/end` or wait for `call:ended` broadcast.
+7. Disconnect from LiveKit, emit `call:leave_room { callId }`.
 
-  // Render remote stream
-  pc.ontrack = ({ streams }) => {
-    renderRemoteVideo(newUserId, streams[0]);
-  };
-
-  // Create and send offer
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  callSocket.emit('webrtc:offer', { meetingId, toUserId: newUserId, offer });
-});
-
-// New joiner (Peer A) handles incoming offer
-callSocket.on('webrtc:offer', async ({ fromUserId, offer }) => {
-  const pc = new RTCPeerConnection(iceConfig);
-  peerConnections.set(fromUserId, pc);
-
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  pc.onicecandidate = ({ candidate }) => {
-    if (candidate) {
-      callSocket.emit('webrtc:ice_candidate', { meetingId, toUserId: fromUserId, candidate: candidate.toJSON() });
-    }
-  };
-  pc.ontrack = ({ streams }) => renderRemoteVideo(fromUserId, streams[0]);
-
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  callSocket.emit('webrtc:answer', { meetingId, toUserId: fromUserId, answer });
-});
-
-// Handle answer
-callSocket.on('webrtc:answer', async ({ fromUserId, answer }) => {
-  const pc = peerConnections.get(fromUserId);
-  if (pc) await pc.setRemoteDescription(answer);
-});
-
-// Handle ICE candidates
-callSocket.on('webrtc:ice_candidate', async ({ fromUserId, candidate }) => {
-  const pc = peerConnections.get(fromUserId);
-  if (pc) await pc.addIceCandidate(candidate);
-});
-
-// Peer disconnected
-callSocket.on('webrtc:peer_left', ({ fromUserId }) => {
-  const pc = peerConnections.get(fromUserId);
-  if (pc) { pc.close(); peerConnections.delete(fromUserId); }
-  removeRemoteVideo(fromUserId);
-});
-```
-
-**Moderation response:**
-```javascript
-callSocket.on('meeting:moderated_you', ({ action }) => {
-  if (action === 'MUTE_AUDIO') localStream.getAudioTracks().forEach(t => t.enabled = false);
-  if (action === 'MUTE_VIDEO') localStream.getVideoTracks().forEach(t => t.enabled = false);
-  if (action === 'DISABLE_SCREEN') screenShareStream?.getTracks().forEach(t => t.stop());
-});
-```
+**Important notes:**
+- The callee's LiveKit token is returned directly in the `POST /calls/:callId/accept` HTTP response — no extra token fetch required.
+- The caller's LiveKit token requires a separate `GET /calls/:callId/token` call, which is only valid once the call is `ACTIVE`.
+- Media flows entirely through the LiveKit SFU — no P2P WebRTC signaling via this WebSocket gateway.

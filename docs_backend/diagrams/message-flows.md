@@ -433,90 +433,66 @@ sequenceDiagram
     participant RealtimeGW as Realtime Gateway
     participant Members as Other Clients
 
-    %% Phase 1: Start meeting
-    Host->>Gateway: POST /calls/{conversationId}/start
-    Gateway->>CallSvc: TCP: START_MEETING<br/>{conversationId, hostId}
-    CallSvc->>CallSvc: Create MeetingEntity (status=ACTIVE)
-    CallSvc->>CallSvc: Create MeetingParticipant (role=HOST)
-    CallSvc->>CallSvc: Write outbox: call.event.started
-    CallSvc-->>Gateway: MeetingDto
-    Gateway-->>Host: 200 MeetingDto
+    %% Phase 1: Start instant call
+    Caller->>Gateway: POST /calls/start
+    Gateway->>CallSvc: TCP: START_CALL<br/>{conversationId, callerId, calleeIds}
+    CallSvc->>CallSvc: Create CallEntity (status=RINGING)
+    CallSvc->>CallSvc: Create CallParticipant rows (CALLER + CALLEE(s))
+    CallSvc->>CallSvc: Write outbox: call.event.ringing
+    CallSvc-->>Gateway: CallDto
+    Gateway-->>Caller: 201 CallDto
 
     Note over CallSvc: OutboxProcessor (~30s)
-    CallSvc->>Kafka: Publish call.event.started
-    Kafka->>RealtimeGW: Consume call.event.started
-    RealtimeGW->>Members: WS broadcast to conversation room:<br/>call:started {meetingId, hostId}
+    CallSvc->>Kafka: Publish call.event.ringing
+    Kafka->>RealtimeGW: Consume call.event.ringing
+    RealtimeGW->>Callee: WS personal room user:{calleeId}<br/>call:ringing {callId, conversationId, callerId}
 
-    %% Phase 2: Issue LiveKit token
-    Host->>Gateway: POST /calls/{meetingId}/token
-    Gateway->>CallSvc: TCP: ISSUE_MEDIA_TOKEN<br/>{meetingId, userId}
-    CallSvc->>CallSvc: Validate participant is in meeting
-    CallSvc->>CallSvc: LiveKitService.createToken(userId, meetingId, role=HOST)
-    CallSvc-->>Gateway: { token, livekitUrl }
-    Gateway-->>Host: 200 { token, livekitUrl }
-    Note over Host: Host connects directly to LiveKit SFU<br/>using the issued token
+    %% Phase 2: Callee accepts
+    Callee->>Gateway: POST /calls/{callId}/accept
+    Gateway->>CallSvc: TCP: ACCEPT_CALL<br/>{callId, calleeId}
+    CallSvc->>CallSvc: Validate callee participant + status RINGING
+    CallSvc->>CallSvc: Transition CallEntity.status = ACTIVE
+    CallSvc->>CallSvc: Mark callee joinedAt = NOW()
+    CallSvc->>CallSvc: Write outbox: call.event.accepted
+    CallSvc-->>Gateway: CallAcceptResponseDto { call, token, roomName, livekitUrl }
+    Gateway-->>Callee: 200 { token, roomName, livekitUrl }
 
-    %% Phase 3: Member requests to join (waiting room enabled)
-    Members->>Gateway: POST /calls/{conversationId}/join
-    Gateway->>CallSvc: TCP: REQUEST_JOIN_MEETING<br/>{conversationId, userId}
-    CallSvc->>CallSvc: allowWaitingRoom = true
-    CallSvc->>CallSvc: Create WaitingParticipant (status=WAITING)
-    CallSvc->>CallSvc: Write outbox: call.event.join_requested
-    CallSvc-->>Gateway: { status: WAITING }
-    Gateway-->>Members: 200 { status: "waiting" }
+    CallSvc->>Kafka: Publish call.event.accepted
+    Kafka->>RealtimeGW: Consume call.event.accepted
+    RealtimeGW->>Caller: WS room call:{callId}<br/>call:accepted {calleeId, acceptedAt}
 
-    CallSvc->>Kafka: Publish call.event.join_requested
-    Kafka->>RealtimeGW: Consume event
-    RealtimeGW->>Host: WS broadcast to conversation room:<br/>call:join_requested {userId}
+    %% Phase 3: Caller fetches token and joins SFU
+    Caller->>Gateway: GET /calls/{callId}/token
+    Gateway->>CallSvc: TCP: GET_CALL_TOKEN<br/>{callId, userId}
+    CallSvc->>CallSvc: Validate ACTIVE + participant membership
+    CallSvc-->>Gateway: { token, roomName, livekitUrl }
+    Gateway-->>Caller: 200 { token, roomName, livekitUrl }
+    Note over Caller: Caller connects directly to LiveKit SFU
 
-    %% Phase 4: Host approves
-    Host->>Gateway: POST /calls/{meetingId}/approve/{userId}
-    Gateway->>CallSvc: TCP: APPROVE_WAITING_PARTICIPANT
-    CallSvc->>CallSvc: Update WaitingParticipant.status = APPROVED
-    CallSvc->>CallSvc: Create MeetingParticipant (role=PARTICIPANT)
-    CallSvc->>CallSvc: Write outbox: call.event.waiting_approved + call.event.participant_joined
-    CallSvc-->>Gateway: MeetingDto
-    CallSvc->>Kafka: Publish call.event.waiting_approved
-    CallSvc->>Kafka: Publish call.event.participant_joined
-    Kafka->>RealtimeGW: Consume events
-    RealtimeGW->>Members: WS broadcast: call:approved (includes LiveKit room)
-    RealtimeGW->>Host: WS broadcast: call:participant_joined {userId}
-
-    %% Phase 5: Media state update
-    Members->>Gateway: PATCH /calls/{meetingId}/media-state
-    Gateway->>CallSvc: TCP: UPDATE_MEDIA_STATE<br/>{meetingId, userId, mediaState:{micOn:false}}
-    CallSvc->>CallSvc: Update MeetingParticipant.mediaState
-    CallSvc->>Kafka: Publish call.event.media_state_updated
-    Kafka->>RealtimeGW: Consume event
-    RealtimeGW->>Host: WS broadcast: call:media_state_updated {userId, micOn:false}
-
-    %% Phase 6: End meeting
-    Host->>Gateway: POST /calls/{meetingId}/end
-    Gateway->>CallSvc: TCP: END_MEETING<br/>{meetingId, userId}
-    CallSvc->>CallSvc: Validate caller is HOST
-    CallSvc->>CallSvc: Set MeetingEntity.status = ENDED, endedAt = NOW()
-    CallSvc->>CallSvc: Stop any RECORDING recordings via LiveKit egress
-    CallSvc->>CallSvc: Generate MeetingSummaryEntity
+    %% Phase 4: End call
+    Caller->>Gateway: POST /calls/{callId}/end
+    Gateway->>CallSvc: TCP: END_CALL<br/>{callId, endedBy}
+    CallSvc->>CallSvc: Transition CallEntity.status = ENDED or MISSED
+    CallSvc->>CallSvc: Mark all participants left
     CallSvc->>CallSvc: Write outbox: call.event.ended
-    CallSvc-->>Gateway: MeetingDto
-    Gateway-->>Host: 200 MeetingDto
+    CallSvc-->>Gateway: CallDto
+    Gateway-->>Caller: 200 CallDto
 
     CallSvc->>Kafka: Publish call.event.ended
-    Kafka->>RealtimeGW: Consume event
-    RealtimeGW->>Members: WS broadcast to conversation room:<br/>call:ended {meetingId, endedBy, durationMs}
+    Kafka->>RealtimeGW: Consume call.event.ended
+    RealtimeGW->>Caller: WS room call:{callId}<br/>call:ended {endedBy, durationMs}
+    RealtimeGW->>Callee: WS room call:{callId}<br/>call:ended {endedBy, durationMs}
 ```
 
 ### Key Steps Explained
 
-1. **Start Meeting** - Host POSTs to Gateway; Call Service creates `MeetingEntity` + first participant with HOST role
-2. **Publish Start Event** - Outbox publishes `call.event.started`; Realtime Gateway broadcasts to conversation room
-3. **Issue Token** - Call Service generates signed LiveKit JWT; host uses it to connect directly to SFU (media bypasses the Call Service)
-4. **Join Request** - Member requests join; if waiting room enabled, a `WaitingParticipantEntity` is created
-5. **Host Notified** - `call.event.join_requested` consumed by Realtime Gateway; host sees join request in UI
-6. **Approve/Reject** - Host approves or rejects via Gateway → Call Service; approval creates `MeetingParticipantEntity`
-7. **Media State** - Each device state change (mute/unmute/screen) writes to DB and publishes `call.event.media_state_updated`
-8. **End Meeting** - Host ends; outstanding recordings stopped, summary generated, `call.event.ended` published
-9. **Members Notified** - Realtime Gateway broadcasts end event; all clients close the call UI
+1. **Start Call** - Caller POSTs to Gateway; Call Service creates `CallEntity` + caller/callee participants
+2. **Publish Ringing Event** - Outbox publishes `call.event.ringing`; Realtime Gateway broadcasts to each callee personal room
+3. **Accept Call** - Callee accepts via Gateway → Call Service; call transitions to `ACTIVE` and callee gets a LiveKit token
+4. **Notify Caller** - `call.event.accepted` is consumed by Realtime Gateway; caller joins the `call:{callId}` room
+5. **Issue Caller Token** - Caller calls `GET /calls/{callId}/token` and connects directly to LiveKit SFU
+6. **End Call** - Any participant ends the call; summary is written and `call.event.ended` is published
+7. **Members Notified** - Realtime Gateway broadcasts end event; all clients close the call UI
 
 ---
 

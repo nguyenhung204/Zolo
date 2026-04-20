@@ -460,104 +460,46 @@ sequenceDiagram
 
 #### Call Events
 
-**Topic: `call.event.started`**
+**Topic: `call.event.ringing`**
 - **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `conversationId`
+- **Consumers**: Realtime Gateway, Notification Service
+- **Partition Key**: `callId`
 - **Retention**: 7 days
-- **Purpose**: Notify conversation members that a meeting has started
+- **Purpose**: Notify callees that an incoming call is ringing
 - **Payload**:
   ```typescript
-  { meetingId: string; conversationId: string; hostId: string; startedAt: string; }
+  { callId: string; conversationId: string; callerId: string; calleeIds: string[]; startedAt: string; }
+  ```
+
+**Topic: `call.event.accepted`**
+- **Producer**: Call Service
+- **Consumers**: Realtime Gateway
+- **Partition Key**: `callId`
+- **Purpose**: Notify caller that the callee accepted
+- **Payload**:
+  ```typescript
+  { callId: string; conversationId: string; calleeId: string; acceptedAt: string; }
+  ```
+
+**Topic: `call.event.declined`**
+- **Producer**: Call Service
+- **Consumers**: Realtime Gateway
+- **Partition Key**: `callId`
+- **Purpose**: Notify room participants that the call was declined or missed
+- **Payload**:
+  ```typescript
+  { callId: string; conversationId: string; declinedBy: string; finalStatus: 'REJECTED' | 'MISSED'; declinedAt: string; }
   ```
 
 **Topic: `call.event.ended`**
 - **Producer**: Call Service
 - **Consumers**: Realtime Gateway
-- **Partition Key**: `conversationId`
-- **Purpose**: Notify members that the meeting ended
+- **Partition Key**: `callId`
+- **Purpose**: Broadcast that the call ended
 - **Payload**:
   ```typescript
-  { meetingId: string; conversationId: string; endedBy: string; durationMs: number; endedAt: string; }
+  { callId: string; conversationId: string; endedBy: string; endReason: string; durationMs: number; endedAt: string; }
   ```
-
-**Topic: `call.event.participant_joined`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Broadcast participant join to all meeting members
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; userId: string; participantRole: string; joinedAt: string; }
-  ```
-
-**Topic: `call.event.participant_left`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Broadcast participant departure
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; userId: string; leftAt: string; reason?: string; }
-  ```
-
-**Topic: `call.event.join_requested`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Notify HOST of a new waiting room request
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; userId: string; requestedAt: string; }
-  ```
-
-**Topic: `call.event.waiting_approved`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Notify approved participant they can connect to LiveKit
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; userId: string; approvedBy: string; approvedAt: string; }
-  ```
-
-**Topic: `call.event.waiting_rejected`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Notify rejected participant
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; userId: string; rejectedBy: string; rejectedAt: string; }
-  ```
-
-**Topic: `call.event.media_state_updated`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Broadcast mic/camera/screen state changes to all participants
-- **Payload**:
-  ```typescript
-  { meetingId: string; userId: string; mediaState: { micOn: boolean; cameraOn: boolean; screenSharing: boolean }; updatedAt: string; }
-  ```
-
-**Topic: `call.event.recording_started`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Notify participants recording has begun
-- **Payload**:
-  ```typescript
-  { meetingId: string; conversationId: string; recordingId: string; startedBy: string; startedAt: string; }
-  ```
-
-**Topic: `call.event.recording_stopped`**
-- **Producer**: Call Service
-- **Consumers**: Realtime Gateway
-- **Partition Key**: `meetingId`
-- **Purpose**: Notify participants recording has stopped; includes file reference
-- **Payload**:
-  ```typescript
   { meetingId: string; conversationId: string; recordingId: string; stoppedBy: string; stoppedAt: string; fileKey?: string; }
   ```
 
