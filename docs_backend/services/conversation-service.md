@@ -145,6 +145,8 @@ WHERE conversation_id = :id AND user_id = :userId;
 
 Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-message query).
 
+> **Important**: `updateSeenCursor` and `updateDeliveredCursor` update the DB directly — they do **not** write to the outbox. Cursor updates are internal state changes with no downstream subscribers; publishing them as Kafka events previously caused spurious `conversation:updated` socket broadcasts (5–6 duplicate events per update).
+
 ---
 
 ## TCP Patterns

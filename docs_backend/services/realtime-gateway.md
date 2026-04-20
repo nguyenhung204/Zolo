@@ -44,7 +44,8 @@ This service does not perform business validation or data persistence. Instead, 
    - Strategy: 2-tier — personal room `user:{userId}` for lightweight notification, conversation room `conversation:{id}` for full payload
    - Batching: 80ms window to reduce spam
    - Caching: Members list cached in Redis (TTL: 10 min)
-   - Events emitted: `message:saved` (to sender), `message:notify` (to other members), `message:new` (to conversation room)
+   - **Forward messages**: sender is NOT excluded from `message:notify` for forwarded messages so their conversation list updates immediately
+   - Events emitted: `message:saved` (to sender), `message:notify` (to members), `message:new` (to conversation room)
 
 2. **`chat.event.message_updated`** (MessageUpdatedConsumer)
    - Purpose: Broadcast message mutation events to all conversation participants
@@ -60,19 +61,36 @@ This service does not perform business validation or data persistence. Instead, 
    - Events emitted: `message:deleted_for_me` → sent to **personal room** `user:{userId}` only (not conversation broadcast)
    - Payload: `{ messageId, conversationId, deletedAt }`
 
-3. **`chat.event.member_added`** / **`chat.event.member_removed`** (MemberChangesConsumer)
+4. **`chat.event.member_added`** / **`chat.event.member_removed`** (MemberChangesConsumer)
    - Purpose: Notify when members added to or removed from a conversation
    - Events emitted: `conversation:member-added`, `conversation:member-removed`
 
-5. **`chat.event.conversation_updated`** (ConversationUpdatedConsumer)
+5. **`chat.event.conversation_created`** (ConversationCreatedConsumer)
+   - Purpose: Broadcast `conversation:new` to all initial members immediately after a conversation is created
+   - Key use case: friend request accepted → DIRECT conversation auto-created → both users' clients update in real-time without reload
+   - Payload emitted: `{ conversationId, type, createdBy, timestamp }`
+   - Events emitted: `conversation:new`
+
+6. **`chat.event.conversation_updated`** (ConversationUpdatedConsumer)
    - Purpose: Broadcast conversation info changes (name, description, avatar) to all members
+   - **Event filtering**: only `eventType = 'conversation.info_updated'` triggers a broadcast; internal events like cursor updates on the same topic are silently skipped
+   - **Clean changes**: `undefined` values are stripped from `changes` before broadcasting so clients always receive a clean diff object
    - Strategy: **refetch** — raw `{ conversationId, changes, updatedBy, timestamp }` payload forwarded as-is; client calls `GET /conversations/:id` for fresh details
    - Caching: Member list cached in Redis, TTL 10 min (same pattern as MessageSavedConsumer)
    - Events emitted: `conversation:updated`
 
-6. **`chat.event.community_notify`** (CommunityNotifyConsumer)
-   - Purpose: Lightweight notification for large-channel messages
-   - Events emitted: `community:notify`
+7. **`user.profile.updated`** (UserProfileUpdatedConsumer)
+   - Purpose: Fan-out profile changes (name, avatar) to all clients sharing a conversation with the updated user
+   - Logic: skip if `changedFields` is empty; emit to user's own devices; fan-out to conversation rooms in chunks of 50
+   - Events emitted: `user:profile-updated`
+
+8. **`user.deactivated`** / **`user.deleted`** (UserAccountStatusConsumer)
+   - Purpose: Force-disconnect WS when account is deactivated or deleted
+   - Events emitted: `account:status-changed`
+
+9. **`chat.dlq`** (DlqMessageFailedConsumer)
+   - Purpose: Notify sender when their message fails DLQ after all retries
+   - Events emitted: `message:failed`
 
 ### WebSocket Events
 
@@ -100,6 +118,7 @@ This service does not perform business validation or data persistence. Instead, 
 - `typing:stop` - User stopped typing
 - `conversation:member-added` - New member added to conversation
 - `conversation:member-removed` - Member removed from conversation
+- `conversation:new` - New conversation created (e.g. friend request accepted triggers DIRECT conversation); payload: `{ conversationId, type, createdBy, timestamp }`; client should fetch `GET /conversations/:id` to populate the conversation list entry
 - `account:status-changed` - Force-disconnect signal: emitted to `user:{userId}` room when account is deactivated or deleted; payload: `{ reason: 'deactivated' | 'deleted' }`; sockets are force-closed immediately after
 - `conversation:updated` - Conversation info changed (name/description/avatar); payload: `{ conversationId, changes, updatedBy?, timestamp? }`; client should refetch `GET /conversations/:id` to get updated `avatarUrl`
 - `user:profile-updated` - User profile changed (name or avatar); payload: `{ userId, changedFields, snapshot: { displayName, avatarMediaId }, timestamp }`; client should invalidate cached avatar URL and refetch presigned URL via `GET /media/avatar/:mediaId` when `changedFields` includes `avatarMediaId`

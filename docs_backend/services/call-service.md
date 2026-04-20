@@ -2,311 +2,284 @@
 
 ## Overview
 
-Call Service is a TCP microservice that orchestrates meetings tied to conversations. It manages meeting state, waiting room admission, moderation, media-state tracking, recording orchestration, cleanup, and health reporting.
+Call Service is a TCP microservice that orchestrates **instant voice/video calls** in the Zalo/Messenger style. When a caller dials, the callee's device rings immediately — there is no waiting room, no host role, and no recording. The call either gets accepted, declined, or auto-expires.
 
-It does not transport WebRTC media itself. LiveKit handles signaling and media plane. Realtime Gateway consumes call Kafka events and broadcasts them to WebSocket clients.
+It does not transport WebRTC media itself. **LiveKit SFU** handles signaling and the media plane. Realtime Gateway consumes call Kafka events and broadcasts them to connected WebSocket clients. Push notifications are delivered by Notification Service.
 
 ---
 
 ## Core Model
 
-### Meetings
+### Status lifecycle
 
-`meetings` rows store:
+```
+startCall
+    │
+    ▼
+ RINGING ──────────────────────────────────────────────────► MISSED
+    │  (callee declines)                                     (timeout or caller cancels)
+    ├─────────────────────────────────────────────────────── REJECTED
+    │  (callee accepts)
+    ▼
+ ACTIVE ─────────────────────────────────────────────────── ENDED
+```
 
-- `conversationId`
-- `hostId`
-- `status`: `ACTIVE | ENDED`
-- `allowWaitingRoom`
-- `startedAt`
-- `endedAt`
+| Status | Meaning |
+|---|---|
+| `RINGING` | Call initiated; waiting for callee to respond |
+| `ACTIVE` | Callee accepted; LiveKit room is live |
+| `REJECTED` | Callee declined |
+| `MISSED` | Callee didn't answer in time, or caller cancelled |
+| `ENDED` | Active call explicitly ended by a participant |
 
-### Participants
+### calls
 
-`meeting_participants` rows store:
+`calls` rows store:
 
-- `meetingId`
+- `conversationId` — conversation this call belongs to
+- `callerId` — user who initiated the call
+- `status` — `RINGING | ACTIVE | REJECTED | MISSED | ENDED`
+- `startedAt` — when the call was created (RINGING)
+- `endedAt` — set on terminal transition
+- `createdAt`
+
+### call_participants
+
+`call_participants` rows store:
+
+- `callId`
 - `userId`
-- `role`: `HOST | CO_HOST | PARTICIPANT`
-- `joinedAt`
-- `leftAt`
-- `mediaState`: `{ micOn, cameraOn, screenSharing }`
+- `role` — `CALLER | CALLEE`
+- `joinedAt` — `null` for callee until they accept; set immediately for caller
+- `leftAt` — set when participant leaves or call ends
+- `createdAt`
 
-Default media state in code:
+### call_summaries
 
-- `micOn: true`
-- `cameraOn: false`
-- `screenSharing: false`
+`call_summaries` rows store aggregate metrics written atomically when a call transitions to any terminal status:
 
-### Waiting participants
-
-`meeting_waiting_participants` rows store:
-
-- `meetingId`
-- `userId`
-- `status`: `WAITING | APPROVED | REJECTED`
-- `requestedAt`
-- `decidedBy`
-- `decidedAt`
-- `rejectionReason`
-
-### Recordings
-
-`meeting_recordings` rows store:
-
-- `meetingId`
-- `conversationId`
-- `status`: `RECORDING | PAUSED | STOPPED | FAILED`
-- `startedBy`
-- `egressId`
-- `outputUrl`
-- `errorMessage`
-- timestamps
+- `callId`, `conversationId`
+- `startedAt`, `endedAt`
+- `durationMs` — 0 for REJECTED/MISSED, elapsed ms for ENDED
+- `endedBy` — userId or `'system'` for cleanup-expired calls
+- `endReason` — `'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'membership_revoked'`
+- `participantCount`
+- `generatedAt`, `updatedAt`
 
 ---
 
 ## Access Control
 
-`CallAccessService` enforces both account state and conversation-level permission.
+`CallAccessService` validates conversation membership. No external Users Service call is made — membership is resolved via `CallMembershipValidator` which is Redis-cache-first, cold-path falls back to Conversation Service TCP.
 
-### Account state
+### Permission matrix
 
-- Looks up the user through Users Service
-- Caches `isActive` for 30 seconds in memory
-- If Users Service is temporarily unavailable, the check fails open and the user is allowed through
-- If account is inactive, call operations are rejected
+| Role | Start call | Join (accept) |
+|---|---|---|
+| `OWNER` | ✓ | ✓ |
+| `ADMIN` | ✓ | ✓ |
+| `MODERATOR` | ✓ | ✓ |
+| `MEMBER` | ✓ | ✓ |
+| `GUEST` | ✗ | ✓ |
 
-### Membership and role resolution
+### Membership cache keys
 
-`CallMembershipValidator` is cache-first:
-
-- membership set key: `chat:conversation:{conversationId}:members`
-- role key: `chat:conversation:{conversationId}:members:{userId}:role`
-- conversation context key: `call:conversation:{conversationId}:context`
-
-Warm path uses Redis only. Cold path falls back to Conversation Service and then populates cache.
-
-### Permission matrix in code
-
-- `HOST`: start, join, moderate, share screen, record, approve joins, end meeting
-- `OWNER`: start, join, moderate, share screen, record, approve joins, end meeting
-- `ADMIN`: start, join, moderate, share screen, record, approve joins, end meeting
-- `MODERATOR`: start, join, moderate, share screen, record
-- `MEMBER`: start, join, share screen
-- `GUEST`: join, share screen
+- membership set: `chat:conversation:{conversationId}:members`
+- role: `chat:conversation:{conversationId}:members:{userId}:role`
+- conversation context: `call:conversation:{conversationId}:context`
 
 ---
 
-## Meeting Rules
+## Call Flow
 
-### Starting a meeting
+### Starting a call
 
-`START_MEETING` first checks conversation access and then normalizes waiting-room behavior by conversation type:
+`startCall`:
 
-- direct conversation: waiting room is forced off
-- announcement conversation: waiting room is forced on
-- everything else: `dto.allowWaitingRoom ?? true`
+1. Validates caller's conversation membership (`CALL_START`)
+2. Acquires a **conversation-scoped distributed lock**
+3. Checks busy state — rejects `409 CALL_CALLEE_BUSY` if any callee is in a live (RINGING/ACTIVE) call; rejects `409 CALL_CALLER_BUSY` if caller is in one
+4. Within a single DB transaction:
+   - Creates `calls` row with status `RINGING`
+   - Creates `call_participants` row for CALLER (with `joinedAt = now`)
+   - Creates `call_participants` row(s) for CALLEE(s) (with `joinedAt = null`)
+   - Writes `call.event.ringing` to outbox
+5. Returns `CallDto`
 
-The service then:
+The caller receives the call DTO. To connect to LiveKit they call `GET /calls/:callId/token` once the callee accepts (call status = ACTIVE).
 
-- locks on user and conversation
-- prevents the same user from being active in another meeting
-- returns the existing active meeting if one already exists for the conversation
-- creates a new meeting otherwise
-- writes `call.event.started` to the outbox in the same transaction
+### Accepting a call
 
-### Joining a meeting
+`acceptCall` (callee only):
 
-`REQUEST_JOIN_MEETING` does this:
+1. Acquires a **call-scoped distributed lock**
+2. Validates call is `RINGING`
+3. Verifies the user is a `CALLEE` participant
+4. Within a single DB transaction:
+   - Transitions call → `ACTIVE`
+   - Sets `joinedAt = now` for the callee participant row
+   - Writes `call.event.accepted` to outbox
+5. **After** the transaction commits, issues a LiveKit JWT for the callee
+6. Returns `CallAcceptResponseDto` — `{ call, token, roomName, livekitUrl }`
 
-- locks on user and meeting
-- rejects if the user is already active in another meeting
-- validates conversation membership and `CALL_JOIN`
-- enforces max participants (`CALL_MAX_PARTICIPANTS`, default `100`)
-- direct meetings bypass waiting room
-- announcement meetings always use waiting room
-- otherwise waiting room follows the meeting setting
+The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room. The caller then polls or reacts to the WS event and calls `GET /calls/:callId/token` to get their own token.
 
-If waiting room applies and the user is not the host:
+### Declining a call
 
-- create waiting row if not already waiting
-- enqueue `call.event.join_requested`
+`declineCall`:
 
-Otherwise:
+1. Lock on callId
+2. Validates call is `RINGING`
+3. Atomically: transitions → `REJECTED`, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.declined`
 
-- add participant directly
-- enqueue `call.event.participant_joined`
+### Ending a call
 
-### Approve / reject waiting users
+`endCall`:
 
-- `APPROVE_WAITING_PARTICIPANT` updates waiting status to `APPROVED`, adds participant, enqueues `call.event.waiting_approved`
-- `REJECT_WAITING_PARTICIPANT` updates waiting status to `REJECTED`, enqueues `call.event.waiting_rejected`
+1. Lock on callId
+2. Rejects if already in a terminal state
+3. Determines final status:
+   - Caller hangs up while `RINGING` → `MISSED`
+   - Otherwise → `ENDED`
+4. Atomically: transitions status, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.ended`
+5. Fire-and-forget `liveKit.closeRoom(callId).catch(log)` — LiveKit is best-effort
 
-### Leaving and host succession
+### Getting a LiveKit token
 
-When a participant leaves:
+`getCallToken` — caller (and reconnecting participants) fetch their LiveKit JWT after the call becomes `ACTIVE`:
 
-- mark `leftAt`
-- if the host leaves and someone else remains, promote the next active participant to host
-- if the host leaves and nobody remains, end the meeting
-
-When the meeting ends because the host leaves with no successor:
-
-- summary is upserted
-- `call.event.ended` is written
-- recording cleanup is triggered
-- LiveKit room is closed
-
-### Membership revocation
-
-`MembershipEventsConsumer` listens to `MEMBER_REMOVED`.
-
-It does two things:
-
-- invalidate call-service membership cache
-- call `handleMembershipRevoked(conversationId, userId)`
-
-If the removed user is:
-
-- an active participant: force leave flow
-- a waiting participant: mark waiting request rejected with `rejectionReason = membership_revoked`
+1. Validates call is `ACTIVE`
+2. Validates user is a participant
+3. Issues LiveKit JWT with `canPublish: true, canSubscribe: true, expiresInSeconds: 3600`
+4. Returns `{ token, roomName, livekitUrl }`
 
 ---
 
-## Moderation and Media State
+## Busy State Detection
 
-### Participant media state
+`findLiveCallByUserId(userId)` — queries `call_participants` joined to `calls` where `status IN ('RINGING', 'ACTIVE')` and `leftAt IS NULL`. Used both at `startCall` and can be queried directly.
 
-`UPDATE_MEDIA_STATE`:
-
-- requires the user to already be an active participant
-- requires `CALL_SHARE_SCREEN` if `screenSharing=true`
-- updates `meeting_participants.media_state`
-- enqueues `call.event.media_state_updated`
-
-### Moderation actions
-
-Actual action set from the service contracts:
-
-- `MUTE_AUDIO`
-- `MUTE_VIDEO`
-- `DISABLE_SCREEN`
-- `KICK`
-
-Behavior:
-
-- `MUTE_AUDIO`: set `micOn=false`
-- `MUTE_VIDEO`: set `cameraOn=false`
-- `DISABLE_SCREEN`: set `screenSharing=false`
-- `KICK`: run the leave flow for the target user
-
-All moderation operations enqueue `call.event.participant_moderated`.
-
----
-
-## Media Tokens and WebRTC Boundary
-
-`ISSUE_MEDIA_TOKEN` does not perform signaling itself. It issues a LiveKit access token.
-
-Flow:
-
-1. Find active meeting
-2. Re-check conversation access with `CALL_JOIN`
-3. Verify the user is already an active participant
-4. Build LiveKit JWT with room join grants
-
-Response includes:
-
-- `token`
-- `roomName`
-- `identity`
-- `participantName`
-- `livekitUrl`
-- `expiresInSeconds`
-
-Important boundary:
-
-- Call Service owns meeting orchestration and token issuance
-- LiveKit owns signaling and media transport
-- Realtime Gateway owns WebSocket fan-out of call state events
-
----
-
-## Recording
-
-Only LiveKit recording provider is implemented.
-
-### Provider behavior
-
-`RecordingProviderResolver` always resolves to `LiveKitRecordingProvider`.
-
-`LiveKitRecordingProvider`:
-
-- requires `LIVEKIT_RECORDING_ENABLED=true`
-- starts room composite egress
-- writes output to MinIO/S3-compatible storage
-- retries provider calls using configurable retry count and base delay
-
-### Recording flow
-
-- `START_RECORDING`: create DB row, call provider, update to `RECORDING`, enqueue `call.event.recording_state_updated`
-- `PAUSE_RECORDING`: pause provider egress if present, persist `PAUSED`
-- `RESUME_RECORDING`: resume provider egress, persist `RECORDING`
-- `STOP_RECORDING`: stop provider egress, persist `STOPPED`
-
-There can be only one active recording per meeting. If one already exists, `START_RECORDING` returns it.
-
-Cleanup also stops recordings when meetings are ended by cleanup logic.
+If the callee is busy, `startCall` returns `409` with `CALL_CALLEE_BUSY`. If the caller is busy, it returns `409` with `CALL_CALLER_BUSY`.
 
 ---
 
 ## Cleanup and Health
 
-### Cleanup
+### Cleanup sweeps
 
-`CallCleanupService` runs on an interval (`CALL_CLEANUP_INTERVAL_MS`, default `60000`) and uses distributed leader locking.
+`CallCleanupService` runs on a configurable interval (`CALL_CLEANUP_INTERVAL_MS`, default 60 s). Distributed leader election via `tryRunCleanupLeader` — only one service replica runs the sweep per interval.
 
-It ends stale meetings when:
+#### RINGING timeout sweep
 
-- there are zero active participants
-- meeting age exceeds `CALL_MAX_MEETING_AGE_MINUTES` (default `720`)
+Finds all RINGING calls older than `CALL_RINGING_TIMEOUT_SECONDS` (default 60 s). For each:
 
-It also expires waiting-room requests after `CALL_WAITING_ROOM_TIMEOUT_MS` (default `300000`) with `rejectionReason = waiting_room_timeout`.
+1. Acquires call lock (skips if locked — active transaction in progress)
+2. Re-fetches fresh state inside lock
+3. Atomically: transitions → `MISSED`, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.ended` with `endReason: 'ringing_timeout'`
+
+#### Ghost ACTIVE call sweep
+
+Finds all ACTIVE calls where every participant has `leftAt != null`. For each:
+
+1. Acquires call lock, re-checks fresh state
+2. Atomically: transitions → `ENDED`, writes `CallSummaryEntity`, enqueues `call.event.ended` with `endReason: 'ghost_call_cleanup'`
+3. Fire-and-forget `closeRoom`
 
 ### Health
 
-`GET_HEALTH` reports:
+`GET /calls/health` (no auth) returns `CallHealthDto`:
 
-- active meetings
-- active participants
-- waiting participants
-- zero-participant active meetings
-- recording status snapshot
-- call outbox counts and lag
-- cleanup config
-- degraded issues such as outbox lag or unavailable recording provider
+```json
+{
+  "timestamp": "2026-04-20T00:00:00.000Z",
+  "calls": {
+    "ringing": 3,
+    "active": 7,
+    "activeParticipants": 14,
+    "zeroParticipantActiveCalls": 0,
+    "oldestRingingCallAgeMs": 12400
+  },
+  "outbox": {
+    "pending": 0,
+    "processing": 0,
+    "failed": 0,
+    "lagMs": 0
+  },
+  "cleanup": {
+    "ringingTimeoutSeconds": 60,
+    "intervalMs": 60000
+  },
+  "health": {
+    "status": "HEALTHY",
+    "issues": []
+  }
+}
+```
+
+`status` is `DEGRADED` when `ghost_active_calls_detected` or `outbox_lag_high` (lag > 30 s).
 
 ---
 
 ## Kafka and Outbox
 
-Call Service writes events through `OutboxRepository` inside the same database transaction as the domain mutation.
+Call Service writes events through `OutboxRepository` inside the same DB transaction as each domain mutation. `aggregateType: 'call'`, `aggregateId: callId`.
 
-Main topics written by the audited code path:
+### Topics produced
 
-- `call.event.started`
-- `call.event.join_requested`
-- `call.event.participant_joined`
-- `call.event.waiting_approved`
-- `call.event.waiting_rejected`
-- `call.event.media_state_updated`
-- `call.event.participant_moderated`
-- `call.event.recording_state_updated`
-- `call.event.ended`
+| Topic | Trigger | Payload key fields |
+|---|---|---|
+| `call.event.ringing` | `startCall` | `callId, conversationId, callerId, calleeIds[], startedAt` |
+| `call.event.accepted` | `acceptCall` | `callId, conversationId, calleeId, acceptedAt` |
+| `call.event.declined` | `declineCall` | `callId, conversationId, declinedBy, finalStatus, declinedAt` |
+| `call.event.ended` | `endCall`, cleanup | `callId, conversationId, endedBy, endReason, durationMs, endedAt` |
 
-Consumed topic in this service:
+### Topics consumed
 
-- `chat.event.member_added`
-- `chat.event.member_removed`
+| Topic | Consumer group | Purpose |
+|---|---|---|
+| `chat.event.member_removed` | `nest-chat.call-service` | Auto-end active/ringing call when a user is removed from the conversation |
 
-`MEMBER_ADDED` pre-warms Redis membership cache. `MEMBER_REMOVED` invalidates cache and auto-kicks affected users from active calls.
+`handleMembershipRevoked` finds any live call for the conversation and calls `endCall` gracefully.
+
+---
+
+## Distributed Locking
+
+`CallLockService` wraps Redis SET NX PX:
+
+| Lock scope | Method | Key pattern |
+|---|---|---|
+| Conversation | `withConversationLock` | `call:lock:conversation:{conversationId}` |
+| Call | `withCallLock` | `call:lock:meeting:{callId}` |
+| User | `withUserLock` | `call:lock:user:{userId}` |
+| Cleanup leader | `tryRunCleanupLeader` | `call:lock:job:cleanup` |
+
+`CallLockAcquisitionError` is thrown when a lock cannot be acquired within the wait timeout. Cleanup sweeps catch this and skip the call silently.
+
+---
+
+## LiveKit Boundary
+
+- Call Service owns: call orchestration, LiveKit token issuance, room lifecycle
+- LiveKit owns: WebRTC signaling, media transport, SFU mixing
+- Realtime Gateway owns: WebSocket fan-out of call state events
+
+LiveKit room name pattern: built by `LiveKitService.buildRoomName(callId)`.
+
+Caller token flow: caller calls `GET /calls/:callId/token` after receiving `call:accepted` WS event. Callee token is returned inline in `POST /calls/:callId/accept` response.
+
+---
+
+## TCP Patterns
+
+| Pattern | Handler |
+|---|---|
+| `start_call` | `CallController.startCall` |
+| `accept_call` | `CallController.acceptCall` |
+| `decline_call` | `CallController.declineCall` |
+| `end_call` | `CallController.endCall` |
+| `get_call` | `CallController.getCall` |
+| `list_call_history` | `CallController.listCallHistory` |
+| `get_call_summary` | `CallController.getCallSummary` |
+| `get_call_token` | `CallController.getCallToken` |
+| `get_call_health` | `CallController.getHealth` |
