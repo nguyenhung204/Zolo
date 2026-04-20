@@ -15,6 +15,11 @@ export interface ReplyTarget {
   senderName?: string;
   content: string;
   type: string;
+  metadata?: {
+    filename?: string;
+    durationMs?: number;
+    [key: string]: unknown;
+  };
 }
 
 export interface EditTarget {

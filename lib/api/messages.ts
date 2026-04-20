@@ -83,6 +83,9 @@ export interface Message {
     thumbMediaId?: string;
     fileSize?: number;
     filename?: string;
+    // call_summary fields
+    callId?: string;
+    status?: string;
   };
   createdAt: string;
   updatedAt: string;

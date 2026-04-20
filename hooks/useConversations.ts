@@ -124,20 +124,26 @@ export function useUpdateConversationInfo() {
       updateConversationInfo(id, payload),
     onSuccess: async (_data, { id }) => {
       // PATCH response doesn't include a resolved avatarUrl — fetch the detail
-      // explicitly so the list immediately shows the new avatar.
+      // once so we have the presigned URL for immediate display.
       const fresh = await getConversation(id).catch(() => null);
       if (fresh) {
         qc.setQueryData(queryKeys.conversations.detail(id), fresh);
-        if (fresh.avatarUrl) {
-          qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
-            queryKeys.conversations.list(),
-            (old) => old?.map((c) => (c.id === id ? { ...c, avatarUrl: fresh.avatarUrl } : c))
-          );
-        }
+        // Apply all changed fields (name, description, avatarUrl) to the list cache
+        // in one setQueryData — the WS conversation:updated event will arrive
+        // shortly and apply the same patch idempotently.
+        qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+          queryKeys.conversations.list(),
+          (old) =>
+            old?.map((c) =>
+              c.id === id
+                ? { ...c, name: fresh.name, description: fresh.description, avatarUrl: fresh.avatarUrl ?? c.avatarUrl }
+                : c
+            ) ?? old
+        );
       } else {
         qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(id) });
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
       }
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     },
   });
 }
