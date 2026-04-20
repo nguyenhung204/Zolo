@@ -1,6 +1,6 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
-export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media";
+export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media" | "call_summary";
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
@@ -169,6 +169,14 @@ export interface ServerEvents {
     createdAt: string;
   }) => void;
 
+  /** Emitted by ConversationCreatedConsumer — friend request accepted → DIRECT auto-created */
+  "conversation:new": (data: {
+    conversationId: string;
+    type: string;
+    createdBy: string;
+    timestamp: string;
+  }) => void;
+
   /**
    * Fired after media.ready propagates through the backend pipeline.
    * The snapshot reflects the current state of the changed fields.
@@ -229,6 +237,12 @@ export interface CallClientEvents {
   }) => void;
 
   "meeting:snapshot": (payload: { meetingId: string }) => void;
+
+  // ─── Instant call (Zalo/Messenger-style) ─────────────────────────────────
+  /** Join the Socket.IO room for a specific call to receive call:accepted / call:declined / call:ended */
+  "call:join_room": (payload: { callId: string }) => void;
+  /** Leave the Socket.IO room after the call ends */
+  "call:leave_room": (payload: { callId: string }) => void;
 }
 
 // ─── /call namespace — Server → Client ───────────────────────────────────────
@@ -303,4 +317,52 @@ export interface CallServerEvents {
   "meeting:kicked": (data: { meetingId: string; reason?: string }) => void;
 
   error: (data: { message: string; code: string }) => void;
+
+  // ─── Instant call (Zalo/Messenger-style) ─────────────────────────────────
+
+  /**
+   * Delivered to each callee's personal room `user:{calleeId}` when a call is started.
+   * Callee should join `call:{callId}` room immediately after receiving this.
+   */
+  "call:ringing": (data: {
+    callId: string;
+    conversationId: string;
+    callerId: string;
+    calleeIds: string[];
+    startedAt: string;
+  }) => void;
+
+  /**
+   * Broadcast to `call:{callId}` room when the callee accepts.
+   * The **caller** receives this and must fetch GET /calls/:callId/token to connect to LiveKit.
+   */
+  "call:accepted": (data: {
+    callId: string;
+    conversationId: string;
+    calleeId: string;
+    acceptedAt: string;
+  }) => void;
+
+  /**
+   * Broadcast to `call:{callId}` room when the callee declines or call times out.
+   */
+  "call:declined": (data: {
+    callId: string;
+    conversationId: string;
+    declinedBy: string;
+    finalStatus: "REJECTED" | "MISSED";
+    declinedAt: string;
+  }) => void;
+
+  /**
+   * Broadcast to `call:{callId}` room when any participant ends the active call.
+   */
+  "call:ended": (data: {
+    callId: string;
+    conversationId: string;
+    endedBy: string;
+    endReason: "user_ended" | "declined" | "caller_cancelled" | "ringing_timeout" | "ghost_call_cleanup" | "membership_revoked";
+    durationMs: number;
+    endedAt: string;
+  }) => void;
 }

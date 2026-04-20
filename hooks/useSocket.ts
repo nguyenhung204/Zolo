@@ -422,8 +422,24 @@ export function useSocket() {
         avatarUrl,
       });
 
-      // Re-fetch conversation list so embedded otherUser / participant URLs refresh
-      scheduleListInvalidate();
+      // Surgically update the conversation list for DIRECT conversations where
+      // this user is otherUser. UserAvatar already reads from presenceStore so
+      // the display is already correct; this keeps the cache consistent.
+      qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) =>
+          old?.map((c) => {
+            if (c.otherUser?.id !== userId) return c;
+            return {
+              ...c,
+              otherUser: {
+                ...c.otherUser,
+                displayName: snapshot.displayName ?? c.otherUser.displayName,
+                avatarUrl: avatarUrl ?? c.otherUser.avatarUrl ?? null,
+              },
+            };
+          }) ?? old
+      );
       qc.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
     });
     // ─── Membership ────────────────────────────────────────────────────────
@@ -496,26 +512,62 @@ export function useSocket() {
       );
     });
 
-    // ─── Conversation info changes ─────────────────────────────────────────
-    socket.on("conversation:updated", ({ conversationId }: { conversationId: string }) => {
-      // Re-fetch the detail to get the new presigned avatarUrl (it is never
-      // included in the WebSocket payload), then propagate it into the list.
+    // ─── New conversation (e.g. friend request accepted → DIRECT auto-created) ──
+    socket.on("conversation:new", ({ conversationId }: { conversationId: string }) => {
+      // Fetch once to get full details (presigned avatarUrl etc.), then insert
+      // at the top of the list. Skip if it's already present (idempotent).
       getConversation(conversationId)
         .then((fresh) => {
           qc.setQueryData(queryKeys.conversations.detail(conversationId), fresh);
-          if (fresh.avatarUrl) {
-            qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
-              queryKeys.conversations.list(),
-              (old) => old?.map((c) => (c.id === conversationId ? { ...c, ...fresh } : c))
-            );
-          } else {
-            scheduleListInvalidate();
-          }
+          qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+            queryKeys.conversations.list(),
+            (old) => {
+              if (!old) return [fresh];
+              if (old.some((c) => c.id === conversationId)) return old;
+              return [fresh, ...old];
+            }
+          );
         })
         .catch(() => {
+          qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+        });
+    });
+
+    // ─── Conversation info changes ─────────────────────────────────────────
+    socket.on("conversation:updated", async ({ conversationId, changes }: { conversationId: string; changes: Record<string, unknown> }) => {
+      // Resolve a presigned URL only when avatarMediaId changed — avoid a full
+      // getConversation() round-trip for every metadata change.
+      let avatarUrl: string | undefined;
+      if (changes.avatarMediaId) {
+        try {
+          avatarUrl = await getMediaSignedUrl(changes.avatarMediaId as string, "OPTIMIZED");
+        } catch {
+          // Media resolution failed — fall back to a full refetch
           qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
           scheduleListInvalidate();
-        });
+          return;
+        }
+      }
+
+      // Build a minimal patch from the event payload (undefined values already
+      // stripped by backend before broadcasting).
+      const patch: Partial<import("@/lib/api/conversations").Conversation> = {};
+      if (changes.name !== undefined) patch.name = changes.name as string;
+      if (changes.description !== undefined) patch.description = changes.description as string;
+      if (changes.avatarMediaId !== undefined) {
+        patch.avatarMediaId = (changes.avatarMediaId as string | null) ?? null;
+        if (avatarUrl !== undefined) patch.avatarUrl = avatarUrl;
+      }
+
+      // Apply directly — no additional API call needed
+      qc.setQueryData<import("@/lib/api/conversations").Conversation>(
+        queryKeys.conversations.detail(conversationId),
+        (old) => (old ? { ...old, ...patch } : old)
+      );
+      qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => old?.map((c) => (c.id === conversationId ? { ...c, ...patch } : c)) ?? old
+      );
     });
 
     // ─── Call events ───────────────────────────────────────────────────────

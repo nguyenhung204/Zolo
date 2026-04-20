@@ -1,6 +1,75 @@
 import { apiClient } from "@/lib/api/client";
 import type { ModerationAction, RecordingStatus } from "@/lib/socket/events";
 
+// ─── Instant Call Types (Zalo/Messenger-style) ────────────────────────────────
+
+export interface CallParticipantDto {
+  userId: string;
+  role: "CALLER" | "CALLEE";
+  joinedAt: string | null;
+  leftAt: string | null;
+  createdAt: string;
+}
+
+export interface CallDto {
+  id: string;
+  conversationId: string;
+  callerId: string;
+  status: "RINGING" | "ACTIVE" | "REJECTED" | "MISSED" | "ENDED";
+  createdAt: string;
+  startedAt: string;
+  endedAt: string | null;
+  participants: CallParticipantDto[];
+}
+
+export interface CallTokenDto {
+  token: string;
+  roomName: string;
+  livekitUrl: string;
+}
+
+export interface CallAcceptResponseDto {
+  call: CallDto;
+  token: string;
+  roomName: string;
+  livekitUrl: string;
+}
+
+// ─── Instant Call API ─────────────────────────────────────────────────────────
+
+export async function startInstantCall(params: {
+  conversationId: string;
+  calleeIds: string[];
+}): Promise<CallDto> {
+  const res = await apiClient.post("/calls/start", params);
+  return res.data.data ?? res.data;
+}
+
+export async function acceptInstantCall(callId: string): Promise<CallAcceptResponseDto> {
+  const res = await apiClient.post(`/calls/${callId}/accept`);
+  return res.data.data ?? res.data;
+}
+
+export async function declineInstantCall(callId: string): Promise<CallDto> {
+  const res = await apiClient.post(`/calls/${callId}/decline`);
+  return res.data.data ?? res.data;
+}
+
+export async function endInstantCall(callId: string): Promise<CallDto> {
+  const res = await apiClient.post(`/calls/${callId}/end`);
+  return res.data.data ?? res.data;
+}
+
+export async function getInstantCallToken(callId: string): Promise<CallTokenDto> {
+  const res = await apiClient.get(`/calls/${callId}/token`);
+  return res.data.data ?? res.data;
+}
+
+export async function getInstantCallById(callId: string): Promise<CallDto | null> {
+  const res = await apiClient.get(`/calls/${callId}`);
+  return res.data.data ?? res.data ?? null;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Meeting {
