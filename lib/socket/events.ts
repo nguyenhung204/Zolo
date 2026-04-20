@@ -149,7 +149,11 @@ export interface ServerEvents {
 
   "cursor:seen_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
   "cursor:delivered_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
-  "message:reaction_updated": (data: { messageId: string; conversationId: string; reactions: Record<string, number> }) => void;
+  "message:reaction_updated": (data: {
+    messageId: string;
+    conversationId: string;
+    reactions: Record<string, { count: number; reactors: string[]; myReaction: boolean }>;
+  }) => void;
 
   session_revoked: (data: {
     reason: "logged_in_elsewhere" | "new_login_elsewhere" | "manual_logout" | "token_expired" | "tab_limit_exceeded";

@@ -1,6 +1,17 @@
 import { apiClient } from "@/lib/api/client";
 import type { MessageType, MediaStatus } from "@/lib/socket/events";
 
+// ─── Reaction types ───────────────────────────────────────────────────────────
+
+/** Per-emoji reaction detail — mirrors the shape sent by WS `message:reaction_updated`. */
+export interface ReactionDetail {
+  count: number;
+  reactors: string[];   // User IDs who reacted
+  myReaction: boolean;  // Whether the current user has this reaction
+}
+
+export type ReactionMap = Record<string, ReactionDetail>;
+
 // ─── Raw API shapes ───────────────────────────────────────────────────────────
 
 export interface AttachmentRef {
@@ -35,6 +46,9 @@ interface RawMessage {
     url?: string;
     waveform?: number[];
     durationMs?: number;
+    thumbMediaId?: string;
+    fileSize?: number;
+    filename?: string;
   };
   createdAt: string;
   updatedAt?: string;
@@ -68,13 +82,14 @@ export interface Message {
     durationMs?: number;
     thumbMediaId?: string;
     fileSize?: number;
+    filename?: string;
   };
   createdAt: string;
   updatedAt: string;
   editedAt?: string;
   deletedAt?: string;
   isRevoked?: boolean;
-  reactions?: Record<string, number>;
+  reactions?: ReactionMap;
   // local-only optimistic fields
   _pending?: boolean;
   _failed?: boolean;
@@ -108,6 +123,7 @@ export interface SendMessagePayload {
     durationMs?: number;
     thumbMediaId?: string;
     fileSize?: number;
+    filename?: string;
   };
 }
 
@@ -182,15 +198,14 @@ export async function getMessages(params: {
   const res = await apiClient.get(
     `/conversations/${conversationId}/messages?${query}`
   );
-  // API returns { statusCode, data: { data: Message[], meta: {...} } }
-  const payload = res.data?.data ?? {};
-  const rawMessages: RawMessage[] = Array.isArray(payload.data)
-    ? payload.data
-    : Array.isArray(payload)
-      ? payload
-      : [];
+  // API returns { statusCode, message, data: Message[], metadata: { hasMore, oldestOffset, newestOffset } }
+  const response = res.data ?? {};
+  const rawMessages: RawMessage[] = Array.isArray(response.data)
+    ? response.data
+    : [];
+  // Support both "metadata" (actual API) and "meta" (legacy/future shape)
   const meta: { hasMore?: boolean; oldestOffset?: number | string; newestOffset?: number | string } =
-    payload.meta ?? {};
+    response.metadata ?? response.meta ?? {};
   return {
     data: rawMessages.map(normalizeRawMessage),
     meta: {
@@ -209,8 +224,8 @@ export async function sendMessage(payload: SendMessagePayload): Promise<Message 
   const body: Record<string, unknown> = { ...rest, type };
   // API field name is replyToId
   if (replyToMessageId) body.replyToId = replyToMessageId;
-  // Audio messages are allowed to send an empty string; other message types omit empty content.
-  if (content !== undefined && (content.length > 0 || type === "audio")) {
+  // Audio and sticker messages are allowed to send an empty string; other message types omit empty content.
+  if (content !== undefined && (content.length > 0 || type === "audio" || type === "sticker")) {
     body.content = content;
   }
   // API rejects top-level mediaId for image/video/audio/file — use attachments array
@@ -233,8 +248,24 @@ export async function sendMessage(payload: SendMessagePayload): Promise<Message 
 
   const res = await apiClient.post("/chat/messages", body);
   const raw = (res.data?.data ?? null) as RawMessage | null;
-  if (!raw) return null;
-  return normalizeRawMessage(raw);
+  if (raw) {
+    // The 201 response only contains { messageId, clientMessageId, conversationId, status }.
+    // Fill in type / content / metadata from the payload so normalizeRawMessage does not
+    // default type to "text" and wipe out optimistic messages of other types (image, file…).
+    return normalizeRawMessage({
+      ...raw,
+      conversationId: raw.conversationId ?? payload.conversationId,
+      type: raw.type ?? payload.type ?? "text",
+      content: typeof raw.content === "string" ? raw.content : (payload.content ?? ""),
+      metadata: raw.metadata ?? (payload.metadata as RawMessage["metadata"]),
+      attachments: (raw.attachments ?? payload.attachments) as RawMessage["attachments"],
+    });
+  }
+  // Some endpoints (e.g. sticker) return { success: true, messageId: "..." } without a full
+  // message object. Return a partial message containing only the id so markAcked can dedup.
+  const shortId: string | undefined = res.data?.messageId ?? res.data?.id;
+  if (shortId) return { messageId: shortId } as Message;
+  return null;
 }
 
 // ─── PATCH /messages/:id ──────────────────────────────────────────────────────
@@ -291,8 +322,13 @@ export async function pinMessage(
 
 // ─── POST /messages/:id/reactions ────────────────────────────────────────────
 
-export async function addReaction(messageId: string, emoji: string): Promise<void> {
-  await apiClient.post(`/messages/${messageId}/reactions`, { emoji });
+export async function addReaction(
+  messageId: string,
+  conversationId: string,
+  emoji: string,
+  action: "add" | "remove"
+): Promise<void> {
+  await apiClient.post(`/messages/${messageId}/reactions`, { conversationId, emoji, action });
 }
 
 // ─── DELETE /messages/:id/pin ─────────────────────────────────────────────────

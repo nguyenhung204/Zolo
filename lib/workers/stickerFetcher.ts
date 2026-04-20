@@ -15,6 +15,8 @@ type PendingEntry = {
 class StickerFetcherManager {
   private worker: Worker | null = null;
   private pending = new Map<string, PendingEntry>();
+  private cache = new Map<string, unknown>();
+  private inFlight = new Map<string, Promise<unknown>>();
 
   private getWorker(): Worker | null {
     if (typeof window === "undefined" || typeof Worker === "undefined") return null;
@@ -50,32 +52,63 @@ class StickerFetcherManager {
   }
 
   async fetch(url: string, token: string, params: Record<string, string>): Promise<unknown> {
+    const cacheKey = `${token}::${url}?${new URLSearchParams(params).toString()}`;
+    if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
+
+    const existing = this.inFlight.get(cacheKey);
+    if (existing) return existing;
+
     const worker = this.getWorker();
 
     if (!worker) {
       // SSR or no Worker support — plain fetch fallback
       const qs = new URLSearchParams(params).toString();
-      const res = await globalThis.fetch(qs ? `${url}?${qs}` : url, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "X-Client-Platform": "web",
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
+      const request = (async () => {
+        const res = await globalThis.fetch(qs ? `${url}?${qs}` : url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "X-Client-Platform": "web",
+          },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        this.cache.set(cacheKey, data);
+        return data;
+      })();
+      this.inFlight.set(cacheKey, request);
+      try {
+        return await request;
+      } finally {
+        this.inFlight.delete(cacheKey);
+      }
     }
 
-    return new Promise<unknown>((resolve, reject) => {
+    const request = new Promise<unknown>((resolve, reject) => {
       const id = crypto.randomUUID();
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve: (data) => {
+          this.cache.set(cacheKey, data);
+          resolve(data);
+        },
+        reject,
+      });
       worker.postMessage({ id, url, token, params });
     });
+
+    this.inFlight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      this.inFlight.delete(cacheKey);
+    }
   }
 
   terminate() {
     this.worker?.terminate();
     this.worker = null;
     this.pending.clear();
+    this.inFlight.clear();
+    this.cache.clear();
   }
 }
 

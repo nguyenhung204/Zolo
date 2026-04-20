@@ -13,6 +13,7 @@ import { connectChatSocket, getChatSocket } from "@/lib/socket/socket";
 import { CallBar } from "@/components/calls/CallBar";
 import { useStickerPreloader } from "@/hooks/useStickers";
 import { hasActiveUploads } from "@/hooks/useSendMessage";
+import { useMessageNotifications } from "@/hooks/useMessageNotifications";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -33,7 +34,7 @@ export function AppShell({ children }: AppShellProps) {
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const tabIdRef = useRef<string>(Math.random().toString(36).slice(2));
 
-  // Preload first 100 stickers for every package in background via Worker thread
+  // Preload the first 20 stickers for every package in background via Worker thread
   useStickerPreloader();
 
   // Sync revoked state from localStorage after mount to avoid hydration mismatch
@@ -78,6 +79,8 @@ export function AppShell({ children }: AppShellProps) {
   useCallSocket();
   // Fetch profile once on mount and keep authStore (avatar, name) in sync
   useMyProfile();
+  // In-app + browser notifications for background messages
+  useMessageNotifications();
 
   useEffect(() => {
     if (typeof window === "undefined") return;

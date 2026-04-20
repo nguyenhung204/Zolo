@@ -55,4 +55,13 @@ export const queryKeys = {
     packages: () => [...queryKeys.stickers.all, "packages"] as const,
     list: (packageId: string) => [...queryKeys.stickers.all, "list", packageId] as const,
   },
+
+  // Notifications
+  notifications: {
+    all: ["notifications"] as const,
+    preferences: (conversationId?: string) =>
+      conversationId
+        ? ([...queryKeys.notifications.all, "preferences", conversationId] as const)
+        : ([...queryKeys.notifications.all, "preferences"] as const),
+  },
 } as const;

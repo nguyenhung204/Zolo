@@ -9,6 +9,7 @@ import {
 } from "react-window";
 import { useMessages } from "@/hooks/useMessages";
 import { useSeenCursor } from "@/hooks/useSeenCursor";
+import { useSendMessage } from "@/hooks/useSendMessage";
 import { MessageRow } from "./MessageRow";
 import { useAuthStore } from "@/stores/authStore";
 import { useConversationStore } from "@/stores/conversationStore";
@@ -77,6 +78,7 @@ interface RowData {
   onForward: (msg: Message) => void;
   onPin: (msg: Message) => void;
   onViewDetails: (msg: Message) => void;
+  onRetry: (conversationId: string, clientMessageId: string) => void;
 }
 
 // rowComponent MUST be defined outside the parent to keep a stable reference
@@ -96,6 +98,7 @@ function MessageRowComponent({
   onForward,
   onPin,
   onViewDetails,
+  onRetry,
 }: RowComponentProps<RowData>) {
   const item = items[index];
   if (!item) return null;
@@ -152,6 +155,7 @@ function MessageRowComponent({
         onForward={onForward}
         onPin={onPin}
         onViewDetails={onViewDetails}
+        onRetry={msg.clientMessageId ? (m) => onRetry(m.conversationId, m.clientMessageId!) : undefined}
       />
     </div>
   );
@@ -178,6 +182,12 @@ export function VirtualMessageList({
   useSeenCursor(conversationId, lastVisibleOffset);
 
   // ─── Message action handlers ──────────────────────────────────────────────
+  const { send: _send, retryMessage } = useSendMessage();
+
+  const handleRetry = useCallback((convId: string, clientMessageId: string) => {
+    retryMessage(convId, clientMessageId);
+  }, [retryMessage]);
+
   const handleEdit = useCallback((msg: Message) => {
     setEditingMessage({ messageId: msg.messageId, content: msg.content ?? "" });
   }, [setEditingMessage]);
@@ -267,11 +277,21 @@ export function VirtualMessageList({
 
   const atBottomRef = useRef(true);
   const prevCountRef = useRef(0);
-  const prevTopOffsetRef = useRef<number | null>(null);
-  // true while we still need to pin the view to the bottom (initial load / conversation switch)
-  const needsScrollBottomRef = useRef(true);
+  // Snapshot before history fetch for scroll restoration
+  const scrollSnapRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  // Whether initial scroll-to-bottom has been done for this conversation
+  const initialScrollDoneRef = useRef(false);
   // always up-to-date items.length without stale-closure issues in callbacks
   const itemsLengthRef = useRef(0);
+  // Refs so the scroll listener always sees fresh values without re-registering
+  const hasNextPageRef = useRef(hasNextPage);
+  const isFetchingNextPageRef = useRef(isFetchingNextPage);
+  const fetchNextPageRef = useRef(fetchNextPage);
+  hasNextPageRef.current = hasNextPage;
+  isFetchingNextPageRef.current = isFetchingNextPage;
+  fetchNextPageRef.current = fetchNextPage;
+  // Tracks previous scrollTop to derive scroll direction in handleScroll
+  const prevScrollTopRef = useRef(0);
 
   // Flatten pages — oldest first
   const messages: Message[] = data?.pages
@@ -295,77 +315,104 @@ export function VirtualMessageList({
       username: (m as { username?: string }).username,
     }));
 
-  // Reset scroll tracking whenever the user navigates to a different conversation
+  // Reset on conversation switch
   useEffect(() => {
     prevCountRef.current = 0;
-    prevTopOffsetRef.current = null;
+    scrollSnapRef.current = null;
     atBottomRef.current = true;
-    needsScrollBottomRef.current = true;
+    initialScrollDoneRef.current = false;
     setLastVisibleOffset(null);
   }, [conversationId]);
 
-  // Keep atBottomRef in sync with the user's actual scroll position
+  // Scroll to bottom once when first page of messages arrives (double-scroll technique)
   useEffect(() => {
-    const el = listRef.current?.element;
-    if (!el) return;
-    const onScroll = () => {
-      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }); // intentionally runs every render so it always binds to the latest element
+    if (initialScrollDoneRef.current) return;
+    if (messages.length === 0) return;
+    if (!listRef.current) return;
+    // First scroll — lands close to bottom immediately
+    listRef.current.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+    initialScrollDoneRef.current = true;
+    atBottomRef.current = true;
+    prevCountRef.current = messages.length;
+    // Secondary scroll fires after dynamic heights have been calculated and painted,
+    // correcting any residual offset caused by rows whose heights weren't yet known.
+    const timer = setTimeout(() => {
+      listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+    }, 50);
+    return () => clearTimeout(timer);
+  // conversationId ensures this re-runs when switching conversations even if cache already has messages
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, messages.length]);
 
-  // Handle new messages and history prepend — skipped during initial scroll phase
+  // Handle new messages arriving + history prepend scroll restoration
   useEffect(() => {
-    if (needsScrollBottomRef.current) return;
+    if (!initialScrollDoneRef.current) return;
     const newCount = messages.length;
     const oldCount = prevCountRef.current;
     if (newCount === oldCount) return;
 
-    if (prevTopOffsetRef.current !== null && newCount > oldCount) {
-      // Pages were prepended — jump to the item that was visible at the top before
-      const addedRows = newCount - oldCount;
-      listRef.current?.scrollToRow({ index: addedRows + 1, align: "start" });
-      prevTopOffsetRef.current = null;
-    } else if (atBottomRef.current) {
-      // New message while user is at the bottom — follow it
-      listRef.current?.scrollToRow({ index: items.length - 1, align: "end" });
+    const snap = scrollSnapRef.current;
+    if (snap !== null && newCount > oldCount) {
+      // History prepended — restore by pixel delta.
+      // Wrap in two rAF frames so ResizeObserver settles before we read scrollHeight.
+      scrollSnapRef.current = null;
+      const el = listRef.current?.element;
+      if (el) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
+          });
+        });
+      }
+    } else if (newCount > oldCount) {
+      // New message arrived — auto-scroll if user is at bottom OR it's their own message
+      const lastMsg = messages[messages.length - 1];
+      const isMine = lastMsg?.senderId === userId;
+      if (atBottomRef.current || isMine) {
+        listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+      }
     }
 
     prevCountRef.current = newCount;
-  }, [conversationId, messages.length, items.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, messages.length, userId]);
+  // Native scroll handler — drives atBottom tracking and reverse-infinite-scroll trigger.
+  // Using react-window's onScroll pass-through (HTMLAttributes spread) gives us a single,
+  // reliable event source without manual addEventListener/removeEventListener.
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const target = e.currentTarget;
+      const scrollTop = target.scrollTop;
+      const scrollHeight = target.scrollHeight;
+      const clientHeight = target.clientHeight;
+      const scrollDirection = scrollTop < prevScrollTopRef.current ? "backward" : "forward";
+      prevScrollTopRef.current = scrollTop;
 
-  // Snapshot message count before a history fetch so we can restore scroll after prepend
-  useEffect(() => {
-    if (isFetchingNextPage && prevCountRef.current > 0) {
-      prevTopOffsetRef.current = prevCountRef.current;
-    }
-  }, [isFetchingNextPage]);
+      // Keep atBottom ref accurate for new-message auto-scroll
+      atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
+      onScrollChange?.(atBottomRef.current, 0);
 
-  // Initial scroll-to-bottom is driven from onRowsRendered (not useEffect) because
-  // useDynamicRowHeight re-measures rows after first render, which grows scrollHeight and
-  // resets a useEffect-based scrollTop back toward the top.
-  // By setting el.scrollTop = el.scrollHeight on every render pass we stay pinned to the
-  // bottom until the last row is actually rendered and measured.
+      // Trigger history load when scrolling backward near the top
+      if (
+        initialScrollDoneRef.current &&
+        scrollDirection === "backward" &&
+        scrollTop < 200 &&
+        hasNextPageRef.current &&
+        !isFetchingNextPageRef.current
+      ) {
+        // Snapshot before fetch so we can restore position after prepend
+        if (scrollSnapRef.current === null) {
+          scrollSnapRef.current = { scrollTop, scrollHeight };
+        }
+        fetchNextPageRef.current();
+      }
+    },
+    [onScrollChange]
+  );
+
   const handleRowsRendered = useCallback(
     ({ startIndex, stopIndex }: { startIndex: number; stopIndex: number }) => {
-      if (needsScrollBottomRef.current) {
-        const el = listRef.current?.element;
-        if (el) {
-          el.scrollTop = el.scrollHeight;
-        }
-        // Exit initial-scroll phase once the last row is rendered
-        if (stopIndex >= itemsLengthRef.current - 2) {
-          needsScrollBottomRef.current = false;
-          prevCountRef.current = itemsLengthRef.current;
-          atBottomRef.current = true;
-        }
-        return; // don't trigger load-more while scrolling to bottom
-      }
-      if (startIndex <= 5 && hasNextPage && !isFetchingNextPage) {
-        fetchNextPage();
-      }
-      // Track the highest visible message offset for the seen cursor
+      // Seen-cursor tracking only — scroll/fetch logic lives in handleScroll
       let maxOffset = -1;
       for (let i = stopIndex; i >= startIndex; i--) {
         const item = items[i];
@@ -378,7 +425,7 @@ export function VirtualMessageList({
         setLastVisibleOffset((prev) => (prev === null || maxOffset > prev) ? maxOffset : prev);
       }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage, items, userId]
+    [items, userId]
   );
 
   if (isLoading) {
@@ -416,8 +463,9 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, observeRowElements: rowHeight.observeRowElements, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails }}
+        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, observeRowElements: rowHeight.observeRowElements, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
         onRowsRendered={handleRowsRendered}
+        onScroll={handleScroll}
         overscanCount={8}
       />
       {forwardTarget && (

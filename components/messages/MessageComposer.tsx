@@ -1,6 +1,7 @@
 "use client";
 
 import { ReplyPreview } from "./ReplyPreview";
+import EmojiPicker, { EmojiStyle } from "emoji-picker-react";
 import { StickerPicker } from "./StickerPicker";
 import { useTyping } from "@/hooks/useTyping";
 import { useSendMessage } from "@/hooks/useSendMessage";
@@ -67,6 +68,17 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+const MAX_CONTENT_LENGTH = 10_000;
+
+function splitContent(content: string): string[] {
+  if (content.length <= MAX_CONTENT_LENGTH) return [content];
+  const chunks: string[] = [];
+  for (let i = 0; i < content.length; i += MAX_CONTENT_LENGTH) {
+    chunks.push(content.slice(i, i + MAX_CONTENT_LENGTH));
+  }
+  return chunks;
+}
+
 interface MessageComposerProps {
   conversationId: string;
   disabled?: boolean;
@@ -79,6 +91,7 @@ export function MessageComposer({
   placeholder = "Type a message…",
 }: MessageComposerProps) {
   const [text, setText] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const { send } = useSendMessage();
@@ -195,7 +208,7 @@ export function MessageComposer({
       });
       setReplyTo(null);
     } catch {
-      toast.error("Không thể gửi tin nhắn thoại");
+      toast.error("Could not send the voice message.");
     } finally {
       setVoiceUploading(false);
       resetRec();
@@ -228,6 +241,28 @@ export function MessageComposer({
     }
   };
 
+  const handleEmojiInsert = useCallback((emojiData: { emoji: string }) => {
+    const emoji = emojiData.emoji;
+    const el = textareaRef.current;
+    const selectionStart = el?.selectionStart ?? text.length;
+    const selectionEnd = el?.selectionEnd ?? text.length;
+    const nextValue = `${text.slice(0, selectionStart)}${emoji}${text.slice(selectionEnd)}`;
+
+    setText(nextValue);
+    onKeystroke();
+    setShowEmojiPicker(false);
+
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const nextCursor = selectionStart + emoji.length;
+      el.selectionStart = nextCursor;
+      el.selectionEnd = nextCursor;
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    });
+  }, [onKeystroke, text]);
+
   // ─── File staging ─────────────────────────────────────────────────────────
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []).slice(0, 30);
@@ -246,7 +281,7 @@ export function MessageComposer({
     }
     if (rejected.length > 0) {
       toast.error(
-        `Định dạng không được hỗ trợ: ${rejected.join(", ")}. Chỉ chấp nhận ảnh, video, PDF, Office và file nén.`,
+        `Unsupported format: ${rejected.join(", ")}. Only images, videos, PDF, Office files, and archives are allowed.`,
         { duration: 5000 }
       );
     }
@@ -293,6 +328,8 @@ export function MessageComposer({
   // ─── Send ─────────────────────────────────────────────────────────────────
   const handleSend = async () => {
     if (!canSend) return;
+    setShowEmojiPicker(false);
+    setShowStickers(false);
 
     // Edit mode: text only
     if (editingMessage) {
@@ -319,7 +356,7 @@ export function MessageComposer({
         );
       } catch (err) {
         if ((err as { response?: { status?: number } }).response?.status === 403) {
-          toast.error("Đã quá thời gian cho phép thực hiện thao tác");
+          toast.error("The allowed time window for this action has expired.");
         }
       }
       setText("");
@@ -329,7 +366,7 @@ export function MessageComposer({
       return;
     }
 
-    // Files staged → upload THEN send
+    // Files staged → keep caption and attachment in one logical message
     if (stagedFiles.length > 0) {
       const queuedFiles = [...stagedFiles];
       const caption = text.trim();
@@ -341,22 +378,11 @@ export function MessageComposer({
       setReplyTo(null);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-      if (caption) {
-        send({
-          conversationId,
-          content: caption,
-          type: "text",
-          replyToMessageId: replyTarget,
-        });
-      }
-
-      for (let index = 0; index < queuedFiles.length; index++) {
-        const stagedFile = queuedFiles[index];
+      if (queuedFiles.length === 1) {
+        const stagedFile = queuedFiles[0];
         const fileName = stagedFile.file.name;
         const type = stagedFile.mediaType;
 
-        // For video files: await the thumbnail upload (started at staging time).
-        // Typically done by now since the user has had time to review; worst case <500ms wait.
         let thumbMediaId: string | undefined;
         if (type === "video") {
           const thumbPromise = thumbUploadPromises.current.get(stagedFile.id);
@@ -368,29 +394,86 @@ export function MessageComposer({
 
         send({
           conversationId,
-          content: fileName,
+          content: caption,
           type,
-          replyToMessageId: !caption && index === 0 ? replyTarget : undefined,
+          replyToMessageId: replyTarget,
           localPreviewUrl: stagedFile.previewUrl,
           metadata: {
             ...(thumbMediaId ? { thumbMediaId } : {}),
             fileSize: stagedFile.file.size,
+            filename: fileName,
           },
           uploadFile: (onProgress) => uploadFileDirect(stagedFile.file, conversationId, onProgress),
         }).catch(() => {
-          toast.error(`Không thể gửi ${fileName}`);
+          toast.error(`Could not send ${fileName}.`);
         });
+
+        return;
+      }
+
+      try {
+        // Multiple files: each file is its own message.
+        // If there's a caption, send it as a text message first (with reply context),
+        // then send each file individually (no reply context).
+        // If no caption, the first file inherits the reply context.
+        if (caption) {
+          const captionChunks = splitContent(caption);
+          captionChunks.forEach((chunk, i) => {
+            send({
+              conversationId,
+              content: chunk,
+              type: "text",
+              replyToMessageId: i === 0 ? replyTarget : undefined,
+            }).catch(() => toast.error("Could not send message."));
+          });
+        }
+
+        for (let i = 0; i < queuedFiles.length; i++) {
+          const stagedFile = queuedFiles[i];
+          const fileName = stagedFile.file.name;
+          const type = stagedFile.mediaType;
+
+          let thumbMediaId: string | undefined;
+          if (type === "video") {
+            const thumbPromise = thumbUploadPromises.current.get(stagedFile.id);
+            if (thumbPromise) {
+              thumbMediaId = (await thumbPromise) ?? undefined;
+            }
+            thumbUploadPromises.current.delete(stagedFile.id);
+          }
+
+          const replyToMessageId = !caption && i === 0 ? replyTarget : undefined;
+
+          send({
+            conversationId,
+            content: "",
+            type,
+            replyToMessageId,
+            localPreviewUrl: stagedFile.previewUrl,
+            metadata: {
+              ...(thumbMediaId ? { thumbMediaId } : {}),
+              fileSize: stagedFile.file.size,
+              filename: fileName,
+            },
+            uploadFile: (onProgress) => uploadFileDirect(stagedFile.file, conversationId, onProgress),
+          }).catch(() => toast.error(`Could not send ${fileName}.`));
+        }
+      } catch {
+        toast.error("Could not send the files.");
       }
 
       return;
     }
 
-    // Text only
-    send({
-      conversationId,
-      content: text.trim(),
-      type: "text",
-      replyToMessageId: replyTo?.messageId,
+    // Text only — split into MAX_CONTENT_LENGTH chunks if needed
+    const chunks = splitContent(text.trim());
+    chunks.forEach((chunk, i) => {
+      send({
+        conversationId,
+        content: chunk,
+        type: "text",
+        replyToMessageId: i === 0 ? replyTo?.messageId : undefined,
+      });
     });
     setText("");
     stopTyping();
@@ -401,6 +484,7 @@ export function MessageComposer({
   const handleSendSticker = (sticker: Sticker) => {
     send({ conversationId, type: "sticker", metadata: { url: sticker.url } });
     setShowStickers(false);
+    setShowEmojiPicker(false);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -416,9 +500,9 @@ export function MessageComposer({
       {editingMessage && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-lg bg-border/30">
           <Pencil className="w-3 h-3 text-cta shrink-0" />
-          <span className="flex-1 text-xs text-muted">Đang chỉnh sửa</span>
+          <span className="flex-1 text-xs text-muted">Editing message</span>
           <button type="button" onClick={() => { setEditingMessage(null); setText(""); }}
-            className="text-muted hover:text-text cursor-pointer" title="Hủy">
+            className="text-muted hover:text-text cursor-pointer" title="Cancel">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -451,7 +535,7 @@ export function MessageComposer({
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="w-20 h-20 shrink-0 rounded-2xl border-2 border-dashed border-border flex items-center justify-center text-muted hover:text-secondary hover:border-secondary transition-colors cursor-pointer"
-                title="Thêm file"
+                title="Add file"
               >
                 <Paperclip className="w-5 h-5" />
               </button>
@@ -460,9 +544,22 @@ export function MessageComposer({
         </div>
       )}
 
+      {/* Emoji picker popover */}
+      {showEmojiPicker && (
+        <div className="absolute bottom-[72px] left-4 z-50">
+          <EmojiPicker
+            onEmojiClick={handleEmojiInsert}
+            lazyLoadEmojis={true}
+            height={350}
+            width={320}
+            emojiStyle={EmojiStyle.APPLE}
+          />
+        </div>
+      )}
+
       {/* Sticker picker popover */}
       {showStickers && (
-        <div className="absolute bottom-[72px] left-4 z-50">
+        <div className="absolute bottom-[72px] left-16 z-50">
           <StickerPicker onSelect={handleSendSticker} />
         </div>
       )}
@@ -476,7 +573,7 @@ export function MessageComposer({
             onClick={cancelRec}
             disabled={voiceUploading}
             className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-muted hover:bg-border/60 transition-colors cursor-pointer disabled:opacity-40"
-            title="Hủy"
+            title="Cancel"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -506,7 +603,7 @@ export function MessageComposer({
             onClick={handleStopAndSend}
             disabled={voiceUploading || recState !== "recording"}
             className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center bg-cta text-white hover:opacity-90 transition-colors cursor-pointer disabled:opacity-50"
-            title="Dừng và gửi"
+            title="Stop and send"
           >
             {voiceUploading
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -535,25 +632,47 @@ export function MessageComposer({
           disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
           className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-secondary hover:bg-border/50 transition-colors cursor-pointer mb-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Đính kèm file"
+          title="Attach file"
         >
           <Paperclip className="w-4 h-4" />
+        </button>
+
+        {/* Emoji */}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            setShowEmojiPicker((v) => !v);
+            setShowStickers(false);
+          }}
+          className={cn(
+            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5",
+            showEmojiPicker
+              ? "text-primary bg-primary/10"
+              : "text-muted hover:text-secondary hover:bg-border/50"
+          )}
+          title="Emoji"
+        >
+          <Smile className="w-4 h-4" />
         </button>
 
         {/* Sticker */}
         <button
           type="button"
           disabled={disabled}
-          onClick={() => setShowStickers((v) => !v)}
+          onClick={() => {
+            setShowStickers((v) => !v);
+            setShowEmojiPicker(false);
+          }}
           className={cn(
-            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5",
+            "h-8 px-2 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5 text-[11px] font-semibold tracking-[0.08em]",
             showStickers
               ? "text-primary bg-primary/10"
               : "text-muted hover:text-secondary hover:bg-border/50"
           )}
           title="Stickers"
         >
-          <Smile className="w-4 h-4" />
+          ST
         </button>
 
         {/* Textarea */}
@@ -562,10 +681,11 @@ export function MessageComposer({
           rows={1}
           value={text}
           disabled={disabled}
-          placeholder={stagedFiles.length > 0 ? "Thêm nội dung kèm theo…" : placeholder}
+          placeholder={stagedFiles.length > 0 ? "Add a caption…" : placeholder}
           onChange={(e) => handleInput(e.target.value)}
           onKeyDown={handleKeyDown}
           className="flex-1 min-w-0 resize-none bg-transparent text-sm text-text placeholder:text-muted outline-none leading-relaxed max-h-[200px] overflow-y-auto py-1"
+          style={{ fontFamily: "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', inherit" }}
         />
 
         {/* Mic — only when no text, no staged files, not editing */}
@@ -575,7 +695,7 @@ export function MessageComposer({
             onClick={startRec}
             disabled={disabled}
             className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-muted hover:text-secondary hover:bg-border/50 transition-colors cursor-pointer mb-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Tin nhắn thoại"
+            title="Voice message"
           >
             <Mic className="w-4 h-4" />
           </button>
@@ -592,7 +712,7 @@ export function MessageComposer({
               ? "bg-cta text-white hover:opacity-90"
               : "bg-border text-muted cursor-not-allowed"
           )}
-          title="Gửi (Enter)"
+          title="Send (Enter)"
         >
           <Send className="w-4 h-4" />
         </button>
@@ -654,7 +774,7 @@ function StagedFileCard({
           type="button"
           onClick={() => onRemove(sf.id)}
           className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface border border-border/80 flex items-center justify-center text-muted hover:text-error hover:bg-error/10 transition-colors cursor-pointer shadow-sm opacity-0 group-hover:opacity-100"
-          title="Xóa"
+          title="Remove"
         >
           <X className="w-3 h-3" />
         </button>

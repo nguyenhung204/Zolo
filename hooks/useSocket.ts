@@ -478,7 +478,7 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:reaction_updated", ({ messageId, conversationId, reactions }: { messageId: string; conversationId: string; reactions: Record<string, number> }) => {
+    socket.on("message:reaction_updated", ({ messageId, conversationId, reactions }: { messageId: string; conversationId: string; reactions: import("@/lib/api/messages").ReactionMap }) => {
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {

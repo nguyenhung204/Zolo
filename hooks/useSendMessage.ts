@@ -30,6 +30,7 @@ interface SendOptions {
     durationMs?: number;
     thumbMediaId?: string;
     fileSize?: number;
+    filename?: string;
   };
   // Client-only: shown while upload is in progress
   localPreviewUrl?: string;
@@ -41,6 +42,34 @@ export function useSendMessage() {
   const qc = useQueryClient();
   const userId = useAuthStore((s) => s.user?.id ?? "");
   const pendingMap = useRef<Map<string, string>>(new Map()); // clientMessageId → conversationId
+
+  const mergeAttachments = useCallback(
+    (optimistic: AttachmentRef[] | null | undefined, server: AttachmentRef[] | null | undefined) => {
+      if (!server) return optimistic ?? null;
+      return server.map((attachment, index) => {
+        const optimisticMatch = optimistic?.find((item) => item.mediaId === attachment.mediaId)
+          ?? optimistic?.[index];
+        return {
+          ...attachment,
+          filename: attachment.filename ?? optimisticMatch?.filename,
+        };
+      });
+    },
+    []
+  );
+
+  const mergeMetadata = useCallback(
+    (optimistic: Message["metadata"], server: Message["metadata"]) => {
+      if (!server) return optimistic;
+      if (!optimistic) return server;
+      return {
+        ...optimistic,
+        ...server,
+        filename: server.filename ?? optimistic.filename,
+      };
+    },
+    []
+  );
 
   const updateOptimisticMessage = useCallback(
     (
@@ -93,6 +122,8 @@ export function useSendMessage() {
                     ...Object.fromEntries(
                       Object.entries(serverMessage).filter(([, value]) => value !== undefined)
                     ),
+                    attachments: mergeAttachments(m.attachments, serverMessage.attachments),
+                    metadata: mergeMetadata(m.metadata, serverMessage.metadata),
                   }
                 : { ...m };
               return {
@@ -116,7 +147,7 @@ export function useSendMessage() {
         }
       );
     },
-    [qc]
+    [mergeAttachments, mergeMetadata, qc]
   );
 
   const updateUploadProgress = useCallback(
@@ -152,6 +183,9 @@ export function useSendMessage() {
         url?: string;
         waveform?: number[];
         durationMs?: number;
+        thumbMediaId?: string;
+        fileSize?: number;
+        filename?: string;
       };
     },
     maxAttempts = 5
@@ -241,6 +275,11 @@ export function useSendMessage() {
               markFailed(conversationId, clientMessageId);
               return;
             }
+            // Store uploadedId in cache so retryMessage can use it
+            updateOptimisticMessage(conversationId, clientMessageId, (m) => ({
+              ...m,
+              mediaId: uploadedId,
+            }));
             const serverMessage = await retrySend({
               conversationId,
               content: resolvedContent,
@@ -284,8 +323,41 @@ export function useSendMessage() {
 
       return clientMessageId;
     },
-    [markAcked, markFailed, qc, userId]
+    [markAcked, markFailed, updateUploadProgress, updateOptimisticMessage, qc, userId]
   );
 
-  return { send };
+  const retryMessage = useCallback(
+    (conversationId: string, clientMessageId: string) => {
+      const data = qc.getQueryData<MessagesInfiniteData>(queryKeys.messages.list(conversationId));
+      if (!data) return;
+      let failedMsg: Message | null = null;
+      for (const page of data.pages) {
+        const found = page.data.find((m) => m.clientMessageId === clientMessageId);
+        if (found) { failedMsg = found; break; }
+      }
+      if (!failedMsg) return;
+
+      updateOptimisticMessage(conversationId, clientMessageId, (m) => ({
+        ...m,
+        _failed: false,
+        _pending: true,
+      }));
+
+      retrySend({
+        conversationId,
+        content: failedMsg.content ?? "",
+        type: failedMsg.type as MessageType,
+        clientMessageId,
+        replyToMessageId: failedMsg.replyToMessageId ?? undefined,
+        mediaId: failedMsg.mediaId ?? undefined,
+        attachments: failedMsg.attachments ?? undefined,
+        metadata: failedMsg.metadata ?? undefined,
+      })
+        .then((serverMessage) => markAcked(conversationId, clientMessageId, serverMessage))
+        .catch(() => markFailed(conversationId, clientMessageId));
+    },
+    [qc, updateOptimisticMessage, markAcked, markFailed]
+  );
+
+  return { send, retryMessage };
 }

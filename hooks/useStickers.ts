@@ -7,8 +7,8 @@ import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
 import { probeStickers } from "@/lib/utils/stickerProbe";
 
-const PAGE_SIZE = 50;
-const PRELOAD_SIZE = 100;
+const PAGE_SIZE = 20;
+const PRELOAD_SIZE = 20;
 
 const STALE = 60 * 60 * 1000;  // 1 h
 const GC    = 2  * 60 * 60 * 1000; // 2 h
@@ -42,9 +42,8 @@ export function useStickersInfinite(packageId: string | undefined) {
 
 /**
  * Call once at app Shell level.
- * Prefetches up to 100 stickers per package via the worker thread, then
- * immediately probes ALL loaded URLs so the frameCache is warm before the
- * picker opens. Cache-warm cells render with no skeleton flash.
+ * Prefetches the first 20 stickers per package via the worker thread, then
+ * immediately probes loaded URLs so the frameCache is warm before the picker opens.
  */
 export function useStickerPreloader() {
   const qc = useQueryClient();
@@ -58,7 +57,9 @@ export function useStickerPreloader() {
       for (const pkg of packages) {
         const key = [...queryKeys.stickers.list(pkg.id), "infinite"];
 
-        // Prefetch only if we don't have data yet
+        // Prefetch only if we don't have data yet.
+        // Stickers are cached in react-query and in the worker fetcher, so this
+        // only pays the network cost once per package/page in a session.
         const existing = qc.getQueryData(key);
         if (!existing) {
           await qc.prefetchInfiniteQuery({
