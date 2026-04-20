@@ -1,19 +1,21 @@
 "use client";
 
-import { use, useState, useRef, useCallback, useEffect } from "react";
+import { use, useState, useRef, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { ConversationHeader } from "@/components/conversations/ConversationHeader";
 import { VirtualMessageList } from "@/components/messages/VirtualMessageList";
 import { MessageComposer } from "@/components/messages/MessageComposer";
 import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
 import { MemberList } from "@/components/conversations/MemberList";
-import { useConversationMembers } from "@/hooks/useConversations";
+import { useConversationMembers, useConversation } from "@/hooks/useConversations";
 import { useConversationStore } from "@/stores/conversationStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { useMessages } from "@/hooks/useMessages";
 import { useAuthStore } from "@/stores/authStore";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query/keys";
+import { decodeId } from "@/lib/utils/obfuscateId";
 import type { Conversation } from "@/lib/api/conversations";
 import type { Message } from "@/lib/api/messages";
 
@@ -22,11 +24,25 @@ interface Props {
 }
 
 export default function ConversationPage({ params }: Props) {
-  const { id } = use(params);
+  const { id: slug } = use(params);
+  // Decode the opaque URL slug back to the real UUID. All hooks and API calls
+  // use `id` (the real UUID); `slug` only appears in the URL.
+  const id = useMemo(() => decodeId(slug), [slug]);
+  const router = useRouter();
   const setActive = useConversationStore((s) => s.setActiveConversation);
   const { data: members = [] } = useConversationMembers(id);
   const myId = useAuthStore((s) => s.user?.id);
   const qc = useQueryClient();
+
+  // Membership guard: redirect when the user is not a member (403) or the
+  // conversation doesn't exist (404).
+  const { error: convError } = useConversation(id);
+  useEffect(() => {
+    const status = (convError as { status?: number } | null)?.status;
+    if (status === 403 || status === 404) {
+      router.replace("/conversations");
+    }
+  }, [convError, router]);
 
   const [membersOpen, setMembersOpen] = useState(false);
   const [detailsTarget, setDetailsTarget] = useState<Message | null>(null);

@@ -52,6 +52,12 @@ export function useConversation(id: string) {
     queryFn: () => getConversation(id),
     enabled: isAuthenticated && !!id,
     staleTime: 5 * 60 * 1000, // conversation metadata changes rarely; WS events handle real-time updates
+    retry: (failureCount, error) => {
+      // Never retry 403/404 — the user is not a member (or it doesn't exist).
+      const status = (error as { status?: number })?.status;
+      if (status === 403 || status === 404) return false;
+      return failureCount < 2;
+    },
   });
 
   // The detail response resolves avatarUrl via presigned URL while the list

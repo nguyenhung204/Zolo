@@ -68,31 +68,36 @@ export function MemberList({ conversationId, open, onClose }: MemberListProps) {
             ))}
 
           {!isLoading &&
-            members.map((member) => (
-              <div
-                key={member.id}
-                className="flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-border/30 transition"
-              >
-                <UserAvatar
-                  userId={member.userId}
-                  name={(member as { displayName?: string }).displayName ?? member.userId}
-                  avatarUrl={(member as { avatarUrl?: string | null }).avatarUrl ?? undefined}
-                  size="sm"
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-text truncate">
-                    {(member as { displayName?: string }).displayName ?? (member as { username?: string }).username ?? member.userId}
-                  </p>
-                  <p className="text-xs text-muted">
-                    Joined {new Date(member.joinedAt).toLocaleDateString()}
-                  </p>
+            members.map((member) => {
+              const safeName =
+                (member as { displayName?: string }).displayName ??
+                (member as { username?: string }).username ??
+                "Người dùng";
+
+              return (
+                <div
+                  key={member.id}
+                  className="flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-border/30 transition"
+                >
+                  <UserAvatar
+                    userId={member.userId}
+                    name={safeName}
+                    avatarUrl={(member as { avatarUrl?: string | null }).avatarUrl ?? undefined}
+                    size="sm"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text truncate">{safeName}</p>
+                    <p className="text-xs text-muted">
+                      Joined {new Date(member.joinedAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-muted">
+                    {roleIcon[member.role]}
+                    <span>{roleLabel[member.role]}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 text-xs text-muted">
-                  {roleIcon[member.role]}
-                  <span>{roleLabel[member.role]}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
         </div>
       </div>
     </>

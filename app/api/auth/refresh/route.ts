@@ -1,54 +1,89 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-const KEYCLOAK_URL = process.env.KEYCLOAK_URL ?? "http://localhost:8080";
-const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM ?? "nest-realm";
-const CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID ?? "nest-api";
-const CLIENT_SECRET = process.env.KEYCLOAK_CLIENT_SECRET ?? "";
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+const IS_PROD = process.env.NODE_ENV === "production";
+const REFRESH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
 
-export async function POST(req: Request) {
+type BackendTokenResponse = {
+  accessToken?: string;
+  access_token?: string;
+  refreshToken?: string;
+  refresh_token?: string;
+  expiresIn?: number | string;
+  expires_in?: number | string;
+  data?: BackendTokenResponse;
+};
+
+function pick(body: BackendTokenResponse) {
+  const nested = body.data ?? {};
+  return {
+    accessToken: body.accessToken ?? body.access_token ?? nested.accessToken ?? nested.access_token,
+    refreshToken: body.refreshToken ?? body.refresh_token ?? nested.refreshToken ?? nested.refresh_token,
+    expiresIn: Number(body.expiresIn ?? body.expires_in ?? nested.expiresIn ?? nested.expires_in),
+  };
+}
+
+function clearAuthCookies(response: NextResponse) {
+  response.cookies.set("zolo-refresh", "", { path: "/api/auth", maxAge: 0 });
+  response.cookies.set("zolo-auth", "", { path: "/", maxAge: 0 });
+}
+
+export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null);
-    const { refresh_token } = body ?? {};
+    // Read the refresh token exclusively from the HttpOnly cookie — never from the request body.
+    const refreshToken = req.cookies.get("zolo-refresh")?.value;
 
-    if (!refresh_token) {
-      return NextResponse.json({ error: "refresh_token required" }, { status: 400 });
+    if (!refreshToken) {
+      return NextResponse.json({ error: "No session" }, { status: 401 });
     }
-
-    const tokenUrl = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token`;
 
     let res: Response;
     try {
-      res = await fetch(tokenUrl, {
+      res = await fetch(`${API_BASE_URL}/auth/refresh`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: CLIENT_ID,
-          client_secret: CLIENT_SECRET,
-          refresh_token,
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Platform": "web",
+        },
+        body: JSON.stringify({ refreshToken }),
       });
     } catch (networkErr) {
-      console.error("[auth/refresh] Cannot reach Keycloak:", networkErr);
-      return NextResponse.json(
-        { error: `Cannot reach Keycloak at ${KEYCLOAK_URL}` },
-        { status: 502 }
-      );
+      console.error("[auth/refresh] Cannot reach backend:", networkErr);
+      return NextResponse.json({ error: "Authentication service unavailable" }, { status: 502 });
     }
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      const msg = (err as Record<string, string>).error_description ?? "Refresh failed";
-      return NextResponse.json({ error: msg }, { status: 401 });
+      const response = NextResponse.json({ error: "Session expired" }, { status: 401 });
+      clearAuthCookies(response);
+      return response;
     }
 
-    const tokens = await res.json();
+    const raw = await res.json() as BackendTokenResponse;
+    const { accessToken, refreshToken: newRefreshToken, expiresIn } = pick(raw);
 
-    return NextResponse.json({
-      access_token: tokens.access_token as string,
-      refresh_token: tokens.refresh_token as string,
-      expires_in: tokens.expires_in as number,
+    if (!accessToken || !newRefreshToken || !Number.isFinite(expiresIn)) {
+      console.error("[auth/refresh] Unexpected token shape from backend");
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    }
+
+    const response = NextResponse.json({ accessToken, expiresIn });
+
+    response.cookies.set("zolo-refresh", newRefreshToken, {
+      httpOnly: true,
+      secure: IS_PROD,
+      sameSite: "strict",
+      path: "/api/auth",
+      maxAge: REFRESH_COOKIE_MAX_AGE,
     });
+    response.cookies.set("zolo-auth", "1", {
+      httpOnly: true,
+      secure: IS_PROD,
+      sameSite: "lax",
+      path: "/",
+      maxAge: REFRESH_COOKIE_MAX_AGE,
+    });
+
+    return response;
   } catch (err) {
     console.error("[auth/refresh] Unexpected error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

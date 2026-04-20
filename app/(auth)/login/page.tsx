@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { Loader2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { getErrorMessage } from "@/lib/api/errors";
-import { loginWithPassword, saveRefreshToken } from "@/lib/auth/token";
+import { loginWithPassword } from "@/lib/auth/token";
 import { applyTokenSet, scheduleRefresh } from "@/lib/auth/AuthProvider";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -33,7 +33,6 @@ function LoginContent() {
     setLoading(true);
     try {
       const tokens = await loginWithPassword(email, password);
-      saveRefreshToken(tokens.refreshToken);
       applyTokenSet(tokens, setAuth);
       scheduleRefresh(tokens, (fresh) => {
         applyTokenSet(fresh, setAuth);

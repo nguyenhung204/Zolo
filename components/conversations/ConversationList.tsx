@@ -7,6 +7,7 @@ import { CreateConversationModal } from "./CreateConversationModal";
 import { useRouter } from "next/navigation";
 import { MessageSquarePlus, Search } from "lucide-react";
 import { useState } from "react";
+import { encodeId } from "@/lib/utils/obfuscateId";
 
 export function ConversationList() {
   const { data: conversations = [], isLoading } = useConversations();
@@ -74,7 +75,7 @@ export function ConversationList() {
               isActive={conv.id === activeId}
               onClick={() => {
                 setActive(conv.id);
-                router.push(`/conversations/${conv.id}`);
+                router.push(`/conversations/${encodeId(conv.id)}`);
               }}
             />
           ))}

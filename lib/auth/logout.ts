@@ -1,14 +1,14 @@
 import { logout } from "@/lib/api/auth";
-import { clearRefreshToken } from "@/lib/auth/token";
+import { clearRefreshTokenCookie } from "@/lib/auth/token";
 import { disconnectChatSocket, disconnectCallSocket } from "@/lib/socket/socket";
 import { useAuthStore } from "@/stores/authStore";
 
 export function clearClientAuthSession() {
   useAuthStore.getState().clearAuth();
-  clearRefreshToken();
   disconnectChatSocket();
   disconnectCallSocket();
-  document.cookie = "zolo-auth=; path=/; max-age=0";
+  // Clear the HttpOnly refresh cookie via the BFF (best-effort, non-blocking).
+  void clearRefreshTokenCookie();
 }
 
 export async function logoutCompletely() {

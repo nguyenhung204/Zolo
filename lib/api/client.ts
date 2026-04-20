@@ -36,12 +36,9 @@ apiClient.interceptors.response.use(
       try {
         if (!refreshPromise) {
           refreshPromise = (async () => {
-            const { loadRefreshToken, refreshAccessToken, saveRefreshToken } =
-              await import("@/lib/auth/token");
-            const storedRefresh = loadRefreshToken();
-            if (!storedRefresh) throw new Error("no refresh token");
-            const tokens = await refreshAccessToken(storedRefresh);
-            saveRefreshToken(tokens.refreshToken);
+            const { refreshAccessToken } = await import("@/lib/auth/token");
+            // Refresh token is in an HttpOnly cookie — no localStorage involved.
+            const tokens = await refreshAccessToken();
             useAuthStore.getState().setAuth({ token: tokens.accessToken });
             return tokens.accessToken;
           })().finally(() => {

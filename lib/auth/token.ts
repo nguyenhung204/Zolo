@@ -1,10 +1,9 @@
-// Browser-only auth utilities — no Keycloak browser SDK
+// Browser-only auth utilities
 
 import { getErrorMessage } from "@/lib/api/errors";
 
 export interface TokenSet {
   accessToken: string;
-  refreshToken: string;
   expiresAt: number; // ms since epoch
 }
 
@@ -16,16 +15,10 @@ export interface JwtPayload {
   [key: string]: unknown;
 }
 
-type TokenApiResponse = {
-  message?: string;
-  statusCode?: number;
+type BffTokenResponse = {
   accessToken?: string;
-  refreshToken?: string;
   expiresIn?: number | string;
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number | string;
-  data?: TokenApiResponse;
+  error?: string;
 };
 
 // ─── JWT decode (no external dependency) ─────────────────────────────────────
@@ -45,66 +38,42 @@ export function decodeJwt(token: string): JwtPayload {
   return JSON.parse(json) as JwtPayload;
 }
 
-// ─── Refresh token persistence ────────────────────────────────────────────────
-
-const REFRESH_KEY = "zolo-refresh-token";
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
-
 function getDeviceName() {
   if (typeof navigator === "undefined") return "web-client";
   return navigator.userAgent || "web-client";
 }
 
-function parseTokenResponse(raw: unknown): TokenSet {
-  const body = (raw ?? {}) as TokenApiResponse;
-  const nested = (body.data ?? {}) as TokenApiResponse;
+function parseBffResponse(raw: unknown): TokenSet {
+  const body = (raw ?? {}) as BffTokenResponse;
+  const accessToken = body.accessToken;
+  const expiresIn = Number(body.expiresIn);
 
-  const accessToken = body.accessToken ?? body.access_token ?? nested.accessToken ?? nested.access_token;
-  const refreshToken = body.refreshToken ?? body.refresh_token ?? nested.refreshToken ?? nested.refresh_token;
-  const expiresInRaw = body.expiresIn ?? body.expires_in ?? nested.expiresIn ?? nested.expires_in;
-  const expiresIn = typeof expiresInRaw === "number" ? expiresInRaw : Number(expiresInRaw);
-
-  if (!accessToken || !refreshToken || !Number.isFinite(expiresIn)) {
+  if (!accessToken || !Number.isFinite(expiresIn)) {
     throw new Error("Invalid authentication response from server.");
   }
 
   return {
     accessToken,
-    refreshToken,
     expiresAt: Date.now() + (expiresIn - 30) * 1000,
   };
 }
 
-export function saveRefreshToken(token: string) {
-  localStorage.setItem(REFRESH_KEY, token);
-}
-
-export function loadRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_KEY);
-}
-
-export function clearRefreshToken() {
-  localStorage.removeItem(REFRESH_KEY);
-}
-
-// ─── API calls (server-side proxied to keep client_secret off browser) ────────
+// ─── API calls via Next.js BFF — refresh token is kept in an HttpOnly cookie ──
 
 export async function loginWithPassword(
   email: string,
   password: string
 ): Promise<TokenSet> {
-  const res = await fetch(`${API_BASE_URL}/auth/login`, {
+  const res = await fetch("/api/auth/login", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Client-Platform": "web",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       email,
       password,
       platform: "web",
       deviceInfo: { deviceName: getDeviceName() },
     }),
+    credentials: "same-origin",
   });
 
   if (!res.ok) {
@@ -113,17 +82,19 @@ export async function loginWithPassword(
   }
 
   const data = (await res.json()) as unknown;
-  return parseTokenResponse(data);
+  return parseBffResponse(data);
 }
 
-export async function refreshAccessToken(refreshToken: string): Promise<TokenSet> {
-  const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
+/**
+ * Refresh the access token via the BFF.
+ * The refresh token is transmitted automatically as an HttpOnly cookie —
+ * no token is ever passed as an argument or stored in JavaScript.
+ */
+export async function refreshAccessToken(): Promise<TokenSet> {
+  const res = await fetch("/api/auth/refresh", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Client-Platform": "web",
-    },
-    body: JSON.stringify({ refreshToken }),
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
   });
 
   if (!res.ok) {
@@ -132,5 +103,16 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenSet
   }
 
   const data = (await res.json()) as unknown;
-  return parseTokenResponse(data);
+  return parseBffResponse(data);
+}
+
+/**
+ * Clear the HttpOnly refresh-token cookie via the BFF logout endpoint.
+ * After this call no JavaScript-inaccessible credentials remain in the browser.
+ */
+export async function clearRefreshTokenCookie(): Promise<void> {
+  await fetch("/api/auth/logout", {
+    method: "POST",
+    credentials: "same-origin",
+  }).catch(() => {/* non-fatal */});
 }

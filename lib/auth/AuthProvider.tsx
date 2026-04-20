@@ -4,9 +4,6 @@ import { useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuthStore, type AuthUser } from "@/stores/authStore";
 import {
-  loadRefreshToken,
-  saveRefreshToken,
-  clearRefreshToken,
   refreshAccessToken,
   decodeJwt,
   type TokenSet,
@@ -28,12 +25,12 @@ export function scheduleRefresh(tokens: TokenSet, onRefreshed: (t: TokenSet) => 
   const msUntilRefresh = Math.max(0, tokens.expiresAt - Date.now());
   refreshTimer = setTimeout(async () => {
     try {
-      const fresh = await refreshAccessToken(tokens.refreshToken);
-      saveRefreshToken(fresh.refreshToken);
+      const fresh = await refreshAccessToken();
       onRefreshed(fresh);
       scheduleRefresh(fresh, onRefreshed);
     } catch {
-      clearRefreshToken();
+      // Refresh cookie is invalid or expired — clear local state.
+      clearClientAuthSession();
     }
   }, msUntilRefresh);
 }
@@ -49,7 +46,6 @@ export function applyTokenSet(tokens: TokenSet, setAuth: (data: { token: string;
       username: parsed.preferred_username,
     },
   });
-  document.cookie = "zolo-auth=1; path=/; SameSite=Lax";
   connectChatSocket(tokens.accessToken);
   connectCallSocket(tokens.accessToken);
 }
@@ -65,18 +61,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (initialized.current) return;
     initialized.current = true;
 
-    const storedRefresh = loadRefreshToken();
-    if (!storedRefresh) {
-      setInitialized();
-      if (!PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-        router.push("/login");
-      }
-      return;
-    }
-
-    refreshAccessToken(storedRefresh)
+    // Attempt to restore the session via the BFF using the HttpOnly refresh cookie.
+    // The browser sends the cookie automatically — no localStorage involved.
+    refreshAccessToken()
       .then((tokens) => {
-        saveRefreshToken(tokens.refreshToken);
         applyTokenSet(tokens, setAuth);
         scheduleRefresh(tokens, (fresh) => {
           applyTokenSet(fresh, setAuth);
@@ -84,6 +72,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       .catch(() => {
         clearClientAuthSession();
+        if (!PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+          router.push("/login");
+        }
       })
       .finally(() => {
         setInitialized();

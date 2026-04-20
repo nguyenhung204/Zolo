@@ -102,6 +102,13 @@ export function MessageComposer({
   const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Prevents double-send when macOS IME/autocomplete fires multiple keydown events
+  const isSendingRef = useRef(false);
+  // Refs for outside-click dismiss of emoji / sticker popovers
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  const stickerPickerRef = useRef<HTMLDivElement>(null);
+  const stickerTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Tracks ongoing thumbnail upload promises keyed by staged-file id.
   const thumbUploadPromises = useRef<Map<string, Promise<string | null>>>(new Map());
@@ -125,6 +132,36 @@ export function MessageComposer({
       setTimeout(() => textareaRef.current?.focus(), 0);
     }
   }, [editingMessage]);
+
+  // Outside-click dismiss for emoji picker
+  useEffect(() => {
+    if (!showEmojiPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        !emojiPickerRef.current?.contains(e.target as Node) &&
+        !emojiTriggerRef.current?.contains(e.target as Node)
+      ) {
+        setShowEmojiPicker(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showEmojiPicker]);
+
+  // Outside-click dismiss for sticker picker
+  useEffect(() => {
+    if (!showStickers) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        !stickerPickerRef.current?.contains(e.target as Node) &&
+        !stickerTriggerRef.current?.contains(e.target as Node)
+      ) {
+        setShowStickers(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showStickers]);
 
   const canSend =
     (text.trim().length > 0 || stagedFiles.length > 0) && !disabled;
@@ -327,13 +364,14 @@ export function MessageComposer({
 
   // ─── Send ─────────────────────────────────────────────────────────────────
   const handleSend = async () => {
-    if (!canSend) return;
+    if (!canSend || isSendingRef.current) return;
+    isSendingRef.current = true;
     setShowEmojiPicker(false);
     setShowStickers(false);
 
     // Edit mode: text only
     if (editingMessage) {
-      if (!text.trim()) return;
+      if (!text.trim()) { isSendingRef.current = false; return; }
       try {
         await editMessage(editingMessage.messageId, text.trim());
         const qc = getQueryClient();
@@ -363,6 +401,7 @@ export function MessageComposer({
       stopTyping();
       setEditingMessage(null);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
+      isSendingRef.current = false;
       return;
     }
 
@@ -377,6 +416,7 @@ export function MessageComposer({
       stopTyping();
       setReplyTo(null);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
+      isSendingRef.current = false;
 
       if (queuedFiles.length === 1) {
         const stagedFile = queuedFiles[0];
@@ -466,7 +506,13 @@ export function MessageComposer({
     }
 
     // Text only — split into MAX_CONTENT_LENGTH chunks if needed
-    const chunks = splitContent(text.trim());
+    const trimmed = text.trim();
+    setText("");
+    stopTyping();
+    setReplyTo(null);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    isSendingRef.current = false;
+    const chunks = splitContent(trimmed);
     chunks.forEach((chunk, i) => {
       send({
         conversationId,
@@ -475,10 +521,7 @@ export function MessageComposer({
         replyToMessageId: i === 0 ? replyTo?.messageId : undefined,
       });
     });
-    setText("");
-    stopTyping();
-    setReplyTo(null);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    return;
   };
 
   const handleSendSticker = (sticker: Sticker) => {
@@ -489,8 +532,11 @@ export function MessageComposer({
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
+      // keyCode 229 is the legacy indicator for IME composition on some browsers.
+      // e.nativeEvent.isComposing covers macOS autocomplete / CJK input methods.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -546,7 +592,7 @@ export function MessageComposer({
 
       {/* Emoji picker popover */}
       {showEmojiPicker && (
-        <div className="absolute bottom-[72px] left-4 z-50">
+        <div ref={emojiPickerRef} className="absolute bottom-[72px] left-4 z-50">
           <EmojiPicker
             onEmojiClick={handleEmojiInsert}
             lazyLoadEmojis={true}
@@ -559,7 +605,7 @@ export function MessageComposer({
 
       {/* Sticker picker popover */}
       {showStickers && (
-        <div className="absolute bottom-[72px] left-16 z-50">
+        <div ref={stickerPickerRef} className="absolute bottom-[72px] left-16 z-50">
           <StickerPicker onSelect={handleSendSticker} />
         </div>
       )}
@@ -639,6 +685,7 @@ export function MessageComposer({
 
         {/* Emoji */}
         <button
+          ref={emojiTriggerRef}
           type="button"
           disabled={disabled}
           onClick={() => {
@@ -658,6 +705,7 @@ export function MessageComposer({
 
         {/* Sticker */}
         <button
+          ref={stickerTriggerRef}
           type="button"
           disabled={disabled}
           onClick={() => {

@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/query/keys";
 import { playNotificationSound } from "@/lib/utils/notificationSound";
 import type { Conversation } from "@/lib/api/conversations";
 import type { WsMessage } from "@/lib/socket/events";
+import { encodeId } from "@/lib/utils/obfuscateId";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
@@ -178,7 +179,7 @@ export function useMessageNotifications() {
 
       const navigate = () => {
         setActive(conversationId);
-        router.push(`/conversations/${conversationId}`);
+        router.push(`/conversations/${encodeId(conversationId)}`);
         const tId = activeToastId.current.get(conversationId);
         if (tId !== undefined) toast.dismiss(tId);
         activeToastId.current.delete(conversationId);

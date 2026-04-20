@@ -57,7 +57,7 @@ function formatDateVN(iso: string | undefined | null): string {
 }
 
 function resolveName(member: MemberLike | undefined): string {
-  return member?.displayName ?? member?.username ?? "Không rõ";
+  return member?.displayName ?? member?.username ?? "Người dùng";
 }
 
 function Field({ icon, label, value }: { icon: ReactNode; label: string; value: ReactNode }) {
@@ -153,7 +153,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
                               </div>
                             )}
                           </div>
-                          <span className="text-sm text-text">{m.displayName ?? m.username ?? m.userId.slice(0, 8)}</span>
+                          <span className="text-sm text-text">{resolveName(m)}</span>
                         </div>
                       ))}
                     </div>
@@ -177,7 +177,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
                               </div>
                             )}
                           </div>
-                          <span className="text-sm text-text">{m.displayName ?? m.username ?? m.userId.slice(0, 8)}</span>
+                          <span className="text-sm text-text">{resolveName(m)}</span>
                         </div>
                       ))}
                     </div>

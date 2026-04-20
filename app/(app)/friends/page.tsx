@@ -38,6 +38,7 @@ import { usePresenceStore } from "@/stores/presenceStore";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 import type { Friendship, FriendshipStatus, UserSearchResult } from "@/lib/api/friends";
+import { encodeId } from "@/lib/utils/obfuscateId";
 
 type Tab = "friends" | "requests" | "search";
 
@@ -200,7 +201,7 @@ function FriendRow({
 
   function handleMessage() {
     if (dmConversation) {
-      router.push(`/conversations/${dmConversation.id}`);
+      router.push(`/conversations/${encodeId(dmConversation.id)}`);
     }
   }
 
@@ -215,11 +216,13 @@ function FriendRow({
 
   const actionDisabled = pendingAction !== null;
 
+  const safeName = displayName ?? user?.username ?? "Người dùng";
+
   return (
     <li className="group flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/30 transition-colors duration-150">
       <UserAvatar
         userId={friendship.friendId}
-        name={displayName ?? friendship.friendId}
+        name={safeName}
         avatarUrl={user?.avatarUrl}
         size="md"
         showPresence
@@ -228,7 +231,7 @@ function FriendRow({
         {isLoading && !displayName ? (
           <div className="h-3.5 bg-border animate-pulse rounded w-28 mb-1.5" />
         ) : (
-          <p className="text-sm font-semibold text-text truncate">{displayName ?? friendship.friendId}</p>
+          <p className="text-sm font-semibold text-text truncate">{safeName}</p>
         )}
         <p className={cn("text-xs font-medium", status === "online" ? "text-online" : "text-muted")}>
           {status === "online"
@@ -381,11 +384,13 @@ function RequestRow({ userId, direction }: { userId: string; direction: "incomin
     }
   }
 
+  const safeName = displayName ?? user?.username ?? "Người dùng";
+
   return (
     <li className="flex items-center gap-3 px-3 py-3 rounded-xl border border-border/60 bg-surface hover:border-border transition-colors duration-150">
       <UserAvatar
         userId={userId}
-        name={displayName ?? userId}
+        name={safeName}
         avatarUrl={user?.avatarUrl}
         size="md"
         showPresence={false}
@@ -398,7 +403,7 @@ function RequestRow({ userId, direction }: { userId: string; direction: "incomin
           </>
         ) : (
           <>
-            <p className="text-sm font-semibold text-text truncate">{displayName ?? userId}</p>
+            <p className="text-sm font-semibold text-text truncate">{safeName}</p>
             {user?.username && (
               <p className="text-xs text-muted truncate">@{user.username}</p>
             )}

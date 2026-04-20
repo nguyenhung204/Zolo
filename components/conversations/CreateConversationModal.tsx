@@ -18,6 +18,7 @@ import { useUserSearch } from "@/hooks/useFriends";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
 import { deleteMedia } from "@/lib/api/media";
 import type { UserSearchResult } from "@/lib/api/friends";
+import { encodeId } from "@/lib/utils/obfuscateId";
 import type { ConversationKind } from "@/lib/api/conversations";
 
 // ─── Tab configuration ────────────────────────────────────────────────────────
@@ -154,7 +155,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
       // Clear avatar state so handleClose won't delete the now-saved media
       avatarUpload.reset();
       handleClose();
-      router.push(`/conversations/${conv.id}`);
+      router.push(`/conversations/${encodeId(conv.id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create conversation");
     }
