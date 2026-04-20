@@ -176,7 +176,7 @@ function normalizeRawMessage(m: RawMessage): Message {
     deletedAt: m.deletedAt ?? (m.isDeleted ? m.createdAt : undefined),
     isRevoked: m.isRevoked ?? false,
     editedAt: m.editedAt ?? (m.isEdited ? (m.updatedAt ?? m.createdAt) : undefined),
-    // API uses replyToId; WS uses replyToMessageId — normalise to replyToMessageId
+    // Both API and WS use replyToMessageId; keep replyToId as fallback for legacy data
     replyToMessageId: m.replyToMessageId ?? m.replyToId,
     attachments,
   };
@@ -222,8 +222,7 @@ export async function sendMessage(payload: SendMessagePayload): Promise<Message 
   const { replyToMessageId, mediaId, content, type, ...rest } = payload;
   // Build a clean body — omit undefined/empty fields
   const body: Record<string, unknown> = { ...rest, type };
-  // API field name is replyToId
-  if (replyToMessageId) body.replyToId = replyToMessageId;
+  if (replyToMessageId) body.replyToMessageId = replyToMessageId;
   // Audio and sticker messages are allowed to send an empty string; other message types omit empty content.
   if (content !== undefined && (content.length > 0 || type === "audio" || type === "sticker")) {
     body.content = content;
