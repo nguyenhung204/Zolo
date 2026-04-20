@@ -1,15 +1,18 @@
 "use client";
 
 import { UserAvatar } from "@/components/presence/UserAvatar";
-import { useCall } from "@/hooks/useCall";
 import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
+import { startInstantCall } from "@/lib/api/calls";
+import { useCallStore } from "@/stores/callStore";
+import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { Hash, Megaphone, MoreHorizontal, Phone, Search, Users } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
+import { getCallSocket } from "@/lib/socket/socket";
 
 const kindLabel: Record<ConversationKind, string> = {
   direct: "Direct",
@@ -30,8 +33,9 @@ interface ConversationHeaderProps {
 
 export function ConversationHeader({ conversationId, onMembersClick }: ConversationHeaderProps) {
   const { data: conv } = useConversation(conversationId);
-  const router = useRouter();
-  const { startMeeting } = useCall();
+  const { setOutgoingCall } = useCallStore();
+  const { setUserProfile } = usePresenceStore();
+  const isBusyRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const currentUserId = useAuthStore((s) => s.user?.id ?? "");
 
@@ -67,12 +71,45 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
       : conv.name ?? "Unnamed";
 
   const handleStartCall = async () => {
-    if (!conv) return;
+    if (!conv || isBusyRef.current) return;
+    isBusyRef.current = true;
     try {
-      const meeting = await startMeeting(conversationId, "", false);
-      router.push(`/calls/${meeting.meetingId}`);
-    } catch {
-      // TODO: toast error
+      const otherMemberIds = (conv.participants ?? [])
+        .map((p) => p.userId)
+        .filter((id) => id !== currentUserId);
+      const callDto = await startInstantCall({
+        conversationId,
+        calleeIds: otherMemberIds,
+      });
+      setOutgoingCall(callDto);
+      // Sync participant profiles so GlobalCallOverlay can show names/avatars immediately
+      (conv.participants ?? []).forEach((p) => {
+        if (p.userId !== currentUserId) {
+          setUserProfile(p.userId, {
+            displayName: p.displayName ?? p.username ?? null,
+            avatarMediaId: null,
+            avatarUrl: p.avatarUrl ?? null,
+          });
+        }
+      });
+      // Join the call WS room so we receive call:accepted / call:declined
+      getCallSocket().emit("call:join_room", { callId: callDto.id });
+    } catch (err: unknown) {
+      const code =
+        typeof err === "object" &&
+        err !== null &&
+        "response" in err
+          ? (err as { response?: { data?: { code?: string } } }).response?.data?.code
+          : undefined;
+      if (code === "CALL_CALLEE_BUSY") {
+        toast.error("The other person is already in a call.");
+      } else if (code === "CALL_CALLER_BUSY") {
+        toast.error("You are already in a call.");
+      } else {
+        toast.error("Could not start call.");
+      }
+    } finally {
+      isBusyRef.current = false;
     }
   };
 

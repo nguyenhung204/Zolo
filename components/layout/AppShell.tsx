@@ -5,12 +5,11 @@ import { ConversationList } from "@/components/conversations/ConversationList";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { useSocket } from "@/hooks/useSocket";
-import { useCallSocket } from "@/hooks/useCallSocket";
+import { useCallWebSocketListeners } from "@/hooks/useCallWebSocketListeners";
 import { useMyProfile } from "@/hooks/useUser";
-import { useCallStore } from "@/stores/callStore";
 import { useAuthStore } from "@/stores/authStore";
 import { connectChatSocket, getChatSocket } from "@/lib/socket/socket";
-import { CallBar } from "@/components/calls/CallBar";
+import { GlobalCallOverlay } from "@/components/calls/GlobalCallOverlay";
 import { useStickerPreloader } from "@/hooks/useStickers";
 import { hasActiveUploads } from "@/hooks/useSendMessage";
 import { useMessageNotifications } from "@/hooks/useMessageNotifications";
@@ -26,7 +25,6 @@ const ACTIVE_TAB_KEY = "zolo-active-tab-id";
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const activeMeetingId = useCallStore((s) => s.activeMeetingId);
   const token = useAuthStore((s) => s.token);
   const isSessionRevoked = useAuthStore((s) => s.isSessionRevoked);
   const revocationReason = useAuthStore((s) => s.revocationReason);
@@ -76,7 +74,7 @@ export function AppShell({ children }: AppShellProps) {
 
   // Initialise socket event listeners
   useSocket();
-  useCallSocket();
+  useCallWebSocketListeners();
   // Fetch profile once on mount and keep authStore (avatar, name) in sync
   useMyProfile();
   // In-app + browser notifications for background messages
@@ -189,10 +187,12 @@ export function AppShell({ children }: AppShellProps) {
 
         {/* Right: main content area */}
         <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {activeMeetingId && <CallBar />}
           {children}
         </main>
       </div>
+
+      {/* Global call overlay — renders above everything when a call is ringing or active */}
+      <GlobalCallOverlay />
 
       {isSessionRevoked ? (
         <div className="fixed inset-0 z-110 flex items-center justify-center bg-black/55 px-4 pointer-events-auto">
