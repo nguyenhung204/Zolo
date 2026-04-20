@@ -25,7 +25,7 @@ export function MessageContextMenu({
   const now = Date.now();
   const ageMs = now - new Date(message.createdAt).getTime();
   const canEdit = isMine && message.type === "text" && ageMs < 1 * 60 * 60 * 1000;
-  const canRevoke = isMine && ageMs < 24 * 60 * 60 * 1000;
+  const canRevoke = isMine && ageMs < 1 * 60 * 60 * 1000;
   const canDelete = isMine;
 
   return (

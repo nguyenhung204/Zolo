@@ -512,8 +512,8 @@ export function MessageComposer({
       {replyTo && (
         <ReplyPreview
           content={replyTo.content}
-          senderName={replyTo.senderName ?? replyTo.senderId}
           type={replyTo.type}
+          metadata={replyTo.metadata}
           onClose={() => setReplyTo(null)}
         />
       )}

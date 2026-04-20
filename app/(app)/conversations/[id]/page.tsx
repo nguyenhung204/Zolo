@@ -5,7 +5,6 @@ import { ConversationHeader } from "@/components/conversations/ConversationHeade
 import { VirtualMessageList } from "@/components/messages/VirtualMessageList";
 import { MessageComposer } from "@/components/messages/MessageComposer";
 import { TypingIndicator } from "@/components/messages/TypingIndicator";
-import { ScrollToBottomFab } from "@/components/messages/ScrollToBottomFab";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
 import { MemberList } from "@/components/conversations/MemberList";
 import { useConversationMembers } from "@/hooks/useConversations";
@@ -30,7 +29,6 @@ export default function ConversationPage({ params }: Props) {
   const qc = useQueryClient();
 
   const [membersOpen, setMembersOpen] = useState(false);
-  const [atBottom, setAtBottom] = useState(true);
   const [detailsTarget, setDetailsTarget] = useState<Message | null>(null);
 
   // Join the WS room when this conversation is opened
@@ -92,13 +90,8 @@ export default function ConversationPage({ params }: Props) {
       m.userId,
       (m as typeof m & { displayName?: string; username?: string }).displayName ??
       (m as typeof m & { username?: string }).username ??
-      m.userId.slice(0, 8),
+      "",
     ])
-  );
-
-  const handleScrollChange = useCallback(
-    (bottom: boolean) => setAtBottom(bottom),
-    []
   );
 
   return (
@@ -117,17 +110,11 @@ export default function ConversationPage({ params }: Props) {
         <VirtualMessageList
           conversationId={id}
           members={members}
-          onScrollChange={handleScrollChange}
           onViewDetails={setDetailsTarget}
           detailsTarget={detailsTarget}
           onCloseDetails={() => setDetailsTarget(null)}
         />
         <TypingIndicator conversationId={id} memberNames={memberNames} />
-        <ScrollToBottomFab
-          show={!atBottom}
-          unreadCount={0}
-          onClick={() => {}}
-        />
       </div>
 
       <MessageComposer conversationId={id} />

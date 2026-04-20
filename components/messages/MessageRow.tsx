@@ -15,11 +15,13 @@ import type { ReactionMap } from "@/lib/api/messages";
 import { toast } from "sonner";
 import { MessageContextMenu } from "./MessageContextMenu";
 import { MessageReactions } from "./MessageReactions";
+import { replyLabel } from "./ReplyPreview";
 import { MediaImage } from "./media/MediaImage";
 import { MediaVideo } from "./media/MediaVideo";
 import { VoiceMessage } from "./media/VoiceMessage";
 import { MediaFile, AttachmentGrid } from "./media/MediaFile";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { CallSummaryBubble } from "./CallSummaryBubble";
 
 interface OtherMember {
   userId: string;
@@ -38,7 +40,6 @@ interface MessageRowProps {
   replyMsg?: Message | null;
   senderName?: string;
   senderAvatarUrl?: string;
-  replySenderName?: string;
   otherMembers?: OtherMember[];
   onReply?: (msg: Message) => void;
   onEdit?: (msg: Message) => void;
@@ -53,13 +54,14 @@ interface MessageRowProps {
 export function MessageRow({
   message, isMine, isGroupStart, isGroupEnd,
   replyMsg,
-  senderName = "", senderAvatarUrl, replySenderName,
+  senderName = "", senderAvatarUrl,
   otherMembers = [],
   onReply, onEdit, onDelete, onRevoke, onForward, onPin, onViewDetails, onRetry,
 }: MessageRowProps) {
   const isDeleted = !!message.deletedAt;
   const isRevoked = !!message.isRevoked;
   const isSystem = message.type === "system";
+  const isCallSummary = message.type === "call_summary";
   const isSticker = message.type === "sticker";
   const isEdited = !!message.editedAt;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -130,6 +132,24 @@ export function MessageRow({
     );
   }
 
+  if (isCallSummary) {
+    const otherMemberIds = otherMembers.map((m) => m.userId);
+    return (
+      <div className={cn("flex px-3 mb-3", isMine ? "justify-end" : "justify-start")}>
+        <div className={cn("flex flex-col", isMine ? "items-end" : "items-start")}>
+          <CallSummaryBubble
+            message={message}
+            isMine={isMine}
+            otherMemberIds={otherMemberIds}
+          />
+          <span className="text-[10px] text-muted mt-1 select-none tabular-nums px-1">
+            {formatTime(message.createdAt)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   const bubbleShape = cn(
     "rounded-[18px]",
     !isGroupStart && !isGroupEnd && (isMine ? "rounded-tr-[4px] rounded-br-[4px]" : "rounded-tl-[4px] rounded-bl-[4px]"),
@@ -178,20 +198,30 @@ export function MessageRow({
                   ? "bg-cta text-white px-3.5 py-2.5"
                   : "bg-surface border border-border/60 text-text px-3.5 py-2.5 shadow-sm"
             )}>
-              {replyMsg && (
-                <div className={cn("flex items-start gap-2 rounded-xl px-2.5 py-1.5 mb-2 text-xs border-l-[3px] cursor-pointer",
-                  isMine ? "bg-white/15 border-white/50 hover:bg-white/20" : "bg-border/30 border-cta hover:bg-border/50")}>
-                  <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
-                  <div className="min-w-0">
-                    <p className={cn("font-semibold truncate text-[11px] leading-tight mb-0.5", isMine ? "text-white/80" : "text-cta")}>
-                      {replySenderName ?? (replyMsg.senderId === myId ? "Bạn" : senderName)}
-                    </p>
-                    <p className={cn("truncate text-[11px] leading-tight", isMine ? "text-white/60" : "text-muted")}>
-                      {replyMsg.isRevoked ? "Tin nhắn đã thu hồi" : (replyMsg.content || "[" + replyMsg.type + "]")}
+              {replyMsg && (() => {
+                if (replyMsg.isRevoked) {
+                  return (
+                    <div className={cn("flex items-start gap-2 rounded-xl px-2.5 py-1.5 mb-2 text-xs border-l-[3px]",
+                      isMine ? "bg-white/15 border-white/50" : "bg-border/30 border-cta")}>
+                      <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
+                      <p className={cn("truncate text-[11px] leading-tight", isMine ? "text-white/60" : "text-muted")}>
+                        Tin nhắn đã thu hồi
+                      </p>
+                    </div>
+                  );
+                }
+                const { icon, label } = replyLabel(replyMsg.type, replyMsg.content, replyMsg.metadata);
+                return (
+                  <div className={cn("flex items-start gap-2 rounded-xl px-2.5 py-1.5 mb-2 text-xs border-l-[3px] cursor-pointer",
+                    isMine ? "bg-white/15 border-white/50 hover:bg-white/20" : "bg-border/30 border-cta hover:bg-border/50")}>
+                    <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
+                    <p className={cn("truncate text-[11px] leading-tight flex items-center gap-1", isMine ? "text-white/60" : "text-muted")}>
+                      {icon}
+                      {label}
                     </p>
                   </div>
-                </div>
-              )}
+                );
+              })()}
               <MessageContent message={message} isMine={isMine} />
               {isEdited && (
                 <span className={cn("block text-[10px] mt-1 italic select-none", isMine ? "text-white/50" : "text-muted")}>Đã chỉnh sửa</span>

@@ -19,6 +19,7 @@ import type { Message } from "@/lib/api/messages";
 import { deleteMessageForMe, revokeMessage, pinMessage } from "@/lib/api/messages";
 import { ForwardModal } from "./ForwardModal";
 import { MessageDetailsModal } from "./MessageDetailsModal";
+import { ScrollToBottomFab } from "./ScrollToBottomFab";
 import type { ConversationMember } from "@/lib/api/conversations";
 import type { ReplyTarget, EditTarget } from "@/stores/conversationStore";
 import { formatDateDivider } from "@/lib/utils/date";
@@ -126,15 +127,23 @@ function MessageRowComponent({
   // item.kind === "message"
   const { msg, prev, next } = item;
   const isMine = msg.senderId === userId;
-  const samePrev = prev?.senderId === msg.senderId && prev?.type !== "system";
-  const sameNext = next?.senderId === msg.senderId && next?.type !== "system";
+  const GROUP_GAP_MS = 5 * 60 * 1000; // 5-minute gap breaks a group
+  const samePrev =
+    prev?.senderId === msg.senderId &&
+    prev?.type !== "system" &&
+    prev?.type !== "call_summary" &&
+    msg.type !== "call_summary" &&
+    new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() < GROUP_GAP_MS;
+  const sameNext =
+    next?.senderId === msg.senderId &&
+    next?.type !== "system" &&
+    next?.type !== "call_summary" &&
+    msg.type !== "call_summary" &&
+    new Date(next.createdAt).getTime() - new Date(msg.createdAt).getTime() < GROUP_GAP_MS;
   const member = memberMap.get(msg.senderId);
-  // Prefer a human-readable name: displayName > username > short userId
-  const senderName = member?.displayName ?? member?.username ?? msg.senderId.slice(0, 8);
+  // Prefer a human-readable name: displayName > username — never show raw IDs
+  const senderName = member?.displayName ?? member?.username ?? "";
   const replyMsg = msg.replyToMessageId ? messageById.get(msg.replyToMessageId) ?? null : null;
-  const replySenderName = replyMsg
-    ? (memberMap.get(replyMsg.senderId)?.displayName ?? memberMap.get(replyMsg.senderId)?.username ?? (replyMsg.senderId === userId ? "Bạn" : replyMsg.senderId.slice(0, 8)))
-    : undefined;
 
   return (
     <div style={style} ref={(el) => { if (el) observeRowElements([el]); }}>
@@ -146,9 +155,8 @@ function MessageRowComponent({
         replyMsg={replyMsg}
         senderName={senderName}
         senderAvatarUrl={member?.avatarUrl ?? undefined}
-        replySenderName={replySenderName}
         otherMembers={otherMembers}
-        onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, senderName, content: m.content, type: m.type })}
+        onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, senderName, content: m.content, type: m.type, metadata: m.metadata })}
         onEdit={onEdit}
         onDelete={onDelete}
         onRevoke={onRevoke}
@@ -276,6 +284,7 @@ export function VirtualMessageList({
   const rowHeight = useDynamicRowHeight({ defaultRowHeight: 56, key: conversationId });
 
   const atBottomRef = useRef(true);
+  const [showFab, setShowFab] = useState(false);
   const prevCountRef = useRef(0);
   // Snapshot before history fetch for scroll restoration
   const scrollSnapRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
@@ -320,6 +329,7 @@ export function VirtualMessageList({
     prevCountRef.current = 0;
     scrollSnapRef.current = null;
     atBottomRef.current = true;
+    setShowFab(false);
     initialScrollDoneRef.current = false;
     setLastVisibleOffset(null);
   }, [conversationId]);
@@ -390,6 +400,7 @@ export function VirtualMessageList({
 
       // Keep atBottom ref accurate for new-message auto-scroll
       atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
+      setShowFab(!atBottomRef.current);
       onScrollChange?.(atBottomRef.current, 0);
 
       // Trigger history load when scrolling backward near the top
@@ -427,6 +438,10 @@ export function VirtualMessageList({
     },
     [items, userId]
   );
+
+  const scrollToBottom = useCallback(() => {
+    listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+  }, []);
 
   if (isLoading) {
     return (
@@ -467,6 +482,11 @@ export function VirtualMessageList({
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
         overscanCount={8}
+      />
+      <ScrollToBottomFab
+        show={showFab}
+        unreadCount={0}
+        onClick={scrollToBottom}
       />
       {forwardTarget && (
         <ForwardModal message={forwardTarget} onClose={() => setForwardTarget(null)} />

@@ -1,24 +1,47 @@
 "use client";
 
-import { X, CornerUpLeft, FileText, Image } from "lucide-react";
+import { X, CornerUpLeft, FileText, Image, Video, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+interface ReplyMeta {
+  filename?: string;
+  durationMs?: number;
+  [key: string]: unknown;
+}
 
 interface ReplyPreviewProps {
   content: string;
-  senderName: string;
   type: string;
+  metadata?: ReplyMeta;
   onClose: () => void;
   /** Compact mode used inside message bubbles (no close button) */
   compact?: boolean;
 }
 
-const typeIcon: Record<string, React.ReactNode> = {
-  IMAGE: <Image className="w-3.5 h-3.5" />,
-  FILE:  <FileText className="w-3.5 h-3.5" />,
-  TEXT:  null,
-};
+/** Returns the display label and icon for a reply snippet. */
+export function replyLabel(
+  type: string,
+  content: string,
+  metadata?: ReplyMeta
+): { icon: React.ReactNode; label: string } {
+  const t = type.toLowerCase();
+  if (t === "audio" || t === "voice") {
+    return { icon: <Mic className="w-3.5 h-3.5 shrink-0" />, label: "Voice" };
+  }
+  if (t === "image") {
+    return { icon: <Image className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "Ảnh" };
+  }
+  if (t === "video") {
+    return { icon: <Video className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "Video" };
+  }
+  if (t === "file") {
+    return { icon: <FileText className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "File" };
+  }
+  return { icon: null, label: content };
+}
 
-export function ReplyPreview({ content, senderName, type, onClose, compact }: ReplyPreviewProps) {
+export function ReplyPreview({ content, type, metadata, onClose, compact }: ReplyPreviewProps) {
+  const { icon, label } = replyLabel(type, content, metadata);
   return (
     <div
       className={cn(
@@ -28,10 +51,9 @@ export function ReplyPreview({ content, senderName, type, onClose, compact }: Re
     >
       <CornerUpLeft className="w-3.5 h-3.5 text-cta shrink-0 mt-0.5" />
       <div className="flex-1 min-w-0">
-        <p className="font-semibold text-cta truncate">{senderName}</p>
-        <p className="text-muted truncate flex items-center gap-1 mt-0.5">
-          {typeIcon[type] ?? null}
-          {type !== "text" ? type : content}
+        <p className="text-muted truncate flex items-center gap-1">
+          {icon}
+          {label}
         </p>
       </div>
       {!compact && (
