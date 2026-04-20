@@ -53,13 +53,12 @@ role                  VARCHAR(20) CHECK IN ('owner','admin','moderator','member'
 joinedAt              TIMESTAMP
 lastSeenOffset        BIGINT DEFAULT 0
 lastDeliveredOffset   BIGINT DEFAULT 0
+deleted_until         BIGINT DEFAULT 0    -- bulk-delete cursor: messages with offset <= deleted_until hidden for this member (O(1) clear-history)
 
 PRIMARY KEY (conversationId, userId)  -- composite; no separate UUID id column
 UNIQUE implicitly from composite PK
 INDEX(userId)
 INDEX(conversationId, role)
-INDEX(conversationId, lastSeenOffset)
-INDEX(conversationId, lastDeliveredOffset)
 ```
 
 ### outbox_events entity (shared, in chat_db)

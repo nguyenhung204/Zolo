@@ -12,11 +12,11 @@ This event-driven architecture supports several critical system capabilities inc
 
 The root module that establishes Kafka client connections and registers producers and consumers within the NestJS dependency injection container. It supports configuration through environment variables or programmatic initialization, handling connection lifecycle including graceful shutdown when services terminate. The module automatically discovers and registers consumer classes decorated with Kafka-specific decorators during application bootstrap.
 
-**KafkaClient**
+**KafkaService**
 
-A low-level client wrapper providing direct access to Kafka administrative operations such as topic creation, partition management, and cluster metadata retrieval. Most services do not interact directly with KafkaClient, instead using higher-level producer and consumer abstractions. However, initialization scripts and operational tooling use this client for administrative tasks.
+The low-level Kafka client wrapper exposing administrative operations (topic creation, partition management, cluster metadata) via `getAdmin()` and `getKafka()`. Accepts `IKafkaConfig` (brokers, clientId, retry, connectionTimeout, requestTimeout, logLevel). Most services interact through the higher-level producer abstraction rather than `KafkaService` directly. `createTopics()` defaults to `numPartitions=12, replicationFactor=3`.
 
-**KafkaProducer**
+**KafkaProducerService**
 
 The primary interface for publishing events to Kafka topics. The producer provides a publish method accepting a topic name and event payload, handling serialization, partition assignment, and delivery confirmation automatically. Key capabilities include:
 
@@ -30,27 +30,21 @@ Delivery confirmation: The producer waits for broker acknowledgment before consi
 
 The producer is injected as a singleton service, maintaining a persistent connection to Kafka brokers and reusing it across all event publications within a service instance.
 
-**AbstractKafkaConsumer**
+**@KafkaHandler Decorator + KafkaConsumerRegistryService**
 
-An abstract base class that services extend to implement event consumers. The class provides infrastructure for consuming events from one or more topics with the following capabilities:
+The consumer pattern in this library uses a decorator-based auto-discovery model rather than an abstract base class:
 
-Message deserialization: Incoming messages are automatically deserialized from JSON to typed event objects based on TypeScript interfaces.
+- `@KafkaHandler({ topic, groupId, fromBeginning? })` — method decorator that marks any service method as a Kafka consumer. The decorator stores `topic`, `groupId`, and `fromBeginning` metadata on the method.
 
-Error handling: Exceptions thrown during message processing are caught and logged, with configurable behavior for whether to commit offsets for failed messages or retry processing.
+`KafkaConsumerRegistryService` is an internal `OnModuleInit` service that:
+1. Scans all NestJS providers via `DiscoveryService` and `MetadataScanner` to find `@KafkaHandler`-decorated methods.
+2. Groups handlers by `groupId`, then creates **one KafkaJS consumer per group** (all topics for that group in a single subscription call).
+3. Runs each consumer with `partitionsConsumedConcurrently: 12` for high throughput across the 12-partition message topics.
+4. On handler failure: applies **1 inline retry**, then routes the message payload to the DLQ topic via `KafkaProducerService`.
+5. **Consumer session tuning**: `sessionTimeout: 60000`, `heartbeatInterval: 6000`, `rebalanceTimeout: 60000` — gives Node.js headroom under DB back-pressure before the broker triggers a rebalance.
+6. `onModuleDestroy()` disconnects all consumers gracefully.
 
-Dead letter queue support: Messages that fail processing after exhausting retry attempts are automatically routed to dead letter topics for manual investigation or later reprocessing.
-
-Graceful shutdown: Consumers properly disconnect from consumer groups during service shutdown, allowing remaining instances to rebalance partitions.
-
-Services implementing consumers override the onMessage method to define business logic for processing each event type. The abstract consumer handles all Kafka protocol concerns, allowing service logic to focus on event interpretation and state updates.
-
-**KafkaConsumerRegistryService**
-
-The internal registry that manages Kafka consumer lifecycle for all `@KafkaHandler`-decorated methods. Key behaviors:
-
-- **Auto-restart on crash**: If `consumer.run()` throws (e.g., broker disconnect, network drop), the registry logs the error and automatically restarts the consumer after a 5-second delay. The consumer is only restarted while it is still tracked (tracked = not destroyed by `onModuleDestroy`).
-- **Retryable error detection**: Expanded set of retryable errors during initial subscription: `LEADER_NOT_AVAILABLE`, `UNKNOWN_TOPIC_OR_PARTITION`, `ECONNREFUSED`, `Connection timeout`, `KafkaJSNonRetriableError`, and `topic-partition` messages. Retries with linear backoff (2s, 4s, 6s, 8s, 10s) up to 5 attempts before giving up.
-- **Concurrency**: Default `partitionsConsumedConcurrently: 1` per consumer group to prevent CPU/RAM overload. Scale horizontally instead.
+Note: `KafkaConsumerRegistryService` is only registered when using `KafkaModule.forRootAsync()` (which imports `DiscoveryModule`). Producer-only services use `KafkaModule.forRoot()` which skips consumer auto-discovery.
 
 **KafkaHandler Decorator**
 
@@ -58,14 +52,18 @@ A method-level decorator that binds consumer methods to specific topic and consu
 
 **KAFKA_TOPICS Constant**
 
-A centralized registry of all topic names used throughout the system. Services import topic constants rather than using string literals, enabling compile-time validation of topic references.
+A centralized registry of all topic names used throughout the system. Services import topic constants rather than using string literals, enabling compile-time validation of topic references. Key namespaces: `COMMANDS`, `EVENTS`, `FRIENDSHIP`, `USER`, `MEDIA`, `CALL`. Aliases for backward compatibility exist at the top level (e.g. `KAFKA_TOPICS.MESSAGE_ACCEPTED`).
+
+**CONSUMER_GROUPS Constant**
+
+Naming convention: `nest-chat.{service-name}[.{sub-group}]`. Key groups: `CHAT_CORE`, `CHAT_CORE_BLOCK_CACHE`, `CHAT_CORE_FRIEND_CACHE`, `MESSAGE_STORE`, `REALTIME_GATEWAY`, `CONVERSATION_SERVICE`, `CONVERSATION_FRIENDSHIP_EVENTS`, `CONVERSATION_CACHE_UPDATER`, `NOTIFICATION`, `MEDIA`, `MEDIA_WORKER`, `CALL_SERVICE`, `CALL_SERVICE_REALTIME`, `USERS_SERVICE`, `GATEWAY_CACHE_INVALIDATION`, `REALTIME_GATEWAY_USER_EVENTS`, `REALTIME_GATEWAY_DLQ`.
 
 **DLQ Topics**
 
-Three dedicated Dead Letter Queue topics (all with 30-day retention, 4 partitions):
-- `chat.dlq` - General DLQ
-- `chat.dlq.commands` - DLQ for command events (request/reply patterns)
-- `chat.dlq.events` - DLQ for domain events (fire-and-forget patterns)
+Three Dead Letter Queue topics under `KAFKA_TOPICS.DLQ`:
+- `chat.dlq` (`DLQ.GENERAL`) — General DLQ
+- `chat.dlq.commands` (`DLQ.COMMANDS`) — DLQ for command patterns
+- `chat.dlq.events` (`DLQ.EVENTS`) — DLQ for domain events
 
 ## Configuration
 

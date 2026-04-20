@@ -7,7 +7,7 @@ This document illustrates the key message flows in the chat system using sequenc
 ## Send Message Flow
 
 ### Description
-Complete flow from when a user sends a message via WebSocket until all conversation members receive the notification.
+Complete flow from when a user sends a message via HTTP until all conversation members receive the notification.
 
 ### Flow Diagram
 
@@ -15,7 +15,7 @@ Complete flow from when a user sends a message via WebSocket until all conversat
 sequenceDiagram
     autonumber
     participant Client
-    participant RealtimeGW as Realtime Gateway
+    participant GW as Gateway (HTTP)
     participant ChatCore as Chat Core
     participant Redis
     participant ConvSvc as Conversation Service
@@ -23,11 +23,12 @@ sequenceDiagram
     participant MsgStore as Message Store
     participant ConvDB as Conversation DB
     participant ChatDB as Chat DB
+    participant RealtimeGW as Realtime Gateway
     participant Recipients as Other Clients
 
-    %% Phase 1: Client sends message
-    Client->>RealtimeGW: WS: message:send<br/>{conversationId, content}
-    RealtimeGW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId, content, type}
+    %% Phase 1: Client sends message via HTTP
+    Client->>GW: POST /chat/messages<br/>{conversationId, content, clientMessageId, replyToMessageId?}
+    GW->>ChatCore: TCP: SEND_MESSAGE<br/>{senderId, conversationId, content, type, replyToMessageId?}
 
     %% Phase 2: Rate limit check
     ChatCore->>Redis: Rate limit check (INCR key)
@@ -123,7 +124,7 @@ sequenceDiagram
 
 ### Key Steps Explained
 
-1. **Client Emits** — User sends message via WebSocket with conversationId, content, and type.
+1. **Client Sends (HTTP POST)** — User sends message via `POST /chat/messages` with conversationId, content, and type. Gateway validates JWT and forwards to Chat Core via TCP.
 2. **TCP Forward** — Realtime Gateway forwards to Chat Core with authenticated senderId.
 3. **Rate Limit** — Inline Redis counter check (per senderId).
 4. **Conversation + Members** — Fetched in parallel with singleflight coalescing:
@@ -1092,6 +1093,124 @@ sequenceDiagram
     RealtimeGW->>Sender: Broadcast to conversation:{id}<br/>message:read {userId, upToOffset: 42}
 
     Note over Sender: Shows double checkmark<br/>or "Read by X" indicator
+```
+
+---
+
+## Flow 10 — Thu hồi tin nhắn (Revoke Message)
+
+**Điều kiện**: chỉ người gửi, trong vòng **1 giờ** kể từ khi gửi.  
+**Kết quả**: tất cả thành viên conversation thấy placeholder "Tin nhắn đã bị thu hồi".
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant GW as Gateway (HTTP)
+    participant ChatCore as Chat Core (TCP)
+    participant MsgStore as Message Store
+    participant DB as chat_db
+    participant Kafka
+    participant AllClients as All Conversation Clients
+
+    Client->>GW: POST /messages/:id/revoke<br/>{ conversationId, reason? }
+    GW->>ChatCore: TCP: REVOKE_MESSAGE<br/>{ messageId, conversationId, revokedBy }
+
+    Note over ChatCore: 1. Validate user (UserValidator)<br/>2. Fetch message (check ownership + age)<br/>3. Validate membership<br/>4. ACL: MSG_REVOKE_OWN (sender + within 1h)
+
+    alt ACL denied
+        ChatCore-->>GW: ForbiddenException (FORBIDDEN_REVOKE_WINDOW_EXPIRED)
+        GW-->>Client: 403 Forbidden
+    else ACL allowed
+        ChatCore->>Kafka: Publish chat.event.message_revoked<br/>{ messageId, conversationId, revokedBy,<br/>  revokedAt, tombstoneTextKey: 'message.revoked' }
+        ChatCore-->>GW: { success: true, messageId, revokedAt }
+        GW-->>Client: 200 OK { messageId, revokedAt }
+
+        Kafka->>MsgStore: Consume chat.event.message_revoked
+        MsgStore->>DB: UPDATE messages<br/>SET is_revoked=true, revoked_at=now,<br/>    revoked_by=userId, revoke_version+=1<br/>WHERE id = :messageId
+        MsgStore->>Kafka: Publish chat.event.message_updated<br/>{ messageId, conversationId,<br/>  patch: { isRevoked:true, revokedAt, tombstoneTextKey } }
+
+        Kafka->>AllClients: (via Realtime Gateway)<br/>WS 'message:revoked'<br/>{ messageId, conversationId,<br/>  isRevoked: true, revokedAt, tombstoneTextKey }
+
+        Note over AllClients: Replace message bubble with<br/>"Tin nhắn đã bị thu hồi"
+    end
+```
+
+---
+
+## Flow 11 — Xóa tin nhắn phía tôi (Delete For Me)
+
+**Điều kiện**: bất kỳ thành viên, không giới hạn thời gian.  
+**Kết quả**: tin nhắn ẩn khỏi lịch sử chat của người yêu cầu; người khác không bị ảnh hưởng.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant GW as Gateway (HTTP)
+    participant ChatCore as Chat Core (TCP)
+    participant MsgStore as Message Store
+    participant DB as chat_db
+    participant Kafka
+    participant UserSessions as User's Sessions (WS)
+
+    Client->>GW: DELETE /messages/:id/for-me?conversationId=...
+    GW->>ChatCore: TCP: DELETE_MESSAGE_FOR_USER<br/>{ messageId, conversationId, userId }
+
+    Note over ChatCore: Validate membership only<br/>(no time-window ACL)
+
+    ChatCore->>Kafka: Publish chat.event.message_deleted_for_user<br/>{ messageId, conversationId, userId, deletedAt }
+    ChatCore-->>GW: { success: true, messageId }
+    GW-->>Client: 200 OK { messageId }
+
+    Kafka->>MsgStore: Consume chat.event.message_deleted_for_user
+    MsgStore->>DB: INSERT INTO message_user_deletions<br/>(id, message_id, conversation_id, user_id, deleted_at)<br/>ON CONFLICT (message_id, user_id) DO NOTHING
+
+    Kafka->>UserSessions: (via Realtime Gateway)<br/>WS 'message:deleted_for_me'<br/>{ messageId, conversationId, deletedAt }<br/>→ Emitted to personal room user:{userId} ONLY
+
+    Note over UserSessions: Hide message from this user's view<br/>Other participants unaffected
+```
+
+---
+
+## Flow 12 — Chuyển tiếp tin nhắn (Forward Message)
+
+**Điều kiện**: phải là thành viên của cả conversation nguồn và tất cả conversation đích.  
+**Kết quả**: tin nhắn mới được tạo trong từng conversation đích, kèm `forwardedFrom` metadata.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant GW as Gateway (HTTP)
+    participant ChatCore as Chat Core (TCP)
+    participant MsgStore as Message Store
+    participant DB as chat_db
+    participant Kafka
+    participant TargetMembers as Target Conversation Members
+
+    Client->>GW: POST /messages/forward<br/>{ sourceMessageId, sourceConversationId,<br/>  targetConversationIds: [id1, id2] }
+    GW->>ChatCore: TCP: FORWARD_MESSAGE<br/>{ sourceMessageId, sourceConversationId,<br/>  targetConversationIds, forwardedBy }
+
+    Note over ChatCore: 1. Validate membership in source conversation<br/>2. Validate membership in ALL target conversations<br/>3. Fetch source message (must not be revoked/deleted)<br/>4. Build forwardSnapshot (safe preview, truncated)
+
+    alt Source not found / revoked / deleted
+        ChatCore-->>GW: Error (SOURCE_MESSAGE_NOT_FOUND / CANNOT_FORWARD_REVOKED_OR_DELETED)
+        GW-->>Client: 404 / 400
+    else All validations pass
+        loop For each targetConversationId
+            ChatCore->>Kafka: Publish chat.event.message_accepted<br/>{ messageId: newUUID, conversationId: targetConvId,<br/>  senderId: forwardedBy, content, type,<br/>  metadata: { forwardedFrom: { messageId, conversationId, snapshot } } }
+        end
+
+        ChatCore-->>GW: { success: true, forwardedMessageIds: [newId1, newId2] }
+        GW-->>Client: 201 Created { forwardedMessageIds }
+
+        Kafka->>MsgStore: Consume chat.event.message_accepted (per target)
+        MsgStore->>DB: INSERT INTO messages (standard send flow)
+        MsgStore->>Kafka: Publish chat.event.message_saved (per target)
+
+        Kafka->>TargetMembers: (via Realtime Gateway)<br/>WS 'message:new' { messageId, conversationId, ... }<br/>Standard new-message delivery to target conversations
+    end
 ```
 
 ---

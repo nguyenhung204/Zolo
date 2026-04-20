@@ -1,198 +1,112 @@
-# Sticker API — Implementation Guide
+# Sticker API
 
-> **Base URL**: `http://localhost:3000/stickers`  
-> **Auth**: Tất cả endpoint yêu cầu header `Authorization: Bearer <access_token>` (Keycloak JWT).
-
----
-
-## Mục lục
-
-1. [Lấy danh sách bộ nhãn dán (Packages)](#1-lấy-danh-sách-bộ-nhãn-dán-packages)
-2. [Lấy danh sách sticker trong một Package](#2-lấy-danh-sách-sticker-trong-một-package)
-3. [Gửi tin nhắn sticker](#3-gửi-tin-nhắn-sticker)
-4. [Cấu trúc message:new với sticker](#4-cấu-trúc-messagenew-với-sticker)
+> Base URL: `http://localhost:3000`
+> All endpoints require `Authorization: Bearer <ACCESS_TOKEN>`.
+> Gateway responses are wrapped by the standard envelope `{ statusCode, message, data }`.
 
 ---
 
-## 1. Lấy danh sách bộ nhãn dán (Packages)
+## Overview
 
-Gọi khi user mở sticker keyboard. Trả về danh sách tất cả bộ nhãn dán kèm icon đại diện (`thumbnailUrl`) để render thanh tab bên dưới.
+Sticker catalog reads are served by the Gateway over HTTP and delegated to Message Store over TCP.
 
-```http
-GET /stickers/packages
-Authorization: Bearer <token>
-```
+There are only two sticker catalog endpoints:
 
-**Không có query params.**
+- `GET /stickers/packages`
+- `GET /stickers/packages/:packageId/stickers`
 
-**Response 200**
+Sending a sticker does not use a dedicated sticker endpoint. It uses the normal message send flow with `type: "sticker"`.
+
+---
+
+## `GET /stickers/packages`
+
+Return all sticker packages ordered by `createdAt ASC`.
+
+Success payload:
 
 ```json
 [
   {
     "id": "pck_sprite",
     "name": "Zolo Sprites",
-    "thumbnailUrl": "https://storage.bcn.id.vn/zolo-stickers/sprite_45212.webp",
-    "isFree": true,
-    "createdAt": "2026-04-12T00:00:00.000Z"
-  },
-  {
-    "id": "pck_sticker",
-    "name": "Zolo Stickers",
-    "thumbnailUrl": "https://storage.bcn.id.vn/zolo-stickers/sticker_20060.webp",
-    "isFree": true,
-    "createdAt": "2026-04-12T00:00:00.000Z"
-  },
-  {
-    "id": "pck_webpc",
-    "name": "Zolo WebPC",
-    "thumbnailUrl": "https://storage.bcn.id.vn/zolo-stickers/webpc_22150.webp",
+    "thumbnailUrl": "https://storage.example/zolo-stickers/sprite_45212.webp",
     "isFree": true,
     "createdAt": "2026-04-12T00:00:00.000Z"
   }
 ]
 ```
 
-**Lưu ý**: Response này được cache phía server (Redis TTL 1 giờ). Frontend nên cache lại trong RAM/session storage để tránh gọi lại mỗi lần mở keyboard.
+Notes:
+
+- The current Message Store implementation reads directly from PostgreSQL via TypeORM
+- There is no Redis cache in the code path for package listing
 
 ---
 
-## 2. Lấy danh sách sticker trong một Package
+## `GET /stickers/packages/:packageId/stickers`
 
-Gọi sau khi lấy packages để tải sticker của từng bộ. **Kết quả nên cache ở client** vì dữ liệu thay đổi rất hiếm.
+Return paginated stickers in a package.
 
-```http
-GET /stickers/packages/:packageId/stickers
-Authorization: Bearer <token>
-```
+Query params:
 
-**Path params**
+- `limit`: default `50`, hard-capped to `100` by the Gateway
+- `offset`: default `0`
 
-| Param | Kiểu | Mô tả |
-|-------|------|-------|
-| `packageId` | `string` | ID của package (`pck_sprite`, `pck_sticker`, `pck_webpc`) |
-
-**Query params**
-
-| Param | Kiểu | Mặc định | Mô tả |
-|-------|------|----------|-------|
-| `limit` | `number` | `50` | Số sticker tối đa mỗi trang (max 50) |
-| `offset` | `number` | `0` | Vị trí bắt đầu (offset-based pagination) |
-
-**Response 200**
-
-```json
-[
-  {
-    "id": "sprite_45212",
-    "url": "https://storage.bcn.id.vn/zolo-stickers/sprite_45212.webp"
-  },
-  {
-    "id": "sprite_45213",
-    "url": "https://storage.bcn.id.vn/zolo-stickers/sprite_45213.webp"
-  }
-]
-```
-
-**Response 404** — Package không tồn tại
+Success payload:
 
 ```json
 {
-  "statusCode": 404,
-  "message": "Sticker package not found",
-  "error": "NOT_FOUND"
+  "items": [
+    {
+      "id": "sprite_45212",
+      "packageId": "pck_sprite",
+      "url": "https://storage.example/zolo-stickers/sprite_45212.webp",
+      "createdAt": "2026-04-12T00:00:00.000Z"
+    }
+  ],
+  "total": 128
 }
 ```
 
+Notes:
+
+- Items are ordered by sticker `id ASC`
+- The response is `{ items, total }`, not a bare array
+- An unknown `packageId` results in an empty `items` array and `total: 0`
+
 ---
 
-## 3. Gửi tin nhắn sticker
+## Sending Sticker Messages
 
-Gửi một sticker vào conversation. Sử dụng endpoint `POST /chat/messages` thông thường — **không có endpoint riêng**.
+Sticker messages are sent through the regular message endpoint:
 
-```http
-POST /chat/messages
-Authorization: Bearer <token>
-Content-Type: application/json
-```
+`POST /chat/messages`
 
-**Request body**
+Minimal request body pattern:
 
 ```json
 {
-  "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
-  "conversationId": "conv-uuid",
+  "conversationId": "uuid",
+  "clientMessageId": "uuid",
   "type": "sticker",
   "content": "",
   "metadata": {
-    "url": "https://storage.bcn.id.vn/zolo-stickers/sprite_45212.webp"
+    "url": "https://storage.example/zolo-stickers/sprite_45212.webp"
   }
 }
 ```
 
-| Field | Kiểu | Bắt buộc | Ghi chú |
-|-------|------|----------|---------|
-| `clientMessageId` | UUID v4 | Có | Dùng để idempotency — tự sinh ở client |
-| `conversationId` | string | Có | ID của conversation |
-| `type` | `"sticker"` | Có | Phân biệt với `"text"`, `"image"`, v.v. |
-| `content` | string | Không | **Bắt buộc là `""`** (chuỗi rỗng) với sticker |
-| `metadata.url` | string | Có | URL đầy đủ lấy từ response của API số 2 |
+Code-backed behavior:
 
-**Response 200**
-
-```json
-{
-  "success": true,
-  "messageId": "msg-uuid-generated-by-server"
-}
-```
-
-**Backend không validate URL sticker** khi gửi — URL đã được trust vì client chỉ có thể lấy URL từ `GET /stickers/packages/:id/stickers`. Điều này giúp gửi sticker nhanh tương đương gửi tin nhắn text.
+- `type: "sticker"` is accepted by Chat Core
+- Empty content is allowed for sticker messages
+- The sticker URL is stored in `messages.metadata.url`
+- Receivers render directly from the URL in the message payload; there is no extra sticker lookup during delivery
 
 ---
 
-## 4. Cấu trúc `message:new` với sticker
+## Client Notes
 
-Khi Client B nhận WebSocket event `message:new`:
-
-```json
-{
-  "messageId": "msg-uuid",
-  "conversationId": "conv-uuid",
-  "senderId": "user-uuid",
-  "type": "sticker",
-  "content": "",
-  "metadata": {
-    "url": "https://storage.bcn.id.vn/zolo-stickers/sprite_45212.webp"
-  },
-  "offset": 42,
-  "createdAt": "2026-04-12T08:30:00.000Z"
-}
-```
-
-**Cách Frontend render**:
-
-```javascript
-if (message.type === 'sticker') {
-  return `<img src="${message.metadata.url}" class="sticker-message" />`;
-}
-```
-
-Trình duyệt/app tự tải ảnh trực tiếp từ storage CDN — backend không xử lý bất kỳ file ảnh nào trong luồng chat.
-
----
-
-## Luồng Pre-fetch đầy đủ (Frontend Checklist)
-
-```
-App khởi động
-  └─► GET /stickers/packages                        → cache packages[]
-        └─► for each package:
-              GET /stickers/packages/:id/stickers    → cache stickers[]
-
-User mở sticker keyboard
-  └─► Render từ cache (không gọi API lại)
-
-User chọn sticker
-  └─► POST /chat/messages { type: "sticker", metadata: { url } }
-```
+- The sticker catalog is effectively read-only from the client perspective, so client-side caching is reasonable
+- The server code does not currently implement the Redis catalog cache described in some older docs/comments

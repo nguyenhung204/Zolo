@@ -1,295 +1,106 @@
-# Media Worker Architecture Diagram
+# Media Worker Architecture
 
-## 2-Tier Processing Pipeline
+## Overview
 
-```
+The Media Worker implementation is a two-tier pipeline:
 
-                    KAFKA: media.uploaded Topic                          
-                    Message: { mediaId, ownerId, type, ... }             
+1. Kafka consumer tier for fast acknowledgement
+2. In-memory bounded processing tier for CPU-heavy image/video work
 
-                                     
-                                     
-
-                TIER 1: MediaProcessingConsumer                          
-                (Lightweight - Fast Kafka Ack)                           
-
-  @KafkaHandler(MEDIA.UPLOADED)                                          
-  async handleMediaUploaded(event) {                                     
-    await jobService.enqueue({ id, type, data });  // <100ms             
-    return; // Kafka acks immediately                                    
-  }                                                                       
-                                                                          
-   No CPU work here                                                     
-   No rebalance risk                                                    
-   Consumer stays healthy                                               
-
-                                     
-                                     
-                         
-                            Job Queue (Memory)  
-                            p-queue library     
-                            Max: 3 concurrent   
-                         
-                                     
-                                     
-
-              TIER 2: ProcessingJobService                               
-              (Concurrency Controller)                                    
-
-  const queue = new PQueue({                                             
-    concurrency: 3,        // Max 3 jobs parallel                        
-    timeout: 600000        // 10 min per job                             
-  });                                                                     
-                                                                          
-  Responsibilities:                                                       
-  - Limit concurrent jobs (e.g., 3 max)                                  
-  - Retry failed jobs (exponential backoff)                              
-  - Track status (pending/processing/completed/failed)                   
-  - Emit metrics every 30s                                               
-
-                                     
-                    
-                                                    
-                                                    
-                      
-             Job 1          Job 2          Job 3    
-             (active)       (active)       (active) 
-                      
-                                                 
-                                                 
-
-              MediaProcessorService                                       
-              (Heavy CPU Processor)                                       
-
-  async processMediaJob(job: ProcessingJob) {                            
-    1. Idempotency check (DB)                                            
-    2. Download from MinIO                                               
-    3. Process media (image/video)                                       
-    4. Upload variants to MinIO                                          
-    5. Update DB metadata                                                
-    6. Publish Kafka events (media.ready/failed)                         
-  }                                                                       
-
-                                     
-                    
-                                                     
-                      
-         ImageProcessor                  VideoProcessor   
-         (Sharp library)                 (ffmpeg spawn)   
-                      
-         - Resize                        - Transcode      
-         - WebP/JPEG                     - Poster extract 
-         - Thumbnails                    - H.264 encode   
-                      
-                                                    
-                                                    
-                                        
-                                         FFmpeg Child Process 
-                                        
-                                         -threads 2           
-                                         -nice 10             
-                                         -preset veryfast     
-                                         -crf 23              
-                                                              
-                                         CPU Work Here!       
-                                         (Not Node.js)        
-                                        
-```
-
-## CPU Resource Management
-
-```
-
-                   8 vCPU Machine                                
-
-                                                                 
-                                 
-   Job 1     Job 2     Job 3                             
-   (2 CPU)   (2 CPU)   (2 CPU)  <-- Controlled          
-                                 
-                                                                 
-  Total: 6 CPUs used / 8 available   Healthy                  
-                                                                 
-  Formula:                                                       
-    Concurrency = 3                                             
-    Threads per job = 8 / 3 ≈ 2                                
-    Total threads = 3 × 2 = 6   Fits comfortably              
-                                                                 
-
-
-WITHOUT Thread Limiting ( BAD):
-
-
-                   8 vCPU Machine                                
-
-                                                                 
-                                 
-   Job 1     Job 2     Job 3                             
-   (8 CPU)   (8 CPU)   (8 CPU)  <-- Uncontrolled!       
-                                 
-                                                                 
-  Total: 24 threads competing for 8 cores!                      
-  Result: CPU thrashing, context switching, slower throughput   
-                                                                 
-
-```
-
-## Data Flow
-
-```
-
- Client Upload
- (via Gateway)
-
-       
-       
-
- Media Service (HTTP) 
- POST /media/upload   
-
-           
-           
-    
-       MinIO     
-     (S3 Storage)
-    
-          
-          
-
- Media Service           
- POST /upload/complete   
- - Verify checksum       
- - Update DB: UPLOADED   
-
-          
-          
-    
-       Kafka     
-    media.uploaded
-    
-          
-          
-
- Media Worker (Consumer) 
- Enqueue job             
-
-          
-          
-    
-      Job Queue   
-      (p-queue)   
-    
-          
-          
-
- ProcessorService        
- - Download from MinIO   
- - Process with ffmpeg   
- - Upload variants       
- - Update DB: READY      
-
-          
-          
-    
-       Kafka     
-     media.ready 
-    
-          
-          
-
- Realtime Gateway (WS)   
- Notify clients          
-
-```
-
-## Job Status Lifecycle
-
-```
-
- PENDING   ← Job enqueued
-
-     
-       ProcessingJobService polls
-     
-
- PROCESSING   ← Job picked up by p-queue
-
-     
-      Success  
-                              COMPLETED 
-                             
-     
-      Failure  Retry?
-                                   
-                        
-                                             
-                   Attempts < 3          Attempts = 3
-                                             
-                                             
-                             
-                   PENDING             FAILED 
-                   (retry)            
-                  
-                  Wait: 2^attempts seconds
-                  (2s, 4s, 8s)
-```
-
-## Monitoring Dashboard (Example)
-
-```
-
-             Media Worker Dashboard                          
-
-                                                              
-  Queue Metrics:                                             
-    Concurrency Limit: 3                                     
-    Currently Processing: 3                                  
-    Waiting in Queue: 5                                      
-    Paused: false                                            
-                                                              
-  Job Statistics:                                            
-    Pending:    5                         
-    Processing: 3                         
-    Completed: 42         
-    Failed:     1                         
-                                                              
-  System Resources:                                          
-    CPU Usage: 67%                  
-    Memory:    2.1 GB / 8 GB                                 
-                                                              
-  Recent Jobs:                                               
-    [12:34:56] video-abc123 → COMPLETED (45s)               
-    [12:35:12] image-def456 → COMPLETED (2s)                
-    [12:35:30] video-ghi789 → PROCESSING (12s elapsed)      
-                                                              
-
-```
-
-## Configuration Matrix
-
-| Scenario | vCPU | Concurrency | Threads/Job | Preset | Use Case |
-|----------|------|-------------|-------------|--------|----------|
-| Dev | 4 | 2 | 2 | ultrafast | Local testing |
-| Prod Small | 8 | 3 | 2 | veryfast | Standard deployment |
-| Prod Large | 16 | 5 | 3 | fast | High throughput |
-| High Quality | 8 | 2 | 4 | medium | Quality over speed |
-
-## Key Takeaways
-
-1. **Separation of Concerns**: Consumer fast → Processor heavy
-2. **Concurrency Control**: p-queue limits parallel jobs
-3. **Thread Limiting**: ffmpeg -threads prevents CPU thrashing
-4. **Node.js Role**: Orchestrator (spawn ffmpeg, not run encoding)
-5. **Production Ready**: Tunable for 4-16 vCPU machines
+It is intentionally not a REST service and not a Redis/Bull queue worker.
 
 ---
 
-**Formula to Remember**:
-```
-threads_per_job = total_vCPU / concurrency
+## Flow Diagram
 
-Example (8 vCPU):
-  concurrency = 3
-  threads_per_job = 8 / 3 ≈ 2-3
-  total_threads = 3 × 2 = 6 (healthy!)
+```mermaid
+flowchart TD
+    A[Media Service publishes media.uploaded] --> B[MediaProcessingConsumer]
+    B --> C[ProcessingJobService enqueue]
+    C --> D[PQueue bounded concurrency]
+    D --> E[MediaProcessorService]
+
+    E --> F{Media type}
+    F -->|image| G[ImageProcessor Sharp]
+    F -->|video| H[VideoProcessor FFmpeg]
+    F -->|audio/file| I[Mark READY without derived assets]
+
+    G --> J[Upload thumb + preview to MinIO]
+    H --> K[Upload poster + MP4 variants to MinIO]
+    I --> L[Update MongoDB status READY]
+
+    J --> M[Update MongoDB metadata]
+    K --> M
+    M --> N[Publish media.ready]
+    L --> O[No media.ready event]
+
+    E -->|failure| P[Update MongoDB status FAILED]
+    P --> Q[Publish media.failed]
 ```
+
+---
+
+## Queue and Retry Model
+
+```mermaid
+flowchart LR
+    A[Kafka event] --> B[In-memory job record]
+    B --> C[PQueue worker slot]
+    C --> D{Success?}
+    D -->|yes| E[completed]
+    D -->|no and attempts < 5| F[retry with exponential backoff]
+    F --> C
+    D -->|no and attempts = 5| G[failed in memory for 5 minutes]
+```
+
+Actual retry timings from code:
+
+- attempt 1 retry: 2s
+- attempt 2 retry: 4s
+- attempt 3 retry: 8s
+- attempt 4 retry: 16s
+- attempt 5 retry: 32s
+
+Job timeout is 10 minutes.
+
+---
+
+## Recovery Pass
+
+A separate cron-driven recovery path runs every 5 minutes with a Redis leader lock.
+
+```mermaid
+flowchart TD
+    A[MediaRecoveryService cron] --> B[Find stuck media rows]
+    B --> C{Status}
+    C -->|PROCESSING or FAILED| D[Re-enqueue processing job]
+    C -->|DELETION_PENDING| E[Retry MinIO delete]
+    E -->|success| F[Mark DELETED]
+    E -->|failure| G[Leave DELETION_PENDING for next pass]
+```
+
+---
+
+## Type-Specific Behavior
+
+### Image
+
+- Normalize orientation
+- Strip EXIF
+- Generate `thumb` and `preview`
+- Publish `media.ready`
+
+### Video
+
+- Extract metadata with ffprobe
+- Generate poster at `min(1 second, 10% of duration)`
+- Generate built-in MP4 variants: `mp4_720p`, `mp4_360p`
+- Publish `media.ready`
+
+### Audio and file
+
+- No heavy processing
+- Mark `READY`
+- Do not publish `media.ready`
+
+That last point is important: attachment refresh events are only produced for media that actually generated new derived assets.

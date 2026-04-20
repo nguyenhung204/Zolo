@@ -22,7 +22,8 @@ sequenceDiagram
     participant MsgStore as Message Store
     participant DB as PostgreSQL
 
-    Client->>RealtimeGW: message:send (conversationId, content)
+    Client->>RealtimeGW: WebSocket authenticate
+    Client->>ChatCore: POST /chat/messages (conversationId, content)
     RealtimeGW->>ChatCore: TCP: SEND_MESSAGE
     
     ChatCore->>ConvSvc: TCP: GET_CONVERSATION
@@ -64,9 +65,9 @@ sequenceDiagram
 
 ### Step-by-Step Explanation
 
-**1. Client Initiates Send (WebSocket)**
-- Client emits `message:send` event with conversationId and content
-- Realtime Gateway receives and validates format
+**1. Client Initiates Send (HTTP POST)**
+- Client sends `POST /chat/messages` with conversationId and content
+- Gateway validates JWT and forwards to Chat Core via TCP
 - Generates unique messageId (UUID)
 
 **2. Realtime Gateway Forwards to Chat Core (TCP)**
@@ -184,11 +185,16 @@ sequenceDiagram
 - Returns RATE_LIMIT error
 - Client shows "You can send 1 message per hour to non-friends until they reply"
 
-**Kafka Unavailable:**
-- Chat Core fails to publish MESSAGE_ACCEPTED
-- Returns error to Realtime Gateway
-- Client shows "Failed to send, please retry"
-- No persistence occurs (consistent)
+**Kafka Unavailable (transient):**
+- Chat Core's `publishWithReliability()` fails to publish MESSAGE_ACCEPTED to Kafka.
+- On failure: `RPUSH chat:kafka:outbox payload` — event is pushed to Redis outbox list.
+- Background poller (runs every 500ms) drains the outbox and retries Kafka publish.
+- Chat Core still returns 201 to the client immediately. Client shows "sent" checkmark.
+- Eventual delivery occurs within seconds once Kafka recovers.
+
+**Kafka Unavailable (persistent):**
+- Outbox grows. Once Kafka recovers, poller drains the backlog in order.
+- Messages are stored in correct offset order when Consumer processes them.
 
 **Database Write Failure:**
 - Message Store fails to persist

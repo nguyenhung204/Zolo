@@ -94,7 +94,18 @@ graph LR
         CALL2["call.event.join_requested (6 partitions)"]
         CALL3["call.event.participant_joined (6 partitions)"]
         CALL4["call.event.participant_left (6 partitions)"]
-        CALL5["call.event.ended (6 partitions)"]
+        CALL5["call.event.waiting_approved (6 partitions)"]
+        CALL6["call.event.waiting_rejected (6 partitions)"]
+        CALL7["call.event.media_state_updated (6 partitions)"]
+        CALL8["call.event.recording_state_updated (6 partitions)"]
+        CALL9["call.event.participant_moderated (6 partitions)"]
+        CALL10["call.event.ended (6 partitions)"]
+    end
+
+    subgraph "User Events (7 day retention)"
+        USR1["user.deleted (6 partitions)"]
+        USR2["user.deactivated (6 partitions)"]
+        USR3["user.profile.updated (6 partitions)"]
     end
     
     subgraph "Real-Time Topics (30 min retention)"
@@ -123,8 +134,11 @@ graph LR
     class FRIEND1,FRIEND2,FRIEND3,FRIEND4,FRIEND5,FRIEND6 friend
     class RT1,RT2,RT3 rt
     class DLQ1,DLQ2 dlq
-    class CALL1,CALL2,CALL3,CALL4,CALL5 call
+    class CALL1,CALL2,CALL3,CALL4,CALL5,CALL6,CALL7,CALL8,CALL9,CALL10 call
     class MED1,MED2,MED3 media
+    class USR1,USR2,USR3 user
+
+    classDef user fill:#795548,stroke:#3E2723,color:#fff
 ```
 
 ### Topic Configuration Details
@@ -216,6 +230,30 @@ graph LR
 **Why 6 partitions?**
 - Lower throughput than message topics (meetings are less frequent than messages)
 - Partition key: `conversationId` for per-conversation ordering
+
+#### User Events
+
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
+| `user.deleted` | 6 | 3 | 7 days | 2 | User hard-deleted |
+| `user.deactivated` | 6 | 3 | 7 days | 2 | Account disabled (isActive=false) |
+| `user.profile.updated` | 6 | 3 | 7 days | 2 | Profile fields or avatar changed |
+
+**Producer**: Users Service
+**Consumers**: Realtime Gateway (`nest-chat.realtime-gateway.user-events`), Gateway cache invalidation (`nest-chat.gateway.cache-invalidation`)
+
+#### Media Events
+
+| Topic | Partitions | Replication (prod) | Retention | Min ISR (prod) | Purpose |
+|-------|------------|--------------------|-----------|----------------|--------|
+| `media.uploaded` | 6 | 3 | 7 days | 2 | File uploaded to MinIO; triggers worker processing |
+| `media.ready` | 6 | 3 | 7 days | 2 | Processing complete, variants available |
+| `media.failed` | 6 | 3 | 7 days | 2 | Processing permanently failed |
+
+**Note**: `media.retry` was removed — recovery is now handled by a periodic cron job inside media-worker instead of a Kafka retry event.
+
+**Producer**: Media Service (`media.uploaded`), Media Worker (`media.ready`, `media.failed`)
+**Consumer**: Media Worker (`media.uploaded`)
 
 ## Producer/Consumer Topology
 

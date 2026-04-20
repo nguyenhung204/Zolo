@@ -1,277 +1,171 @@
 # Media Worker Service
 
-**Port**: N/A (Background worker, no HTTP/TCP server)  
-**Technology**: NestJS + p-queue + FFmpeg + Sharp  
-**Database**: MongoDB (shared with Media Service for media metadata)  
-**Storage**: MinIO (shared with Media Service)
+## Overview
+
+Media Worker is a background NestJS worker that consumes `media.uploaded`, performs heavy image or video processing, updates MongoDB metadata, and publishes `media.ready` or `media.failed`.
+
+It does not expose HTTP or TCP endpoints.
 
 ---
 
-##  Purpose
+## Architecture
 
-Background worker that processes uploaded media (images, videos) asynchronously to generate optimized variants for different use cases.
+The implementation uses a two-tier in-process pipeline.
 
----
+### Tier 1: Kafka consumer
 
-##  Architecture
+`MediaProcessingConsumer`:
 
-### Pattern: **2-Tier Processing**
+- Consumes `media.uploaded`
+- Enqueues a lightweight in-memory job
+- Returns immediately so Kafka can acknowledge fast
 
-```
+### Tier 2: Processing queue
 
- Tier 1: Kafka Consumer (Fast Ack)                          
- - Receives MEDIA.UPLOADED events                           
- - Enqueues job to in-memory queue → Returns immediately    
- - Keeps consumer alive, no rebalancing issues              
+`ProcessingJobService`:
 
-                       
-                        In-Memory Job Queue (p-queue)
-                       
+- In-memory `p-queue`
+- Default concurrency: `MEDIA_WORKER_CONCURRENCY` or `3`
+- Job timeout: `10 minutes`
+- Retries: `5`
+- Exponential backoff: `2s`, `4s`, `8s`, `16s`, `32s`
+- Logs queue metrics every 30 seconds
 
- Tier 2: Job Processor (Heavy Processing)                   
- - Processes jobs with controlled concurrency (default: 3)  
- - CPU-intensive: FFmpeg, Sharp, video encoding              
- - Retry mechanism with exponential backoff                  
- - Job status tracking (pending/processing/completed/failed) 
-
-```
-
-**Why 2-Tier?**
--  Prevents Kafka rebalancing from blocking heavy CPU work
--  Controlled resource usage (e.g., 3 concurrent jobs on 8-core machine)
--  Better observability (queue metrics, job status tracking)
--  No external dependencies (no Redis/Bull needed)
+There is no Redis/Bull queue. Queue state lives in memory inside the worker process.
 
 ---
 
-##  Processing Workflow
+## Processing Rules
 
-### Image Processing
-1. **Idempotency Check**: Skip if media status is `READY`
-2. **Update Status**: Set to `PROCESSING` in MongoDB
-3. **Download** original from MinIO
-4. **Normalize**: Auto-rotate based on EXIF, strip sensitive data
-5. **Generate variants**:
-   - `thumb`: 320px, WebP 70% quality → Set as thumbnailUrl
-   - `preview`: 1280px, WebP 75% quality
-6. **Upload** variants to MinIO
-7. **Update** MongoDB: `status=READY`, variants array (`name`, `key`, `objectKey`, `width`, `height`, `sizeBytes`), thumbnailUrl, metadata (width/height/format)
-8. **Publish** `media.ready` event to Kafka
+### Image
 
-> Note: Each variant now includes both `key` and `objectKey` fields (same value). `objectKey` was added for compatibility with `MediaService.getAccessUrl` which reads `variant.objectKey`. Older records may only have `key`.
+`ImageProcessor` does the following:
 
-### Video Processing
-1. **Idempotency Check**: Skip if media status is `READY`
-2. **Update Status**: Set to `PROCESSING` in MongoDB
-3. **Download** original from MinIO
-4. **Extract metadata** via FFmpeg (duration, bitrate, codec)
-5. **Generate variants**:
-   - `poster`: First frame as JPEG thumbnail → Set as thumbnailUrl
-   - Video variants based on configured profiles
-6. **Upload** all variants to MinIO
-7. **Update** MongoDB: `status=READY`, variants array, thumbnailUrl, metadata
-8. **Publish** `media.ready` event to Kafka
+- Read metadata with Sharp
+- Auto-rotate using EXIF orientation
+- Strip EXIF data
+- Generate:
+  - `thumb`
+  - `preview`
+- Formats are configurable, defaulting to WebP/JPEG output depending on env
 
-### File Processing
-- **No processing needed**: Just log and skip (status remains as-is)
+`MediaProcessorService` then uploads variants to MinIO and stores:
 
----
+- variant entries
+- `thumbKey`
+- image metadata (`width`, `height`, `format`)
+- final status `READY`
 
-##  Retry Logic
+Finally it publishes `media.ready`.
 
-- **Max Retries**: 5 (increased from 3 for better resilience)
-- **Backoff Strategy**: Exponential (2^attempt * 1000ms)
-  - Attempt 1: 2s delay
-  - Attempt 2: 4s delay
-  - Attempt 3: 8s delay
-  - Attempt 4: 16s delay
-  - Attempt 5: 32s delay
-- **Timeout**: 10 minutes per job (600,000ms)
-- **Dead Letter**: 
-  - Failed jobs kept for 5 minutes (300s) for monitoring/manual retry
-  - Completed jobs kept for 1 minute (60s) for debugging
-  - Callback `onJobExhausted` for DLQ handling
+### Video
 
----
+`VideoProcessor` does the following:
 
-##  Consumed Kafka Topics
+- Read metadata using ffprobe
+- Generate a poster at `min(1 second, 10% of duration)`
+- Generate MP4 variants from configured profiles
+- Current built-in profiles are:
+  - `mp4_720p`
+  - `mp4_360p`
+- FFmpeg uses thread limits from config and writes `+faststart` MP4 output
 
-| Topic | Description | Handler | Event Format |
-|-------|-------------|---------|--------------|
-| `media.uploaded` | Media upload notification | `MediaProcessingConsumer.handleMediaUploaded` | `{ mediaId, ownerId, type, mimeType, originalKey }` |
+`MediaProcessorService` uploads the poster and variants, stores metadata, marks the row `READY`, then publishes `media.ready`.
+
+### Audio and file
+
+These are explicitly short-circuited:
+
+- No Sharp or FFmpeg processing
+- Status becomes `READY`
+- No `media.ready` event is published because there is no derived media state to sync back into a message
+
+That behavior matters for clients and for Message Store attachment sync.
 
 ---
 
-##  Produced Kafka Topics
+## Failure and Recovery
 
-| Topic | Description | Payload | Kafka Key |
-|-------|-------------|---------|-----------|
-| `media.ready` | Media processing completed | `{ mediaId, ownerId, type, variants, thumbnailUrl, metadata }` | `user:{ownerId}` |
-| `media.failed` | Media processing failed | `{ mediaId, ownerId, error, attempts }` | `user:{ownerId}` |
+### Per-job retry
 
----
+When processing fails:
 
-##  MongoDB Collections
+- Job stays in memory
+- Retries up to 5 times with exponential backoff
+- On final failure, job is marked failed in memory for 5 minutes
+- `media.failed` is published
+- MongoDB media status becomes `FAILED`
 
-- **media_objects**: Shared collection with Media Service
-  - **Read**: `findById` for idempotency check
-  - **Write**: 
-    - `updateStatus(mediaId, 'PROCESSING')` at start
-    - `updateMetadata(mediaId, { variants, thumbnailUrl, meta, status: 'READY' })` on success
+### Recovery cron
 
----
+`MediaRecoveryService` runs every 5 minutes and uses Redis leader lock `media-worker:recovery:leader`.
 
-##  Configuration (Environment Variables)
+It handles three categories:
 
-```bash
-# Kafka
-KAFKA_CLIENT_ID=nest-api-system
-KAFKA_BROKERS=localhost:9092
-MEDIA_WORKER_KAFKA_GROUP_ID=media-worker-group
+- `PROCESSING` stuck items: re-enqueue
+- `FAILED` items: re-enqueue
+- `DELETION_PENDING` items: retry MinIO deletion directly and mark `DELETED` on success
 
-# MongoDB
-MEDIA_MONGODB_URI=mongodb://localhost:27017/media_db
-
-# MinIO
-MINIO_ENDPOINT=localhost
-MINIO_PORT=9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_USE_SSL=false
-MINIO_BUCKET_NAME=media-storage
-
-# Concurrency Control (default: 3)
-# Rule: For 8 vCPU machine, set concurrency=3 → Each job gets ~2-3 threads
-MEDIA_WORKER_CONCURRENCY=3
-
-# Image Processing (defaults)
-IMAGE_THUMB_MAX_SIZE=320
-IMAGE_THUMB_QUALITY=70
-IMAGE_THUMB_FORMAT=webp
-IMAGE_PREVIEW_MAX_SIZE=1280
-IMAGE_PREVIEW_QUALITY=75
-IMAGE_PREVIEW_FORMAT=webp
-```
+So recovery is not limited to media processing. It also retries deletion cleanup.
 
 ---
 
-##  Deployment Notes
+## Kafka
 
-- **Not in docker-compose**: This service has a Dockerfile (`apps/media-worker/Dockerfile`) but is not included in the current `docker-compose.yml`. Run it separately via `pnpm start:media-worker:dev` or build the Docker image manually.
-- **Resource Requirements**: 8 vCPU recommended (3 concurrent jobs = ~2.6 threads each)
-- **Scaling**: Run multiple instances with same `MEDIA_WORKER_KAFKA_GROUP_ID` for horizontal scaling (Kafka auto-balances partitions)
-- **Monitoring**: Logs queue metrics every 30s:
-  ```json
-  { "pending": 2, "size": 15, "isPaused": false, "totalJobs": 17 }
-  ```
-- **Recovery**: `RecoveryService` scheduled cron job retries stuck media. Handles three categories:
-  - **PROCESSING** (> 10 min): re-enqueued for media processing
-  - **FAILED**: re-enqueued for media processing
-  - **DELETION_PENDING** (> 5 min back-off): MinIO delete is retried directly by RecoveryService using `MinioService.deleteObject`; on success, status is set to `DELETED`; on failure, item stays in `DELETION_PENDING` for the next cron cycle
+### Consumed
 
----
+- `media.uploaded`
 
-##  Performance Metrics
+### Produced
 
-- **Image Processing**: ~500ms for 2 variants (thumb + preview)
-- **Video Processing**: ~5-60s depending on original resolution and duration
-- **Throughput**: 
-  - 3 concurrent jobs can process ~180 images/minute
-  - ~10 videos/minute (1080p source)
+- `media.ready`
+- `media.failed`
 
----
+`media.ready` payload includes processed metadata needed by downstream attachment sync:
 
-##  Security Considerations
+- `mediaId`
+- `ownerId`
+- `type`
+- `thumbKey`
+- `variants`
+- `meta`
 
-- **EXIF Stripping**: Sensitive GPS/camera data removed from images (only basic orientation kept)
-- **File Validation**: Sharp metadata check for images
-- **Buffer Limits**: Entire file loaded into memory (consider streaming for very large videos)
+`media.failed` includes:
+
+- `mediaId`
+- `ownerId`
+- `error`
 
 ---
 
-##  Module Structure
+## Resource Control
 
-```typescript
-@Module({
-  imports: [
-    SharedConfigModule,
-    ScheduleModule.forRoot(),
-    KafkaModule,
-    DatabaseMongoModule,
-    MinioModule,
-  ],
-  providers: [
-    // Tier 1: Lightweight consumer
-    MediaProcessingConsumer,
-    
-    // Tier 2: Heavy processing with concurrency control
-    ProcessingJobService,    // In-memory job queue (p-queue)
-    MediaProcessorService,   // Actual processing logic
-    
-    // Recovery for stuck/failed/deletion-pending media
-    MediaRecoveryService,    // MinioService injected for DELETION_PENDING retries
-    
-    // Format-specific processors
-    ImageProcessor,          // Sharp-based image processing
-    VideoProcessor,          // FFmpeg-based video processing
-    
-    // Repository
-    MediaRepository,
-  ],
-})
-export class MediaWorkerModule {}
-```
+The worker explicitly tries to avoid CPU thrash:
+
+- queue concurrency is capped
+- FFmpeg thread count is capped (`FFMPEG_THREADS`, default `2`)
+- FFmpeg nice level is configurable (`FFMPEG_NICE_LEVEL`, default `10`)
+
+The design intent is:
+
+- Kafka ack quickly
+- run CPU-heavy work only inside the bounded queue
+- let multiple worker replicas scale horizontally by sharing the same Kafka group
 
 ---
 
-##  Code References
+## Boundaries
 
-### Core Services
-- Consumer: [MediaProcessingConsumer](../../apps/media-worker/src/consumers/media-processing.consumer.ts)
-- Job Queue: [ProcessingJobService](../../apps/media-worker/src/services/processing-job.service.ts)
-- Processor: [MediaProcessorService](../../apps/media-worker/src/services/media-processor.service.ts)
-- Image Processor: [ImageProcessor](../../apps/media-worker/src/processors/image.processor.ts)
-- Video Processor: [VideoProcessor](../../apps/media-worker/src/processors/video.processor.ts)
-- Repository: [MediaRepository](../../apps/media-worker/src/repositories/media.repository.ts)
+Media Worker does not:
 
-### Key Implementation Details
+- issue access URLs
+- authorize media access
+- expose APIs to clients
+- persist upload sessions
+- notify WebSocket clients directly
 
-**Tier 1 Consumer (Fast Ack)**:
-```typescript
-@KafkaHandler({ topic: KAFKA_TOPICS.MEDIA.UPLOADED })
-async handleMediaUploaded(event: MediaUploadedEvent) {
-  // Enqueue job → Return fast (< 10ms)
-  await this.processingJobService.enqueue({
-    id: event.mediaId,
-    type: event.type,
-    data: event,
-  });
-  // Consumer acks immediately, Kafka stays healthy
-}
-```
+Downstream flow after success or failure is:
 
-**Tier 2 Processor (Controlled Concurrency)**:
-```typescript
-constructor() {
-  const concurrency = parseInt(process.env.MEDIA_WORKER_CONCURRENCY || '3', 10);
-  this.queue = new PQueue({ concurrency, timeout: 600000 });
-}
-
-// Retry with exponential backoff
-if (job.attempts < this.maxRetries) {
-  const delay = Math.pow(2, job.attempts) * 1000; // 2s, 4s, 8s...
-  setTimeout(() => this.queue.add(() => processJob(job)), delay);
-}
-```
-
-**Idempotency Check**:
-```typescript
-async processMediaJob(job: ProcessingJob) {
-  const media = await this.mediaRepository.findById(event.mediaId);
-  if (media.status === MediaStatus.READY) {
-    this.logger.log(`Already processed, skipping`);
-    return; // Idempotent
-  }
-  // ... proceed with processing
-}
-```
+- Media Worker publishes `media.ready` / `media.failed`
+- Message Store updates the related attachment
+- Realtime Gateway emits `message:media_ready` when relevant

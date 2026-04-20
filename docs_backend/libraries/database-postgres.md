@@ -27,15 +27,23 @@ An abstract base class implementing common CRUD operations for any entity type t
 
 Services extend this abstract repository and add domain-specific query methods while inheriting the standard operations. This approach ensures consistency in basic operations while allowing customization for complex queries, joins, or aggregations specific to each domain.
 
-**BaseEntity**
+**BaseEntity / TimestampedEntity / SoftDeletableEntity**
 
-An abstract entity class that all domain entities extend, providing common fields and functionality:
+Three abstract entity classes forming a hierarchy:
 
-- id: Universal unique identifier using UUID v4 generation strategy
-- createdAt: Automatic timestamp set during entity creation
-- updatedAt: Automatic timestamp updated on any entity modification
+- `BaseEntity` — provides only `id: string` (UUID v4, `@PrimaryGeneratedColumn('uuid')`). All entities extend this.
+- `TimestampedEntity extends BaseEntity` — adds `createdAt` (`@CreateDateColumn`) and `updatedAt` (`@UpdateDateColumn`). Most domain entities extend this.
+- `SoftDeletableEntity extends TimestampedEntity` — adds `deletedAt: Date | null` (`@DeleteDateColumn`) and `isDeleted: boolean`. Used for entities that require soft-delete support.
 
-The base entity ensures every table across all microservices follows consistent primary key and auditing patterns. Services cannot override these fields, preventing divergent implementations of fundamental data tracking.
+Services choose the appropriate base class based on their auditing requirements. The primary key strategy (UUID) and column naming conventions are enforced by the base classes across all microservices.
+
+**Transactional Outbox Infrastructure**
+
+The library bundles a complete Transactional Outbox implementation under `libs/database-postgres/src/outbox/`:
+
+- `OutboxEvent` entity (`outbox_events` table) — stores `aggregateType`, `aggregateId`, `eventType`, `payload` (JSONB), `status` (PENDING/PROCESSING/COMPLETED/FAILED), `kafkaTopic`, `kafkaKey`, `retryCount`, `lockedBy`, `lockedAt`, `idempotencyKey` (unique constraint), `nextRetryAt`. Indexed on `(status, createdAt)` and `(status, lockedAt)` for fast claiming and requeue queries.
+- `OutboxRepository` — provides `create(entityManager, dto)` with idempotency (catches PostgreSQL error 23505 and silently returns the existing row), `claimPendingEvents(batchSize, instanceId)`, `markAsCompleted()`, `markAsFailed()` (increments `retryCount`, sets `nextRetryAt` with exponential backoff: `30s × 2^retryCount`, capped at 1h).
+- `OutboxProcessor` (abstract) — services extend this and implement `publishEvent(event: OutboxEvent)`. The base class runs a `setInterval` every 5 seconds (default) to call `claimPendingEvents(batchSize=100)` and publish each event. Configurable via `OutboxProcessorConfig` (`intervalMs`, `batchSize`, `maxRetries=3`, `processingTimeoutMs=300000`, `instanceId`).
 
 ## Configuration
 

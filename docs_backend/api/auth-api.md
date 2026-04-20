@@ -150,11 +150,11 @@ curl -X POST https://api.bcn.id.vn/auth/register/complete \
 | Field | Rule |
 |-------|------|
 | `registrationToken` | UUID v4 từ Step 2, còn hạn |
-| `password` | Tối thiểu 8 ký tự |
+| `password` | Min 8 ký tự, bao gồm chữ hoa, chữ thường, số và ký tự đặc biệt (`!@#$%^&*`) |
 | `platform` | `"web"` hoặc `"mobile"` |
 | `deviceInfo` | Optional |
 
-**Response `201`:**
+**Response `200`:**
 ```json
 {
   "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -286,7 +286,7 @@ curl -X POST https://api.bcn.id.vn/auth/logout \
 **Response `200`:**
 ```json
 {
-  "message": "Đăng xuất thành công."
+  "message": "Logged out successfully."
 }
 ```
 
@@ -323,7 +323,7 @@ curl -X POST https://api.bcn.id.vn/auth/forgot-password \
 **Response `200`:**
 ```json
 {
-  "message": "Mã OTP đã được gửi đến email của bạn. Vui lòng kiểm tra hộp thư."
+  "message": "OTP code has been sent to your email. Please check your inbox."
 }
 ```
 
@@ -401,7 +401,7 @@ curl -X POST https://api.bcn.id.vn/auth/reset-password \
 | Field | Rule |
 |-------|------|
 | `resetToken` | UUID v4, còn hạn (max 10 phút), chỉ dùng một lần |
-| `newPassword` | Tối thiểu 8 ký tự, bao gồm chữ hoa, chữ thường, số và ký tự đặc biệt |
+| `newPassword` | Min 8 ký tự, bao gồm chữ hoa, chữ thường, số và ký tự đặc biệt (`!@#$%^&*`) |
 
 **Response `200`:**
 ```json

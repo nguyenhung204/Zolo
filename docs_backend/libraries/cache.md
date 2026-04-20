@@ -16,11 +16,12 @@ The primary module that registers Redis connections and provides the CacheServic
 
 The core service providing key-value operations with the following capabilities:
 
-- get: Retrieves a value by key with automatic deserialization of JSON objects
-- set: Stores a value with optional TTL in seconds
-- del: Removes one or more keys from the cache
-- exists: Checks if a key exists without retrieving its value
-- TTL management: Supports per-operation TTL overrides and default TTL values
+- `getClient(): Redis` — Returns the raw ioredis `Redis` instance for advanced operations (pipelines, Lua scripts, etc.)
+- `get<T>(key): Promise<T | null>` — Retrieves a value by key with automatic JSON deserialization; returns `null` on miss or error
+- `set(key, value, ttl = 3600): Promise<void>` — Stores a value with TTL in seconds (default 3600)
+- `del(key): Promise<void>` — Removes a single key from the cache
+- `delPattern(pattern): Promise<void>` — Removes all keys matching a glob pattern using cursor-based `SCAN` (avoids blocking the Redis event loop on large keyspaces)
+- `tryLeaderLock(key, ttlMs): Promise<(() => Promise<void>) | null>` — Attempts to acquire a distributed leader lock via `SET NX PX`. Returns a `release()` closure when acquired, or `null` if another instance holds the lock. The release uses a Lua check-and-delete to prevent a slow job from releasing a lock re-acquired by another pod. Designed for cron jobs that should run on exactly one pod at a time.
 
 The service handles serialization and deserialization transparently, allowing developers to store and retrieve complex objects without manual JSON operations.
 
@@ -30,16 +31,21 @@ A method-level decorator that automatically caches the return value of the decor
 
 ## Configuration
 
-The library requires the following environment variables for connection establishment:
+The library supports three Redis topology modes, selected by the `REDIS_TYPE` environment variable (default: `single`):
 
-- REDIS_HOST: The hostname or IP address of the Redis server
-- REDIS_PORT: The port number for Redis connections, typically 6379
-- REDIS_DB: The database index to use, allowing logical separation of cached data
-- REDIS_PASSWORD: Optional authentication password for secured Redis instances
+| `REDIS_TYPE` | Required env vars | Notes |
+|---|---|---|
+| `single` | `REDIS_HOST`, `REDIS_PORT` (defaults: localhost:6379) | Standard standalone Redis |
+| `cluster` | `REDIS_NODES` (e.g. `host1:6379,host2:6379,host3:6379`) | Redis Cluster with sharding |
+| `sentinel` | `REDIS_SENTINEL_NODES`, `REDIS_SENTINEL_MASTER` | HA sentinel setup |
 
-For production deployments requiring high availability, the library supports Redis Cluster mode through additional configuration parameters. Cluster support enables automatic failover and data sharding across multiple Redis nodes.
+Additional variables for all modes:
+- `REDIS_PASSWORD`: Optional authentication password
+- `REDIS_DB`: Database index (default 0)
 
-Connection pooling is handled automatically by ioredis, with sensible defaults for maximum connections, idle timeouts, and retry strategies. These parameters can be overridden during module initialization for specific performance requirements.
+All modes force `family: 4` (IPv4) to prevent IPv6 resolution issues in Docker environments.
+
+Connection pooling is handled automatically by ioredis, with sensible defaults for maximum connections, idle timeouts, and retry strategies.
 
 ## Services Using This Library
 
@@ -77,6 +83,6 @@ The cache-aside pattern is used throughout the system rather than write-through 
 
 Services must implement their own cache key naming conventions to avoid collisions across microservices sharing the same Redis instance. The recommended pattern uses service name prefixes such as "gateway:jwks:" or "presence:user:" to namespace cache entries logically.
 
-The library does not provide built-in distributed locking primitives. Services requiring atomic operations or preventing cache stampedes must implement their own locking mechanisms using Redis SET NX or similar patterns.
+The library does not provide built-in distributed locking via a separate primitive — instead, `CacheService.tryLeaderLock()` provides a built-in leader lock using `SET NX PX` with Lua-based safe release.
 
 Error handling follows a fail-open philosophy where cache failures do not prevent application functionality. If Redis becomes unavailable, services fall back to direct database queries rather than returning errors to clients. This approach prioritizes availability over performance during degraded states.

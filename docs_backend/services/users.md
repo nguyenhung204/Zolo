@@ -41,6 +41,8 @@ All endpoints require a valid JWT Bearer token unless noted. Gateway base: `http
 | `GET` | `/users/me` | Any | Get own profile (with resolved `avatarUrl`) |
 | `PUT` | `/users/me` | Any | Update own profile (`username`, `phone`, `cccdNumber`, `avatarMediaId`) |
 | `PATCH` | `/users/me/settings` | Any | Partial update of user settings (statusMessage, theme, messageDensity, enterToSend, notifications) |
+| `POST` | `/users/me/change-password` | Any | Change password (verifies current password, revokes all sessions on success) |
+| `DELETE` | `/users/me` | Any | Permanently delete own account (Keycloak + DB + `user.deleted` Kafka event — IRREVERSIBLE) |
 
 #### Session Management
 
@@ -57,6 +59,7 @@ All endpoints require a valid JWT Bearer token unless noted. Gateway base: `http
 | `GET` | `/users` | Any | List users (paginated) |
 | `GET` | `/users/search?q=...` | Any | Search users by email/username/name |
 | `GET` | `/users/:id` | Any | Get specific user by ID |
+| `PATCH` | `/users/:id/deactivate` | Admin role | Disable account: Keycloak `enabled=false` + revoke all sessions + `isActive=false` in DB + `user.deactivated` Kafka event |
 
 ### TCP Message Patterns
 
@@ -185,7 +188,7 @@ This two-stage design prevents WS broadcast before the file is safe/ready.
 | `created_at` | TIMESTAMP | No | Auto-managed by TypeORM |
 | `updated_at` | TIMESTAMP | No | Auto-managed by TypeORM |
 
-**Indexes:** `id` (PK), `email` (unique), `is_active`
+**Indexes:** `id` (PK), `email` (unique), `avatar_media_id`
 
 ### User Settings Schema (JSONB)
 
@@ -327,10 +330,3 @@ Keycloak is the authoritative session store. Duplicating session state locally w
 ### Soft-Fail for External Calls
 
 Avatar cleanup and Keycloak profile sync are non-critical side effects that must not block the main operation. Gateway uses `.catch()` with warning logs for these paths — consistent with the conversation avatar cleanup pattern.
-
-
-## Responsibilities
-
-### What This Service IS Responsible For
-
-- Creating, reading, updating, and deleting user profile records

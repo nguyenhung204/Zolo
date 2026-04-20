@@ -63,11 +63,11 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 
 **Pattern: `PRESENCE_PATTERNS.SCHEDULE_OFFLINE`**
 
-- Purpose: Schedule user to be marked offline after configurable delay
-- Payload: userId (UUID), delaySeconds (default: 30)
-- Response: Success boolean
-- Use Case: WebSocket disconnect with grace period for reconnection
-- Side Effects: Sets scheduled offline task; actual offline transition occurs after delay
+- Purpose: Schedule user to be marked offline after a hardcoded grace period
+- Payload: `{ userId: string }` — no delay parameter; grace period is fixed at **10 seconds** in `PresenceService`
+- Response: `{ scheduled: true, gracePeriod: 10 }`
+- Use Case: WebSocket disconnect with reconnection grace period
+- Side Effects: Reduces Redis TTL to 10 s; sets in-process timer; if user doesn't reconnect, marks offline after 10 s
 
 **Pattern: `PRESENCE_PATTERNS.CANCEL_OFFLINE`**
 
@@ -88,7 +88,7 @@ None. This service is a TCP microservice and does not expose HTTP endpoints dire
 
 - Purpose: Retrieve presence status for a single user
 - Payload: userId (UUID)
-- Response: Status object with isOnline (boolean), lastSeen (timestamp or null), lastActivity (timestamp)
+- Response: `{ userId, online: boolean, lastSeen?: Date }` — `online: true` if key exists in Redis, `lastSeen` is the last recorded offline timestamp (undefined if user was never set offline)
 
 **Pattern: `PRESENCE_PATTERNS.GET_BULK_STATUS`**
 
@@ -150,32 +150,21 @@ None. This service does not use a traditional database. All data is stored in Re
 
 ### Redis Data Structures
 
-**Key Pattern: `presence:user:{userId}`**
+**Key Pattern: `presence:user:{userId}:status`**
 
-- Type: Hash
-- Fields:
-  - `status` (string) - "online" or "offline"
-  - `lastSeen` (ISO 8601 timestamp) - Last time user was seen online
-  - `lastActivity` (ISO 8601 timestamp) - Last activity timestamp
-  - `updatedAt` (ISO 8601 timestamp) - Last status update timestamp
-- TTL: Configurable, default 1 hour for online users (auto-offline on expiration)
-- Purpose: Store comprehensive presence state for each user
+- Type: String (`'1'`)
+- TTL: 300 seconds (5 minutes, refreshed by heartbeat / `UPDATE_ACTIVITY`)
+- Semantics: **key exists → user is online**; key deleted → user is offline
+- Written by: `setOnline()` via `SETEX`, deleted by `setOffline()` via `DEL`
 
-**Key Pattern: `presence:scheduled:{userId}`**
+**Key Pattern: `presence:user:{userId}:last_activity`**
 
-- Type: String (timestamp)
-- Value: ISO 8601 timestamp when user should be marked offline
-- TTL: Matches scheduled delay (e.g., 30 seconds)
-- Purpose: Track scheduled offline transitions
-- Cleanup: Automatic TTL expiration removes stale scheduled tasks
+- Type: String (ISO 8601 timestamp)
+- TTL: 86400 seconds (1 day)
+- Written by: `setOffline()` to record when the user was last seen
+- Read by: `getStatus()` / `getBulkStatus()` to populate the `lastSeen` field
 
-**Key Pattern: `presence:online:count`**
-
-- Type: Integer (counter)
-- Value: Total number of online users
-- TTL: None (persistent counter)
-- Purpose: Fast online user count for metrics
-- Update: Incremented on SET_ONLINE, decremented on SET_OFFLINE
+> **Note**: Scheduled offline transitions are handled with an **in-process Node.js `setTimeout`**, not a Redis key. There is no `presence:scheduled:{userId}` key and no `presence:online:count` counter.
 
 ### Cache Usage
 
@@ -223,14 +212,14 @@ None. This service operates independently and does not call other microservices 
 4. User interacts with system (sends messages, etc.)
 5. Periodic UPDATE_ACTIVITY calls refresh activity timestamp and TTL
 6. User disconnects from WebSocket
-7. Realtime Gateway calls SCHEDULE_OFFLINE with delay (e.g., 30 seconds)
+7. Realtime Gateway calls SCHEDULE_OFFLINE (grace period is **10 seconds**, hardcoded)
 8. If user reconnects within delay: CANCEL_OFFLINE prevents offline transition
 9. If delay expires: Background task marks user offline with last-seen timestamp
 
 ### Scheduled Offline Logic
 
 - Delayed offline prevents flapping for brief disconnects (network issues, app switching)
-- Default delay is 30 seconds (configurable)
+- Grace period is **10 seconds** (hardcoded in `PresenceService.GRACE_PERIOD`; not configurable via environment variable)
 - Multiple SCHEDULE_OFFLINE calls update scheduled time (latest wins)
 - CANCEL_OFFLINE prevents transition if called before delay expires
 - Implementation uses Redis TTL-based expiration or in-memory scheduler
@@ -258,10 +247,10 @@ None. This service operates independently and does not call other microservices 
 
 ### Processing Order
 
-1. For SET_ONLINE: Update Redis hash → Set TTL → Increment online count
-2. For SET_OFFLINE: Update Redis hash with last-seen → Remove scheduled offline → Decrement online count
-3. For SCHEDULE_OFFLINE: Store scheduled timestamp with TTL → Background task triggers SET_OFFLINE after delay
-4. For GET_BULK_STATUS: Redis pipeline HMGET for all user IDs → Parse and return results
+1. For SET_ONLINE: `SETEX presence:user:{userId}:status 300 '1'` → refresh TTL
+2. For SET_OFFLINE: `DEL presence:user:{userId}:status` + `SETEX presence:user:{userId}:last_activity` → set last-seen timestamp
+3. For SCHEDULE_OFFLINE: reduce Redis TTL to 10 s via `EXPIRE`; start in-process `setTimeout(10s)` → call `SET_OFFLINE` if still disconnected
+4. For GET_BULK_STATUS: Redis pipeline `EXISTS` × N + `GET last_activity` × N → assemble `{ userId, online, lastSeen? }[]`
 
 ### Consistency Model
 
@@ -297,10 +286,9 @@ None. This service operates independently and does not call other microservices 
 
 ### Optional Configuration
 
-- `PRESENCE_ONLINE_TTL` - TTL for online status in seconds (default: 3600, 1 hour)
-- `PRESENCE_OFFLINE_DELAY` - Default delay before marking offline in seconds (default: 30)
-- `PRESENCE_ACTIVITY_TTL_EXTEND` - Whether UPDATE_ACTIVITY extends TTL (default: true)
 - `REDIS_CONNECTION_TIMEOUT` - Redis operation timeout in milliseconds (default: 1000)
+
+> **Note**: `PRESENCE_TTL` (300 s) and grace period (10 s) are **hardcoded constants** in `PresenceService`, not configurable via environment variables.
 
 ### Feature Flags
 

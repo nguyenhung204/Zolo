@@ -11,10 +11,13 @@
 2. [Cập nhật profile cá nhân](#2-cập-nhật-profile-cá-nhân)
 3. [Cập nhật settings cá nhân](#3-cập-nhật-settings-cá-nhân)
 4. [Quản lý sessions](#4-quản-lý-sessions)
-5. [Tra cứu user](#5-tra-cứu-user)
-6. [Upload & cập nhật avatar](#6-upload--cập-nhật-avatar)
-7. [Avatar variant: thumb vs original](#7-avatar-variant-thumb-vs-original)
-8. [Cấu trúc Response User](#8-cấu-trúc-response-user)
+5. [Thay đổi mật khẩu](#5-thay-đổi-mật-khẩu)
+5a. [Xóa tài khoản cá nhân](#5a-xóa-tài-khoản-cá-nhân)
+5b. [[Admin] Vô hiệu hóa tài khoản](#5b-admin-vô-hiệu-hóa-tài-khoản-user)
+6. [Tra cứu user](#6-tra-cứu-user)
+7. [Upload & cập nhật avatar](#7-upload--cập-nhật-avatar)
+8. [Avatar variant: thumb vs original](#8-avatar-variant-thumb-vs-original)
+9. [Cấu trúc Response User](#9-cấu-trúc-response-user)
 
 ---
 
@@ -185,8 +188,10 @@ Authorization: Bearer <token>
 **Response 200**
 
 ```json
-{ "revoked": true }
+{ "revokedCount": 2, "skippedCurrent": true }
 ```
+
+> `revokedCount` = số session đã bị thu hồi. `skippedCurrent: true` khi session hiện tại (được nhận dạng bằng `sid` claim trong JWT) được giữ lại.
 
 ### Huỷ 1 session cụ thể
 
@@ -198,12 +203,86 @@ Authorization: Bearer <token>
 **Response 200**
 
 ```json
-{ "revoked": true }
+{ "success": true }
 ```
 
 ---
 
-## 5. Tra cứu user
+## 5. Thay đổi mật khẩu
+
+```http
+POST /users/me/change-password
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**Request body**
+
+```json
+{
+  "currentPassword": "OldSecure@123",
+  "newPassword": "NewSecure@456"
+}
+```
+
+| Field | Rule |
+|-------|------|
+| `currentPassword` | Mật khẩu hiện tại (bắt buộc) |
+| `newPassword` | Min 8 ký tự, bao gồm chữ hoa, chữ thường, số và ký tự đặc biệt (`!@#$%^&*`) |
+
+**Response 200**
+
+```json
+{ "message": "Password changed successfully. Please log in again." }
+```
+
+> Gateway xác minh `currentPassword` qua Keycloak ROPC grant trước khi áp dụng thay đổi. Sau khi thành công, **toàn bộ Keycloak session bị thu hồi** — FE phải xóa tokens và redirect về trang login.
+
+**Errors:**
+| HTTP | Mô tả |
+|------|-------|
+| `401` | `currentPassword` không khớp |
+| `400` | `newPassword` vi phạm chính sách mật khẩu |
+
+---
+
+## 5a. Xóa tài khoản cá nhân
+
+```http
+DELETE /users/me
+Authorization: Bearer <token>
+```
+
+**Response 200**
+
+```json
+{ "success": true, "message": "Account deleted successfully." }
+```
+
+> **Hành động không thể đảo ngược (IRREVERSIBLE)**. Quy trình: thu hồi toàn bộ Keycloak session → xóa Keycloak account → xóa vĩnh viễn trong users DB → publish Kafka `user.deleted`.
+
+---
+
+## 5b. [Admin] Vô hiệu hóa tài khoản user
+
+> Yêu cầu role `admin` trong `realm_access.roles`.
+
+```http
+PATCH /users/:id/deactivate
+Authorization: Bearer <token>
+```
+
+**Response 200**
+
+```json
+{ "success": true, "message": "User account deactivated." }
+```
+
+> Quy trình: disable Keycloak account (`enabled=false`) → thu hồi toàn bộ Keycloak session → set `isActive=false` trong users DB → publish Kafka `user.deactivated`.
+
+---
+
+## 6. Tra cứu user
 
 > Mọi user đã đăng nhập đều có thể tra cứu user khác.
 

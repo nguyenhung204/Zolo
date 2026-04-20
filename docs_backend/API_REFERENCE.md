@@ -1,45 +1,112 @@
-
 # API Reference — NestJS Chat System
 
 > **Base URL HTTP**: `http://localhost:3000`
-> **Base URL WebSocket**: `ws://localhost:3002`
-> Tất cả API (trừ Public) yêu cầu header `Authorization: Bearer <TOKEN>`
-> Response luôn được bọc trong envelope chuẩn (xem mục 1)
+> **Base URL WebSocket (Chat)**: `ws://localhost:3002/chat`
+> **Base URL WebSocket (Call)**: `ws://localhost:3002/call`
+> All protected APIs require header `Authorization: Bearer <ACCESS_TOKEN>`
+> All responses are wrapped in a standard envelope (see Section 1)
 
 ---
 
-## Mục lục
+## Table of Contents
 
 1. [Conventions & Response Format](#1-conventions--response-format)
-2. [Xác thực (Auth)](#2-xác-thực-auth)
-   - [POST /auth/login — Đăng nhập](#post-authlogin--đăng-nhập)
-   - [POST /auth/refresh — Làm mới token](#post-authrefresh--làm-mới-token)
-   - [POST /auth/logout — Đăng xuất](#post-authlogout--đăng-xuất)
-   - [POST /auth/register/init — Bước 1: Gửi OTP đăng ký](#post-authregisterinit--bước-1-gửi-otp-đăng-ký)
-   - [POST /auth/register/verify-otp — Bước 2: Xác thực OTP](#post-authregisterverify-otp--bước-2-xác-thực-otp)
-   - [POST /auth/register/complete — Bước 3: Hoàn tất đăng ký](#post-authregistercomplete--bước-3-hoàn-tất-đăng-ký)
-   - [POST /auth/forgot-password — Quên mật khẩu (gửi OTP)](#post-authforgot-password--quên-mật-khẩu-gửi-otp)
-   - [POST /auth/reset-password — Đặt lại mật khẩu bằng OTP](#post-authreset-password--đặt-lại-mật-khẩu-bằng-otp)
-3. [Health & Root](#3-health--root)
-4. [Users — Quản lý người dùng](#4-users--quản-lý-người-dùng)
-   - [POST /users/me/change-password — Đổi mật khẩu (đã đăng nhập)](#post-usersmechange-password--đổi-mật-khẩu-đã-đăng-nhập)
-5. [Conversations — Cuộc trò chuyện](#5-conversations--cuộc-trò-chuyện)
-6. [Chat & Messages — Tin nhắn](#6-chat--messages--tin-nhắn)
-7. [Friendships — Kết bạn](#7-friendships--kết-bạn)
-8. [Media — Tải lên file / ảnh / video](#8-media--tải-lên-file--ảnh--video)
-9. [Notifications — Thông báo & Thiết bị](#9-notifications--thông-báo--thiết-bị)
-10. [Presence — Trạng thái trực tuyến](#10-presence--trạng-thái-trực-tuyến)
-11. [Calls — Cuộc gọi video/voice](#11-calls--cuộc-gọi-videovoice)
-12. [WebSocket — Realtime Gateway](#12-websocket--realtime-gateway)
-13. [Luồng hoạt động chính](#13-luồng-hoạt-động-chính)
+2. [Auth — Authentication & Registration](#2-auth--authentication--registration)
+   - [POST /auth/login](#post-authlogin)
+   - [POST /auth/refresh](#post-authrefresh)
+   - [POST /auth/logout](#post-authlogout)
+   - [POST /auth/register/init](#post-authregisterinit)
+   - [POST /auth/register/verify-otp](#post-authregisterverify-otp)
+   - [POST /auth/register/complete](#post-authregistercomplete)
+   - [POST /auth/forgot-password](#post-authforgot-password)
+   - [POST /auth/verify-otp](#post-authverify-otp)
+   - [POST /auth/reset-password](#post-authreset-password)
+3. [Health & System](#3-health--system)
+4. [Users — User Management](#4-users--user-management)
+   - [GET /users/me](#get-usersme)
+   - [PUT /users/me](#put-usersme)
+   - [PATCH /users/me/settings](#patch-usersmesettings)
+   - [GET /users/me/sessions](#get-usersme-sessions)
+   - [DELETE /users/me/sessions](#delete-usersme-sessions)
+   - [DELETE /users/me/sessions/:sessionId](#delete-usersme-sessionssessionid)
+   - [POST /users/me/change-password](#post-usersmechange-password)
+   - [DELETE /users/me](#delete-usersme)
+   - [PATCH /users/:id/deactivate](#patch-usersiddeactivate)
+   - [GET /users](#get-users)
+   - [GET /users/search](#get-userssearch)
+   - [GET /users/:id](#get-usersid)
+5. [Conversations — Conversation Management](#5-conversations--conversation-management)
+   - [GET /conversations](#get-conversations)
+   - [POST /conversations](#post-conversations)
+   - [GET /conversations/:id](#get-conversationsid)
+   - [GET /conversations/:id/messages](#get-conversationsidmessages)
+   - [POST /conversations/:id/members](#post-conversationsidmembers)
+   - [DELETE /conversations/:id/members](#delete-conversationsidmembers)
+   - [GET /conversations/:id/members](#get-conversationsidmembers)
+   - [GET /conversations/:id/unread](#get-conversationsidunread)
+   - [PATCH /conversations/:id/offset](#patch-conversationsidoffset)
+   - [PATCH /conversations/:id/info](#patch-conversationsidinfo)
+   - [PATCH /conversations/:id/members/:userId/role](#patch-conversationsidmembersuserid-role)
+   - [GET /conversations/:id/pinned](#get-conversationsidpinned)
+6. [Chat & Messages](#6-chat--messages)
+   - [POST /chat/messages](#post-chatmessages)
+   - [POST /chat/pre-check-media](#post-chatpre-check-media)
+   - [PATCH /messages/:id](#patch-messagesid)
+   - [DELETE /messages/:id](#delete-messagesid)
+   - [POST /messages/:id/pin](#post-messagesidpin)
+   - [DELETE /messages/:id/pin](#delete-messagesidpin)
+   - [POST /messages/:id/revoke](#post-messagesidrevoke)
+   - [DELETE /messages/:id/for-me](#delete-messagesidfor-me)
+   - [POST /messages/forward](#post-messagesforward)
+   - [POST /messages/:id/reactions](#post-messagesidreactions)
+7. [Friendships](#7-friendships)
+   - [POST /friendships/requests/:targetUserId](#post-friendshipsrequeststargetuserid)
+   - [POST /friendships/requests/:fromUserId/accept](#post-friendshipsrequestsfromuseridaccept)
+   - [POST /friendships/requests/:fromUserId/reject](#post-friendshipsrequestsfromuseridreject)
+   - [GET /friendships/requests](#get-friendshipsrequests)
+   - [GET /friendships](#get-friendships)
+   - [GET /friendships/:targetUserId/status](#get-friendshipstargetuseridstatus)
+   - [DELETE /friendships/:targetUserId](#delete-friendshipstargetuserid)
+   - [POST /friendships/blocks/:targetUserId](#post-friendshipsblockstargetuserid)
+   - [DELETE /friendships/blocks/:targetUserId](#delete-friendshipsblockstargetuserid)
+8. [Media — File Upload & Access](#8-media--file-upload--access)
+   - [GET /media](#get-media)
+   - [POST /media/upload](#post-mediaupload)
+   - [POST /media/upload/complete](#post-mediauploadcomplete)
+   - [GET /media/:mediaId/url](#get-mediamediaidurl)
+   - [GET /media/:mediaId/play-info](#get-mediamediaidplay-info)
+   - [DELETE /media/:mediaId](#delete-mediamediaid)
+   - [POST /media/:mediaId/cross-share](#post-mediamediaidcross-share)
+   - [POST /media/multipart/init](#post-mediamultipartinit)
+   - [POST /media/multipart/presign-parts](#post-mediamultipartpresign-parts)
+   - [POST /media/multipart/complete](#post-mediamultipartcomplete)
+   - [DELETE /media/multipart/:mediaId](#delete-mediamultipartmediaid)
+9. [Notifications — Push Notifications & Preferences](#9-notifications--push-notifications--preferences)
+   - [GET /notifications/vapid-public-key](#get-notificationsvapid-public-key)
+   - [POST /notifications/devices](#post-notificationsdevices)
+   - [DELETE /notifications/devices/:deviceId](#delete-notificationsdevicesdeviceid)
+   - [PUT /notifications/preferences](#put-notificationspreferences)
+   - [GET /notifications/preferences](#get-notificationspreferences)
+10. [Presence — Online Status](#10-presence--online-status)
+    - [GET /presence/status](#get-presencestatus)
+    - [GET /presence/friends](#get-presencefriends)
+11. [Stickers — Sticker Catalog](#11-stickers--sticker-catalog)
+    - [GET /stickers/packages](#get-stickerspackages)
+    - [GET /stickers/packages/:packageId/stickers](#get-stickerspacka gespackageidstickers)
+12. [Client Implementation Guides](#12-client-implementation-guides)
+    - [Guide 1: Fast-Ack Message Send Flow](#guide-1-fast-ack-message-send-flow)
+    - [Guide 2: Single-File Media Upload (≤ 10 MB)](#guide-2-single-file-media-upload--10-mb)
+    - [Guide 3: Multipart Media Upload (> 10 MB)](#guide-3-multipart-media-upload--10-mb)
+    - [Guide 4: Cursor Tracking & Read Receipts](#guide-4-cursor-tracking--read-receipts)
+    - [Guide 5: Reaction Optimistic Updates](#guide-5-reaction-optimistic-updates)
 
 ---
 
 ## 1. Conventions & Response Format
 
-### Envelope chuẩn (tất cả HTTP response)
+### Standard Envelope (all HTTP responses)
 
-Mỗi response trả về từ Gateway đều được bọc trong một envelope chuẩn. FE/Mobile luôn đọc trường `data` để lấy kết quả.
+Every response from the Gateway is wrapped in a standard envelope. Clients always read the `data` field for results.
 
 ```json
 {
@@ -49,7 +116,7 @@ Mỗi response trả về từ Gateway đều được bọc trong một envelop
 }
 ```
 
-Với danh sách có phân trang:
+With pagination:
 
 ```json
 {
@@ -64,78 +131,83 @@ Với danh sách có phân trang:
 }
 ```
 
-### Message mặc định theo method
+### Default message by HTTP method
 
 | HTTP Method | message |
 |---|---|
-| GET | "Data retrieved successfully" |
-| POST | "Resource created successfully" |
-| PUT / PATCH | "Resource updated successfully" |
-| DELETE | "Resource deleted successfully" |
+| GET | `"Data retrieved successfully"` |
+| POST | `"Resource created successfully"` |
+| PUT / PATCH | `"Resource updated successfully"` |
+| DELETE | `"Resource deleted successfully"` |
 
-### Rate limit mặc định
+### Authentication
 
-Global: 120 request/60 giây mỗi IP. Một số endpoint call có giới hạn riêng (xem mục 11).
+All protected routes require:
+```
+Authorization: Bearer <ACCESS_TOKEN>
+```
 
-### Roles trong JWT (`realm_access.roles`)
+Platform-sensitive routes (login, refresh, logout) also read:
+```
+X-Client-Platform: web | mobile
+```
+Defaults to `web` if the header is absent or invalid. The system enforces **1 web session + 1 mobile session** per user via Redis Session Store.
 
-Roles are assigned by Keycloak and embedded in the JWT. The system uses conversation-level roles (owner, admin, moderator, member, guest) rather than org-level roles.
+### Business error codes
 
-### Mã lỗi nghiệp vụ phổ biến
-
-| Code | Ý nghĩa |
+| Code | Meaning |
 |---|---|
-| `FORBIDDEN_ACCOUNT_STATUS` | Tài khoản bị khóa hoặc đã offboard |
-| `FORBIDDEN_NOT_MEMBER` | Không phải thành viên conversation |
-| `FORBIDDEN_ROLE_REQUIRED` | Không đủ quyền để thực hiện hành động |
-| `FORBIDDEN_TIME_WINDOW` | Quá thời gian cho phép (sửa/xóa tin nhắn) |
-| `FORBIDDEN_MEDIA_NOT_READY` | File chưa xử lý xong |
-| `FORBIDDEN_MEDIA_OWNERSHIP` | Không sở hữu file này |
-| `FORBIDDEN_MEDIA_CLASSIFICATION` | File bị hạn chế, kênh không cho phép |
-| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | Quá cửa sổ thời gian thu hồi tin nhắn (~2 phút) |
-| `FORBIDDEN_NOT_OWNER` | Tin nhắn không thuộc về bạn |
-| `SOURCE_MESSAGE_NOT_FOUND` | Tin nhắn gốc không tồn tại hoặc đã bị xóa (khi forward) |
+| `FORBIDDEN_ACCOUNT_STATUS` | Account is locked or deactivated |
+| `FORBIDDEN_NOT_MEMBER` | Caller is not a member of the conversation |
+| `FORBIDDEN_ROLE_REQUIRED` | Insufficient conversation role |
+| `FORBIDDEN_TIME_WINDOW` | Outside allowed edit/delete window |
+| `FORBIDDEN_MEDIA_NOT_READY` | File still being processed |
+| `FORBIDDEN_MEDIA_OWNERSHIP` | File not owned by caller |
+| `FORBIDDEN_MEDIA_CLASSIFICATION` | File type restricted in this channel |
+| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | Outside 1-hour revoke window |
+| `FORBIDDEN_NOT_OWNER` | Message does not belong to caller |
+| `SOURCE_MESSAGE_NOT_FOUND` | Source message missing or deleted (forward) |
+
+### Rate limits
+
+Global: **60 000 requests / 60 s per IP**. Per-endpoint limits are documented inline.
 
 ---
 
-## 2. Xác thực (Auth)
+## 2. Auth — Authentication & Registration
 
-Hệ thống dùng **Keycloak** làm Identity Provider. Token là JWT RS256, xác thực tại Gateway qua JWKS (cached Redis). Mỗi user có tối đa **1 phiên web + 1 phiên mobile** được quản lý bởi Redis Session Store.
+The system uses **Keycloak** as the Identity Provider. Tokens are JWT RS256, verified at the Gateway via cached JWKS. Each user may have at most **1 web session + 1 mobile session**, managed by Redis Session Store.
 
-> **Header bắt buộc cho các endpoint cần platform:**
-> `X-Client-Platform: web` hoặc `X-Client-Platform: mobile` (mặc định `web` nếu thiếu)
+> All Auth endpoints accept and return `Content-Type: application/json`.
 
 ---
 
-### POST /auth/login — Đăng nhập
+### POST /auth/login
 
-**Public — không cần token**
+**Public — no token required**
 
-> Chỉ hỗ trợ đăng nhập bằng `email` + `password`.
+Login with email + password. Creates or replaces the session for the given platform (max 1 web, 1 mobile). If a session already exists on that platform it is revoked — the old WebSocket socket receives `session_revoked` and is disconnected.
 
 ```bash
 curl -X POST http://localhost:3000/auth/login \
   -H "Content-Type: application/json" \
-  -H "X-Client-Platform: web" \
   -d '{
-    "email": "alice@example.com",
+    "email": "alice@gmail.com",
     "password": "Secret123!",
     "platform": "web",
-    "deviceInfo": {
-      "deviceName": "Chrome / Windows"
-    }
+    "deviceInfo": { "deviceName": "Chrome / Windows" }
   }'
 ```
 
-**Body:**
+**Request body:**
 
-| Field | Type | Bắt buộc | Mô tả |
-|-------|------|----------|-------|
-| `email` | string | ✓ | Email tài khoản — **phải là @gmail.com** |
-| `password` | string | ✓ | Mật khẩu |
-| `platform` | `'web'\|'mobile'` | ✓ | Loại thiết bị |
-| `deviceInfo.deviceName` | string |  | Tên thiết bị hiển thị |
-| `deviceInfo.userAgent` | string |  | User-Agent (tự động lấy nếu không gửi) |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `email` | `string` | ✓ | Must be `@gmail.com`. Normalized to lowercase. |
+| `password` | `string` | ✓ | |
+| `platform` | `'web'\|'mobile'` | ✓ | Session type |
+| `deviceInfo.deviceName` | `string` | | Human-readable device label |
+| `deviceInfo.userAgent` | `string` | | Falls back to HTTP `User-Agent` header |
 
 **Response 200:**
 ```json
@@ -150,45 +222,47 @@ curl -X POST http://localhost:3000/auth/login \
 }
 ```
 
-> **Hành vi phiên**: Nếu đã có phiên `web` khác, phiên cũ bị thu hồi, WebSocket nhận event `session_revoked` và bị ngắt kết nối.
-
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | Email không phải @gmail.com |
-| 401 | Sai email hoặc mật khẩu |
-| 500 | Keycloak không phản hồi |
+| HTTP | Scenario |
+|---|---|
+| 400 | Email not `@gmail.com` |
+| 401 | Wrong credentials |
+| 500 | Keycloak unavailable |
 
 ---
 
-### POST /auth/refresh — Làm mới token
+### POST /auth/refresh
 
-**Public — không cần token**
+**Public — no token required**
+
+Refresh the access token. The stored Keycloak SID is updated if Keycloak rotates it on refresh.
 
 ```bash
 curl -X POST http://localhost:3000/auth/refresh \
   -H "Content-Type: application/json" \
   -H "X-Client-Platform: web" \
-  -d '{
-    "refreshToken": "<REFRESH_TOKEN>"
-  }'
+  -d '{ "refreshToken": "<REFRESH_TOKEN>" }'
 ```
 
-**Response 200:** cùng cấu trúc với `/auth/login`.
+**Request body:**
 
-**Lỗi phổ biến:**
+| Field | Type | Required |
+|---|---|---|
+| `refreshToken` | `string` | ✓ |
 
-| HTTP | Trường hợp |
-|------|------------|
-| 401 | `refreshToken` hết hạn hoặc bị revoke |
-| 401 `SESSION_REVOKED` | Phiên bị kick bởi đăng nhập ở thiết bị khác, hoặc SID mismatch (Keycloak session_state không khớp với session đã lưu) |
+**Response 200:** same structure as `/auth/login`.
+
+| HTTP | Scenario |
+|---|---|
+| 401 | `refreshToken` expired or revoked |
+| 401 `SESSION_REVOKED` | Session kicked by another login, or SID mismatch |
 
 ---
 
-### POST /auth/logout — Đăng xuất
+### POST /auth/logout
 
-**Yêu cầu JWT**
+**Requires JWT**
+
+Revokes the local Redis session, the Keycloak session, and publishes a WebSocket disconnect event for the current platform session.
 
 ```bash
 curl -X POST http://localhost:3000/auth/logout \
@@ -201,37 +275,39 @@ curl -X POST http://localhost:3000/auth/logout \
 {
   "statusCode": 200,
   "message": "Resource created successfully",
-  "data": { "message": "Đăng xuất thành công." }
+  "data": { "message": "Logged out successfully." }
 }
 ```
 
-> Xóa phiên Redis, thu hồi session Keycloak, publish event ngắt WebSocket.
-
 ---
 
-### POST /auth/register/init — Bước 1: Gửi OTP đăng ký
+### POST /auth/register/init
 
-**Public — không cần token**
+**Public — no token required**
+
+Step 1 of 3-step registration. Verifies email uniqueness and sends a 6-digit OTP (valid 10 min).
+
+**Rate limit:** 5 requests / 15 min per email, 60 s cooldown between requests.
 
 ```bash
 curl -X POST http://localhost:3000/auth/register/init \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "bob@example.com",
-    "firstName": "Nguyễn",
-    "lastName": "Hùng"
+    "email": "bob@gmail.com",
+    "firstName": "Bob",
+    "lastName": "Nguyen"
   }'
 ```
 
-**Body:**
+**Request body:**
 
-| Field | Type | Bắt buộc | Mô tả |
-|-------|------|----------|-------|
-| `email` | string | ✓ | Email đăng ký — **phải là @gmail.com**, phải chưa tồn tại |
-| `firstName` | string | ✓ | Tên, 1–20 ký tự |
-| `lastName` | string | ✓ | Họ, 1–20 ký tự |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `email` | `string` | ✓ | Must be `@gmail.com`, must not already exist |
+| `firstName` | `string` | ✓ | 1–20 characters; letters, spaces, apostrophes, dots, hyphens |
+| `lastName` | `string` | ✓ | 1–20 characters; same rules as `firstName` |
 
-> `username` hiển thị được hệ thống tự sinh từ `firstName + " " + lastName`, có thể trùng và có thể thay đổi sau này.
+> The display `username` is auto-generated from `firstName + " " + lastName`. It is non-unique and can be changed later.
 
 **Response 200:**
 ```json
@@ -242,28 +318,32 @@ curl -X POST http://localhost:3000/auth/register/init \
 }
 ```
 
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | Email không phải @gmail.com |
-| 409 | Email đã được đăng ký |
-| 429 | Vượt rate limit (5 lần/15 phút/email) hoặc cooldown 60s |
+| HTTP | Scenario |
+|---|---|
+| 400 | Email not `@gmail.com` |
+| 409 | Email already registered |
+| 429 | Rate limit or cooldown exceeded |
 
 ---
 
-### POST /auth/register/verify-otp — Bước 2: Xác thực OTP
+### POST /auth/register/verify-otp
 
-**Public — không cần token**
+**Public — no token required**
+
+Step 2. Verifies the registration OTP and returns a short-lived `registrationToken`.
 
 ```bash
 curl -X POST http://localhost:3000/auth/register/verify-otp \
   -H "Content-Type: application/json" \
-  -d '{
-    "email": "bob@example.com",
-    "otp": "482951"
-  }'
+  -d '{ "email": "bob@gmail.com", "otp": "482951" }'
 ```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `email` | `string` | ✓ |
+| `otp` | `string` | ✓ |
 
 **Response 200:**
 ```json
@@ -277,42 +357,830 @@ curl -X POST http://localhost:3000/auth/register/verify-otp \
 }
 ```
 
-> `registrationToken` có hiệu lực **10 phút**, dùng một lần duy nhất cho bước 3.
+> `registrationToken` is valid for **10 minutes** and is single-use.
 
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | OTP hết hạn, sai, đã dùng, hoặc quá 3 lần nhập sai |
+| HTTP | Scenario |
+|---|---|
+| 400 | OTP expired, incorrect, already used, or > 3 wrong attempts (lockout) |
 
 ---
 
-### POST /auth/register/complete — Bước 3: Hoàn tất đăng ký
+### POST /auth/register/complete
 
-**Public — không cần token**
+**Public — no token required**
+
+Step 3. Creates accounts in Keycloak and the users service, then auto-logs in and returns tokens.
+
+> **Saga-lite rollback:** if the users-service fails after Keycloak succeeds, the Keycloak account is deleted.
 
 ```bash
 curl -X POST http://localhost:3000/auth/register/complete \
   -H "Content-Type: application/json" \
-  -H "X-Client-Platform: web" \
   -d '{
     "registrationToken": "550e8400-e29b-41d4-a716-446655440000",
     "password": "MyPass@2026",
     "platform": "web",
-    "deviceInfo": {
-      "deviceName": "Chrome / Windows"
-    }
+    "deviceInfo": { "deviceName": "Chrome / Windows" }
   }'
 ```
 
-**Body:**
+**Request body:**
 
-| Field | Type | Bắt buộc | Mô tả |
-|-------|------|----------|-------|
-| `registrationToken` | string (UUID) |  | Token nhận từ bước 2 |
-| `password` | string |  | Mật khẩu mới, tối thiểu 8 ký tự |
-| `platform` | `'web'\|'mobile'` |  | Loại thiết bị |
-| `deviceInfo.deviceName` | string |  | Tên thiết bị |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `registrationToken` | `string` | ✓ | Token from step 2 |
+| `password` | `string` | ✓ | Minimum 8 characters |
+| `platform` | `'web'\|'mobile'` | ✓ | |
+| `deviceInfo.deviceName` | `string` | | |
+| `deviceInfo.userAgent` | `string` | | |
+
+**Response 201:** same structure as `/auth/login`.
+
+| HTTP | Scenario |
+|---|---|
+| 400 | `registrationToken` expired or invalid |
+| 409 | Email already exists (race condition) |
+| 500 | System error (both sides rolled back) |
+
+---
+
+### POST /auth/forgot-password
+
+**Public — no token required**
+
+Sends a 6-digit OTP to the registered email (valid 10 min). Returns `404` if the email does not exist.
+
+**Rate limit:** 5 requests / 15 min per email, 60 s cooldown.
+
+```bash
+curl -X POST http://localhost:3000/auth/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "alice@gmail.com" }'
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": { "message": "OTP code has been sent to your email." }
+}
+```
+
+| HTTP | Scenario |
+|---|---|
+| 400 | Invalid email format |
+| 404 | Email not found |
+| 429 | Rate limit or cooldown |
+
+---
+
+### POST /auth/verify-otp
+
+**Public — no token required**
+
+Verifies the password-reset OTP and returns a `resetToken`.
+
+```bash
+curl -X POST http://localhost:3000/auth/verify-otp \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "alice@gmail.com", "otp": "482951" }'
+```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `email` | `string` | ✓ |
+| `otp` | `string` | ✓ |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "resetToken": "eyJhbGci...",
+    "expiresIn": 600
+  }
+}
+```
+
+---
+
+### POST /auth/reset-password
+
+**Public — no token required**
+
+Applies the new password using the `resetToken` from `/auth/verify-otp`.
+
+```bash
+curl -X POST http://localhost:3000/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resetToken": "eyJhbGci...",
+    "newPassword": "NewPass@2026"
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `resetToken` | `string` | ✓ |
+| `newPassword` | `string` | ✓ |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": { "message": "Password has been reset successfully." }
+}
+```
+
+---
+
+## 3. Health & System
+
+All health endpoints are **public** (no token required).
+
+| Route | Description |
+|---|---|
+| `GET /` | Returns `"Hello World!"` string |
+| `GET /health` | `{ status: 'ok', timestamp, service: 'gateway' }` |
+| `GET /health/circuit-breakers` | Circuit-breaker state for gateway + chat-core services |
+| `GET /me` | Returns decoded JWT claims **(requires auth)** |
+
+**GET /health/circuit-breakers response:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "timestamp": "2026-01-15T10:00:00.000Z",
+    "circuitBreakers": {
+      "gateway": { "conversation-service": "CLOSED" },
+      "chatCore": { "message-store": "CLOSED" }
+    },
+    "health": {
+      "status": "HEALTHY",
+      "message": "All circuit breakers operational"
+    }
+  }
+}
+```
+
+**GET /me response (requires auth):**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "id": "user-uuid",
+    "username": "alice.nguyen",
+    "email": "alice@gmail.com",
+    "name": "Alice Nguyen",
+    "roles": ["user"]
+  }
+}
+```
+
+---
+
+## 4. Users — User Management
+
+All routes require `Authorization: Bearer <TOKEN>` unless noted.
+
+---
+
+### GET /users/me
+
+Returns the authenticated user's full profile with a presigned avatar URL.
+
+```bash
+curl "http://localhost:3000/users/me?avatarVariant=thumb" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `avatarVariant` | `'thumb'\|'original'` | `'thumb'` | Presigned URL variant for avatar |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "id": "user-uuid",
+    "username": "Alice Nguyen",
+    "email": "alice@gmail.com",
+    "avatarUrl": "https://storage.../thumb_avatar.webp",
+    "statusMessage": "Available",
+    "language": "vi",
+    "timezone": "Asia/Ho_Chi_Minh",
+    "notifications": { "sound": true, "vibration": true },
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  }
+}
+```
+
+---
+
+### PUT /users/me
+
+Full update of the authenticated user's profile. Returns updated profile.
+
+```bash
+curl -X PUT http://localhost:3000/users/me \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "Alice N.",
+    "avatarMediaId": "media-uuid"
+  }'
+```
+
+**Request body (`UpdateUserDto`):**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `username` | `string` | | Display name |
+| `avatarMediaId` | `string` (UUID) | | Media ID of uploaded avatar (from POST /media/upload) |
+| `statusMessage` | `string` | | Short status text |
+
+**Query params:** same `avatarVariant` as GET /users/me (default `'thumb'`).
+
+---
+
+### PATCH /users/me/settings
+
+Partial update of user settings. **JSON merge** — only provided fields are changed; existing settings are preserved.
+
+```bash
+curl -X PATCH http://localhost:3000/users/me/settings \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "language": "en",
+    "timezone": "UTC",
+    "notifications": { "sound": false }
+  }'
+```
+
+**Request body (`UpdateUserSettingsDto`):**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `statusMessage` | `string` | | |
+| `language` | `string` | | BCP 47 language code, e.g. `"vi"`, `"en"` |
+| `timezone` | `string` | | IANA timezone, e.g. `"Asia/Ho_Chi_Minh"` |
+| `notifications` | `object` | | Nested notification preferences object |
+
+---
+
+### GET /users/me/sessions
+
+Lists all active Keycloak sessions for the authenticated user.
+
+```bash
+curl http://localhost:3000/users/me/sessions \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": [
+    {
+      "id": "keycloak-session-id",
+      "ipAddress": "203.0.113.1",
+      "started": "2026-01-15T08:00:00.000Z",
+      "lastAccess": "2026-01-15T10:00:00.000Z",
+      "clients": ["zolo-app"]
+    }
+  ]
+}
+```
+
+---
+
+### DELETE /users/me/sessions
+
+Revoke **all** active sessions **except the current one**. Uses the `sid` claim from the current JWT to identify and preserve the current session.
+
+```bash
+curl -X DELETE http://localhost:3000/users/me/sessions \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### DELETE /users/me/sessions/:sessionId
+
+Revoke a specific session by its Keycloak session ID.
+
+```bash
+curl -X DELETE http://localhost:3000/users/me/sessions/keycloak-session-id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /users/me/change-password
+
+Change the authenticated user's password. Verifies `currentPassword` before applying. **All existing sessions are revoked on success** — the caller must re-login.
+
+```bash
+curl -X POST http://localhost:3000/users/me/change-password \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currentPassword": "OldPass@123",
+    "newPassword": "NewPass@2026"
+  }'
+```
+
+**Request body (`ChangePasswordDto`):**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `currentPassword` | `string` | ✓ | Current password for verification |
+| `newPassword` | `string` | ✓ | Must meet password policy (min 8 chars) |
+
+| HTTP | Scenario |
+|---|---|
+| 400 | `currentPassword` incorrect or `newPassword` fails policy |
+
+---
+
+### DELETE /users/me
+
+**IRREVERSIBLE.** Permanently deletes the authenticated user's account. Revokes all sessions, deletes the Keycloak account and all user data.
+
+```bash
+curl -X DELETE http://localhost:3000/users/me \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource deleted successfully",
+  "data": { "message": "Account deleted successfully." }
+}
+```
+
+---
+
+### PATCH /users/:id/deactivate
+
+**Admin only** — requires `admin` role in `realm_access.roles`.
+
+Deactivates any user account by ID. The deactivated user will receive `account:status-changed` via WebSocket and will be unable to log in.
+
+```bash
+curl -X PATCH http://localhost:3000/users/target-user-id/deactivate \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource updated successfully",
+  "data": { "message": "User account deactivated." }
+}
+```
+
+| HTTP | Scenario |
+|---|---|
+| 403 | Caller does not have `admin` role |
+| 404 | User not found |
+
+---
+
+### GET /users
+
+List users with pagination.
+
+```bash
+curl "http://localhost:3000/users?page=1&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params (`PaginationQueryDto`):**
+
+| Param | Type | Default |
+|---|---|---|
+| `page` | `number` | `1` |
+| `limit` | `number` | `20` |
+
+**Response 200:** paginated envelope with `data: User[]` and `metadata: { total, page, limit }`.
+
+---
+
+### GET /users/search
+
+Search users by display name or username.
+
+```bash
+curl "http://localhost:3000/users/search?q=alice&page=1&limit=10" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `q` | `string` | | Search query |
+| `page` | `number` | `1` | |
+| `limit` | `number` | `10` | |
+
+---
+
+### GET /users/:id
+
+Get any user's public profile by their ID.
+
+```bash
+curl http://localhost:3000/users/target-user-id \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 5. Conversations — Conversation Management
+
+All routes require authentication.
+
+---
+
+### GET /conversations
+
+List all conversations the authenticated user is a member of. Results are enriched with avatar presigned URLs and (for DIRECT conversations) the other user's profile.
+
+```bash
+curl "http://localhost:3000/conversations?page=1&limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `page` | `number` | `1` | |
+| `limit` | `number` | `20` | |
+| `avatarVariant` | `'thumb'\|'original'` | `'thumb'` | Avatar URL variant |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "conversations": [
+      {
+        "id": "conv-uuid",
+        "type": "direct",
+        "name": "Alice Nguyen",
+        "avatarUrl": "https://storage.../thumb.webp",
+        "maxOffset": 42,
+        "myOffset": 42,
+        "otherUser": {
+          "id": "user-uuid",
+          "username": "Alice Nguyen",
+          "displayName": "Alice Nguyen",
+          "avatarUrl": "https://storage.../thumb.webp"
+        },
+        "createdAt": "2026-01-01T00:00:00.000Z"
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "limit": 20
+  }
+}
+```
+
+> For `type: 'direct'`, `name` is resolved to the other participant's display name and `otherUser` contains the enriched user profile.
+
+---
+
+### POST /conversations
+
+Create a new conversation.
+
+```bash
+curl -X POST http://localhost:3000/conversations \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "group",
+    "memberIds": ["user-uuid-1", "user-uuid-2"],
+    "name": "Project Alpha",
+    "description": "Work group"
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `type` | `'direct'\|'group'\|'community'` | ✓ | Normalized to lowercase |
+| `memberIds` | `string[]` | ✓ | User IDs to add (the creator is added automatically as `OWNER`) |
+| `name` | `string` | | Required for `group` / `community` |
+| `description` | `string` | | |
+
+---
+
+### GET /conversations/:id
+
+Get detailed conversation info enriched with participant profiles and avatar URL.
+
+```bash
+curl "http://localhost:3000/conversations/conv-uuid?avatarVariant=thumb" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:** `avatarVariant: 'thumb'|'original'` (default `'thumb'`).
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "id": "conv-uuid",
+    "type": "group",
+    "name": "Project Alpha",
+    "avatarUrl": "https://storage.../thumb.webp",
+    "maxOffset": 100,
+    "participants": [
+      {
+        "userId": "user-uuid",
+        "role": "OWNER",
+        "username": "Alice Nguyen",
+        "displayName": "Alice Nguyen",
+        "avatarUrl": "https://storage.../thumb.webp"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  }
+}
+```
+
+> For DIRECT conversations, `name` is resolved to the other participant's display name.
+
+---
+
+### GET /conversations/:id/messages
+
+Fetch messages using **offset-based pagination**. Supports forward and backward paging.
+
+```bash
+# Forward from offset 100
+curl "http://localhost:3000/conversations/conv-uuid/messages?after=100&limit=30" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Backward before offset 500
+curl "http://localhost:3000/conversations/conv-uuid/messages?before=500&limit=30" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `after` | `number` | | Return messages with `offset > after` |
+| `before` | `number` | | Return messages with `offset < before` |
+| `limit` | `number` | | Default `30` |
+
+> Provide either `after` or `before`, not both. Messages are enriched with sender profiles (soft-fail: if users-service is unavailable, messages still return without sender enrichment).
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "data": [
+      {
+        "id": "msg-uuid",
+        "conversationId": "conv-uuid",
+        "senderId": "user-uuid",
+        "sender": {
+          "id": "user-uuid",
+          "username": "Alice Nguyen",
+          "displayName": "Alice Nguyen",
+          "avatarUrl": "https://storage.../thumb.webp"
+        },
+        "type": "text",
+        "content": "Hello!",
+        "offset": 42,
+        "createdAt": "2026-01-15T10:00:00.000Z"
+      }
+    ],
+    "meta": { "total": 100, "hasMore": true }
+  }
+}
+```
+
+---
+
+### POST /conversations/:id/members
+
+Add one or more members to a conversation. Requires `OWNER` or `ADMIN` role.
+
+```bash
+curl -X POST http://localhost:3000/conversations/conv-uuid/members \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "userIds": ["user-uuid-3", "user-uuid-4"] }'
+```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `userIds` | `string[]` | ✓ |
+
+---
+
+### DELETE /conversations/:id/members
+
+Remove one or more members. Requires `OWNER` or `ADMIN` role.
+
+```bash
+curl -X DELETE http://localhost:3000/conversations/conv-uuid/members \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "userIds": ["user-uuid-3"] }'
+```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `userIds` | `string[]` | ✓ |
+
+---
+
+### GET /conversations/:id/members
+
+Returns the list of member IDs in a conversation.
+
+```bash
+curl http://localhost:3000/conversations/conv-uuid/members \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /conversations/:id/unread
+
+Returns the unread message count for the authenticated user in a conversation.
+
+```bash
+curl http://localhost:3000/conversations/conv-uuid/unread \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": { "unreadCount": 5 }
+}
+```
+
+---
+
+### PATCH /conversations/:id/offset
+
+Update the authenticated user's last-seen offset (HTTP alternative to WS `conversation:update_seen_cursor`). Works for all conversation types.
+
+```bash
+curl -X PATCH http://localhost:3000/conversations/conv-uuid/offset \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "offset": 42 }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `offset` | `number` | ✓ | Offset up to which messages have been seen |
+
+> **Preferred path:** Use WS `conversation:update_seen_cursor` for lower latency. This HTTP endpoint is for initial page-load or reconnect scenarios.
+
+---
+
+### PATCH /conversations/:id/info
+
+Update conversation metadata. Requires `OWNER` or `ADMIN` role (`CH.UPDATE_INFO`).
+
+```bash
+curl -X PATCH http://localhost:3000/conversations/conv-uuid/info \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "New Group Name",
+    "description": "Updated description",
+    "avatarMediaId": "media-uuid"
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | `string` | | New conversation name |
+| `description` | `string` | | New description |
+| `avatarMediaId` | `string` | | Media ID of new avatar (must already be uploaded) |
+
+---
+
+### PATCH /conversations/:id/members/:userId/role
+
+Set the role of a conversation member. Requires `OWNER` or `ADMIN` (`MBR.SET_ROLE`).
+
+**Constraints:**
+- `OWNER` can promote to `ADMIN`
+- `ADMIN` cannot change the `OWNER` role
+- At least 1 `OWNER` or `ADMIN` must remain
+
+```bash
+curl -X PATCH http://localhost:3000/conversations/conv-uuid/members/target-user-id/role \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "role": "ADMIN" }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `role` | `string` | ✓ | `OWNER`, `ADMIN`, `MODERATOR`, `MEMBER`, `GUEST` |
+
+---
+
+### GET /conversations/:id/pinned
+
+Returns the pinned messages in a conversation (max 3 per conversation).
+
+```bash
+curl http://localhost:3000/conversations/conv-uuid/pinned \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 6. Chat & Messages
+
+All routes require authentication.
+
+---
+
+### POST /chat/messages
+
+**201 Created** — Send a message.
+
+**Fast-Ack flow**: the Gateway calls Chat Core synchronously for validation (rate limit, ACL, block check). If valid, Chat Core publishes to Kafka and returns the `messageId`. The Gateway responds 201 immediately — the message is **accepted but not yet persisted**. Persistence confirmation arrives via WS `message:saved`.
+
+```bash
+curl -X POST http://localhost:3000/chat/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+    "conversationId": "conv-uuid",
+    "content": "Hello everyone!",
+    "type": "text"
+  }'
+```
+
+**Request body (`SendMessageDto`):**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `clientMessageId` | `string` (UUID v4) | ✓ | Client-generated deduplication ID. Same ID = safe retry. |
+| `conversationId` | `string` | ✓ | Target conversation |
+| `content` | `string` | ✓* | Required for `text` type; optional for `sticker`, `media`, `image`, `video`, `audio`, `file` |
+| `type` | `'text'\|'image'\|'video'\|'audio'\|'file'\|'sticker'\|'media'` | | Default: `'text'` |
+| `replyToMessageId` | `string` | | ID of the message being replied to |
+| `metadata` | `Record<string, any>` | | Additional metadata (sticker info, etc.) |
+| `attachments` | `AttachmentRefDto[]` | | Max 30 attachments |
+| `attachments[].mediaId` | `string` (UUID v4) | ✓ | Media ID from completed upload |
+| `attachments[].type` | `'image'\|'video'\|'audio'\|'file'` | | |
 
 **Response 201:**
 ```json
@@ -320,266 +1188,44 @@ curl -X POST http://localhost:3000/auth/register/complete \
   "statusCode": 201,
   "message": "Resource created successfully",
   "data": {
-    "accessToken": "eyJhbGci...",
-    "refreshToken": "eyJhbGci...",
-    "expiresIn": 300
+    "messageId": "server-assigned-uuid",
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "accepted"
   }
 }
 ```
 
-> Tạo user trong Keycloak + users-service. Nếu users-service lỗi → Keycloak user bị xóa (Saga-lite rollback). Tự động đăng nhập sau khi tạo thành công.
+| HTTP | Scenario |
+|---|---|
+| 403 | Caller is blocked or not a member (`FORBIDDEN_NOT_MEMBER`) |
+| 429 | Rate limit exceeded |
 
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | `registrationToken` hết hạn hoặc không hợp lệ |
-| 409 | Email đã tồn tại (race condition) |
-| 500 | Lỗi hệ thống (cả 2 vế đều được rollback) |
+> See [Guide 1: Fast-Ack Message Send Flow](#guide-1-fast-ack-message-send-flow) for full client implementation.
 
 ---
 
-### POST /auth/forgot-password — Quên mật khẩu (gửi OTP)
+### POST /chat/pre-check-media
 
-**Public — không cần token**
-
-Gửi yêu cầu đặt lại mật khẩu. Nếu email tồn tại trong hệ thống, một mã OTP 6 chữ số sẽ được gửi đến email đó (hiệu lực 10 phút).
-
-> **Bảo mật**: Response luôn trả về HTTP 200 dù email có tồn tại hay không — tránh email enumeration attack.
+Validates whether a user can send a specific media type in a conversation **before** uploading the file. Call this before starting any upload to avoid wasting bandwidth.
 
 ```bash
-curl -X POST http://localhost:3000/auth/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{"email": "alice@example.com"}'
-```
-
-**Response 200:**
-```json
-{
-  "statusCode": 200,
-  "message": "Data retrieved successfully",
-  "data": {
-    "message": "Nếu email tồn tại, bạn sẽ nhận được mã OTP trong vài phút."
-  }
-}
-```
-
-**Rate limit:**
-- Tối đa **5 yêu cầu / 15 phút** mỗi email
-- Cooldown **60 giây** giữa 2 lần yêu cầu liên tiếp
-- Vượt quá → HTTP 429
-
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | Email không đúng định dạng hoặc không phải @gmail.com |
-| 429 | Vượt rate limit hoặc cooldown |
-
----
-
-### POST /auth/reset-password — Đặt lại mật khẩu bằng OTP
-
-**Không cần token (Public)**
-
-Xác thực OTP nhận được qua email và đặt mật khẩu mới. Tất cả phiên đăng nhập hiện tại bị thu hồi sau khi đặt lại thành công.
-
-```bash
-curl -X POST http://localhost:3000/auth/reset-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "alice@example.com",
-    "otp": "482951",
-    "newPassword": "NewPass@2026"
-  }'
-```
-
-**Body:**
-
-| Field | Type | Bắt buộc | Mô tả |
-|-------|------|----------|-------|
-| `email` | string |  | Email tài khoản |
-| `otp` | string |  | Mã 6 chữ số nhận qua email |
-| `newPassword` | string |  | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt, tối thiểu 8 ký tự |
-
-**Response 200:**
-```json
-{
-  "statusCode": 200,
-  "message": "Data retrieved successfully",
-  "data": {
-    "message": "Mật khẩu đã được đặt lại thành công. Vui lòng đăng nhập lại."
-  }
-}
-```
-
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 400 | OTP sai, đã hết hạn, đã dùng, hoặc quá 3 lần sai |
-| 400 | `newPassword` không đáp ứng yêu cầu độ phức tạp |
-| 500 | Lỗi phía Keycloak (thử lại sau) |
-
-> **Sau khi reset thành công**: Tất cả `access_token` / `refresh_token` cũ đều bị vô hiệu hóa. Client cần đăng nhập lại để lấy token mới.
-
----
-
-## 3. Health & Root
-
-### GET / — Kiểm tra service còn sống
-
-**Không cần token (Public)**
-
-```bash
-curl http://localhost:3000/
-```
-
-Dùng để ping. Trả về chuỗi text đơn giản.
-
----
-
-### GET /health — Trạng thái gateway
-
-**Không cần token (Public)**
-
-```bash
-curl http://localhost:3000/health
-```
-
-Response:
-
-```json
-{
-  "statusCode": 200,
-  "message": "Data retrieved successfully",
-  "data": {
-    "status": "ok",
-    "timestamp": "2026-03-28T10:00:00.000Z",
-    "service": "gateway"
-  }
-}
-```
-
----
-
-### GET /health/circuit-breakers — Trạng thái circuit breaker
-
-**Không cần token (Public)**
-
-```bash
-curl http://localhost:3000/health/circuit-breakers
-```
-
-Kiểm tra các circuit breaker của Gateway và ChatCore. Khi hệ thống chịu tải cao hoặc một service bị lỗi, circuit breaker sẽ mở để tránh lỗi dây chuyền. Endpoint này giúp DevOps và FE biết trạng thái hiện tại.
-
----
-
-### GET /me — Thông tin user đang đăng nhập (lấy từ JWT)
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/me
-```
-
-Response:
-
-```json
-{
-  "statusCode": 200,
-  "message": "Data retrieved successfully",
-  "data": {
-    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "username": "alice",
-    "email": "alice@example.com",
-    "name": "Alice Nguyen",
-    "roles": []
-  }
-}
-```
-
-Chỉ lấy từ payload JWT, không truy vấn DB. Dùng để lấy `id` nhanh. Để lấy đầy đủ profile (avatar, settings...) dùng `/users/me`.
-
----
-
-## 4. Users — Quản lý người dùng
-
-### GET /users — Danh sách tất cả user trong tổ chức
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/users?page=1&limit=20"
-```
-
----
-
-### GET /users/me — Profile đầy đủ của user đang đăng nhập
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/users/me
-```
-
-Khác với `/me` ở root (chỉ lấy từ JWT), endpoint này lấy data đầy đủ từ Users Service bao gồm `avatarUrl`, `settings`, `isActive`, v.v.
-
----
-
-### PUT /users/me — Cập nhật profile của bản thân
-
-```bash
-curl -X PUT http://localhost:3000/users/me \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "firstName": "Alice Updated",
-    "lastName": "Nguyen",
-    "phone": "+84987654321",
-    "avatarUrl": "https://cdn.example.com/avatars/alice.jpg"
-  }'
-```
-
-Chỉ được cập nhật `firstName`, `lastName`, `phone`, `cccdNumber`, `avatarMediaId`.
-
----
-
-### GET /users/search — Tìm kiếm user
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/users/search?q=alice&page=1&limit=10"
-```
-
----
-
-### GET /users/:id — Xem thông tin user cụ thể
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/users/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-```
-
----
-
-### POST /users/me/change-password — Đổi mật khẩu (đã đăng nhập)
-
-**Yêu cầu token (Authenticated)**
-
-Đổi mật khẩu cho user đang đăng nhập. Hệ thống xác thực mật khẩu hiện tại trước, sau đó đặt mật khẩu mới và **thu hồi toàn bộ phiên đăng nhập** (buộc đăng nhập lại trên tất cả thiết bị).
-
-```bash
-curl -X POST http://localhost:3000/users/me/change-password \
+curl -X POST http://localhost:3000/chat/pre-check-media \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "currentPassword": "OldPass@2025",
-    "newPassword": "NewPass@2026"
+    "conversationId": "conv-uuid",
+    "mimeType": "video/mp4",
+    "fileSize": 52428800
   }'
 ```
 
-**Body:**
+**Request body:**
 
-| Field | Type | Bắt buộc | Mô tả |
-|-------|------|----------|-------|
-| `currentPassword` | string |  | Mật khẩu hiện tại để xác minh danh tính |
-| `newPassword` | string |  | Mật khẩu mới — phải có chữ hoa, chữ thường, số, ký tự đặc biệt `!@#$%^&*`, tối thiểu 8 ký tự |
+| Field | Type | Required |
+|---|---|---|
+| `conversationId` | `string` | ✓ |
+| `mimeType` | `string` | ✓ |
+| `fileSize` | `number` | ✓ |
 
 **Response 200:**
 ```json
@@ -587,1678 +1233,1058 @@ curl -X POST http://localhost:3000/users/me/change-password \
   "statusCode": 200,
   "message": "Data retrieved successfully",
   "data": {
-    "message": "Mật khẩu đã được đổi thành công. Vui lòng đăng nhập lại."
+    "approved": true,
+    "conversationId": "conv-uuid",
+    "userId": "user-uuid",
+    "timestamp": "2026-01-15T10:00:00.000Z"
   }
 }
 ```
 
-**Lỗi phổ biến:**
-
-| HTTP | Trường hợp |
-|------|------------|
-| 401 | Mật khẩu hiện tại không đúng |
-| 400 | `newPassword` không đáp ứng yêu cầu độ phức tạp |
-| 401 | Token hết hạn hoặc không hợp lệ |
-
-> **Sau khi đổi mật khẩu thành công**: Tất cả phiên đăng nhập bị thu hồi. Client cần đăng nhập lại để lấy token mới.
-
 ---
 
-## 5. Conversations — Cuộc trò chuyện
+### PATCH /messages/:id
 
-### GET /conversations/health/outbox — Kiểm tra outbox
-
-**Không cần token (Public)**
+Edit a message. **Business rule `MSG.EDIT_OWN`:** only the sender may edit; must be within 1 hour of sending; edit history is preserved.
 
 ```bash
-curl http://localhost:3000/conversations/health/outbox
+curl -X PATCH http://localhost:3000/messages/msg-uuid \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "content": "Corrected message text" }'
 ```
 
-Xem trạng thái outbox (số event chưa xử lý). Dùng cho DevOps monitoring.
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `content` | `string` | ✓ |
+| `metadata` | `Record<string, any>` | |
+
+**Response 200:** updated message object.
+
+| HTTP | Scenario |
+|---|---|
+| 403 | Not the sender (`FORBIDDEN_NOT_OWNER`) |
+| 403 | Outside 1-hour window (`FORBIDDEN_TIME_WINDOW`) |
 
 ---
 
-### GET /conversations — Danh sách cuộc trò chuyện của user
+### DELETE /messages/:id
+
+Delete a message. **Business rules:**
+- `MSG.DELETE_OWN`: sender only, within 24 hours, soft delete
+- `MSG.DELETE_ANY`: `ADMIN` only, within 24 hours, soft delete + audit log
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations?page=1&limit=20"
+curl -X DELETE http://localhost:3000/messages/msg-uuid \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Trả về các conversation mà user đang là thành viên, kèm thông tin offset đọc cuối và số tin chưa đọc.
+**Response 200:** `{ message: 'Deleted.' }`
 
 ---
 
-### POST /conversations — Tạo cuộc trò chuyện mới
+### POST /messages/:id/pin
+
+Pin a message. **Business rule `MSG.PIN`:** `OWNER`, `ADMIN`, or `MODERATOR` only. Max 3 pinned messages per conversation.
+
+**201 Created**
 
 ```bash
-# Tạo chat đôi (DIRECT) với 1 người khác
-curl -X POST http://localhost:3000/conversations \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/messages/msg-uuid/pin \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "conversationId": "conv-uuid" }'
+```
+
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `conversationId` | `string` | ✓ |
+
+| HTTP | Scenario |
+|---|---|
+| 403 | Insufficient role (`FORBIDDEN_ROLE_REQUIRED`) |
+| 400 | Already 3 pinned messages |
+
+---
+
+### DELETE /messages/:id/pin
+
+Unpin a message. Pass `conversationId` as a query param.
+
+```bash
+curl -X DELETE "http://localhost:3000/messages/msg-uuid/pin?conversationId=conv-uuid" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Required |
+|---|---|---|
+| `conversationId` | `string` | ✓ |
+
+---
+
+### POST /messages/:id/revoke
+
+Revoke a message (tombstone — both sides see placeholder text "Message has been recalled"). **Business rule `MSG.REVOKE_OWN`:** sender only, within 1 hour. Permanent and irreversible.
+
+```bash
+curl -X POST http://localhost:3000/messages/msg-uuid/revoke \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "conversationId": "conv-uuid" }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `conversationId` | `string` | ✓ | Required for Pub/Sub room routing |
+| `reason` | `string` | | Optional reason |
+
+| HTTP | Scenario |
+|---|---|
+| 403 | Outside 1-hour window (`FORBIDDEN_REVOKE_WINDOW_EXPIRED`) |
+| 403 | Not the sender (`FORBIDDEN_NOT_OWNER`) |
+
+---
+
+### DELETE /messages/:id/for-me
+
+Hide a message for the requesting user only. Other participants are unaffected.
+
+```bash
+curl -X DELETE "http://localhost:3000/messages/msg-uuid/for-me?conversationId=conv-uuid" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Required |
+|---|---|---|
+| `conversationId` | `string` | ✓ |
+
+---
+
+### POST /messages/forward
+
+Forward a message to one or more target conversations. **201 Created**
+
+```bash
+curl -X POST http://localhost:3000/messages/forward \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "type": "DIRECT",
-    "memberIds": ["b2c3d4e5-f6a7-8901-bcde-f12345678901"]
+    "sourceMessageId": "msg-uuid",
+    "sourceConversationId": "conv-uuid-1",
+    "targetConversationIds": ["conv-uuid-2", "conv-uuid-3"],
+    "includeCaption": true
   }'
 ```
 
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `sourceMessageId` | `string` | ✓ | Message to forward |
+| `sourceConversationId` | `string` | ✓ | Source conversation |
+| `targetConversationIds` | `string[]` | ✓ | Destination conversations |
+| `includeCaption` | `boolean` | | Include original caption/content |
+
+| HTTP | Scenario |
+|---|---|
+| 404 | `SOURCE_MESSAGE_NOT_FOUND` |
+| 403 | Not a member of source or target conversation |
+
+---
+
+### POST /messages/:id/reactions
+
+Add or remove an emoji reaction. **Zero-Kafka path** — the server updates Redis and immediately broadcasts `message:reaction_updated` via Pub/Sub → WebSocket.
+
 ```bash
-# Tạo kênh nhóm GROUP với nhiều người
-curl -X POST http://localhost:3000/conversations \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/messages/msg-uuid/reactions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "type": "GROUP",
-    "memberIds": [
-      "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-      "c3d4e5f6-a7b8-9012-cdef-123456789012"
-    ],
-    "name": "Project Alpha",
-    "description": "Kênh dự án alpha"
+    "conversationId": "conv-uuid",
+    "emoji": "👍",
+    "action": "add"
   }'
 ```
 
-Các loại conversation: `DIRECT` (chat đôi, không cần name), `GROUP` (danh sách thủ công), `COMMUNITY` (chỉ admin post được).
+**Request body:**
 
-Lưu ý: Nếu đã tồn tại conversation `DIRECT` giữa 2 người, server trả về conversation cũ (không tạo mới).
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `conversationId` | `string` | ✓ | Required for Pub/Sub room routing |
+| `emoji` | `string` | ✓ | Unicode emoji character |
+| `action` | `'add'\|'remove'` | | Default: `'add'` |
+
+**Response 200:** updated reactions map for the message.
+
+> See [Guide 5: Reaction Optimistic Updates](#guide-5-reaction-optimistic-updates) for client implementation.
 
 ---
 
-### GET /conversations/:id — Chi tiết cuộc trò chuyện
+## 7. Friendships
+
+All routes require authentication.
+
+---
+
+### POST /friendships/requests/:targetUserId
+
+Send a friend request to another user.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here"
+curl -X POST http://localhost:3000/friendships/requests/target-user-id \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
----
-
-### PATCH /conversations/:id/info — Cập nhật thông tin nhóm
-
-Chỉ OWNER hoặc ADMIN của conversation mới có quyền.
-
-Trường `avatarMediaId` là UUID của media (đã upload qua Media Service). Gateway tự động xóa avatar cũ khỏi MinIO sau khi cập nhật thành công (soft-fail — lỗi xóa không làm fail toàn bộ request).
-
-```bash
-curl -X PATCH "http://localhost:3000/conversations/conv-uuid-here/info" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "name": "Project Alpha v2",
-    "description": "Kênh dự án alpha phiên bản 2",
-    "avatarMediaId": "550e8400-e29b-41d4-a716-446655440000"
-  }'
-```
+| HTTP | Scenario |
+|---|---|
+| 400 | Sending request to yourself |
+| 409 | Request already sent or already friends |
 
 ---
 
-### POST /conversations/:id/members — Thêm thành viên
+### POST /friendships/requests/:fromUserId/accept
 
-Chỉ OWNER hoặc ADMIN của conversation mới có quyền.
+Accept a pending friend request from `fromUserId`.
 
 ```bash
-curl -X POST "http://localhost:3000/conversations/conv-uuid-here/members" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "userIds": [
-      "d4e5f6a7-b8c9-0123-defa-234567890123",
-      "e5f6a7b8-c9d0-1234-efab-345678901234"
-    ]
-  }'
+curl -X POST http://localhost:3000/friendships/requests/sender-user-id/accept \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### DELETE /conversations/:id/members — Xóa thành viên
+### POST /friendships/requests/:fromUserId/reject
 
-Chỉ OWNER hoặc ADMIN của conversation mới có quyền.
+Reject a pending friend request.
 
 ```bash
-curl -X DELETE "http://localhost:3000/conversations/conv-uuid-here/members" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "userIds": ["d4e5f6a7-b8c9-0123-defa-234567890123"] }'
+curl -X POST http://localhost:3000/friendships/requests/sender-user-id/reject \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### GET /conversations/:id/members — Danh sách thành viên và role
+### GET /friendships/requests
+
+Get all pending incoming friend requests for the authenticated user.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/members"
-```
-
-Response mẫu:
-
-```json
-{
-  "data": {
-    "members": [
-      { "userId": "a1b2c3d4-uuid", "role": "OWNER" },
-      { "userId": "b2c3d4e5-uuid", "role": "MEMBER" }
-    ]
-  }
-}
-```
-
-Các role hợp lệ: `OWNER`, `ADMIN`, `MODERATOR`, `MEMBER`, `GUEST`, `READONLY`.
-
----
-
-### PATCH /conversations/:id/members/:userId/role — Thay đổi role thành viên
-
-Chỉ OWNER mới có quyền đổi role. OWNER phải giữ ít nhất 1 OWNER trong nhóm.
-
-```bash
-curl -X PATCH "http://localhost:3000/conversations/conv-uuid-here/members/b2c3d4e5-uuid/role" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "role": "MODERATOR" }'
+curl http://localhost:3000/friendships/requests \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### GET /conversations/:id/unread — Số tin nhắn chưa đọc
+### GET /friendships
+
+Get the authenticated user's friend list.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/unread"
+curl http://localhost:3000/friendships \
+  -H "Authorization: Bearer $TOKEN"
 ```
-
-Response: `{ "data": { "unreadCount": 5 } }`
 
 ---
 
-### PATCH /conversations/:id/offset — Cập nhật vị trí đọc (read cursor)
+### GET /friendships/:targetUserId/status
+
+Get the friendship status between the authenticated user and a target user.
 
 ```bash
-curl -X PATCH "http://localhost:3000/conversations/conv-uuid-here/offset" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "offset": 42 }'
+curl http://localhost:3000/friendships/target-user-id/status \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Gọi khi user đã đọc đến tin nhắn có offset = 42. Server tính lại `unreadCount`. Nên gọi sau khi user xem tin (on scroll hoặc khi màn hình conversation visible).
-
----
-
-### GET /conversations/:id/pinned — Tin nhắn được ghim
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/pinned"
-```
-
-Trả về tối đa 3 tin nhắn đang được ghim trong conversation.
-
----
-
-## 6. Chat & Messages — Tin nhắn
-
-### GET /conversations/:id/messages — Lấy tin nhắn (phân trang offset)
-
-Endpoint này nằm trong nhóm `/conversations` (trước đây là `/chat/conversations/:id/messages` — đã di chuyển). Yêu cầu membership hợp lệ.
-
-```bash
-# Lấy 30 tin nhắn mới nhất
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/messages?limit=30"
-
-# Load more — lấy tin cũ hơn offset 50
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/messages?before=50&limit=30"
-
-# Lấy tin mới hơn offset 80 (sau khi reconnect / re-open app)
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/messages?after=80&limit=30"
-```
-
-Response:
-
+**Response 200:**
 ```json
 {
   "statusCode": 200,
-  "data": {
-    "data": [
-      {
-        "id": "msg-uuid-001",
-        "conversationId": "conv-uuid-here",
-        "senderId": "a1b2c3d4-uuid",
-        "content": "Xin chào mọi người",
-        "type": "text",
-        "offset": 42,
-        "createdAt": "2026-03-28T09:00:00.000Z",
-        "isDeleted": false,
-        "mediaId": null,
-        "metadata": null
-      }
-    ],
-    "meta": {
-      "hasMore": true,
-      "oldestOffset": 13,
-      "newestOffset": 42
-    }
-  }
+  "message": "Data retrieved successfully",
+  "data": { "status": "friends" }
 }
 ```
 
-`hasMore: true` nghĩa là còn tin cũ hơn để load thêm. Dùng `meta.oldestOffset` làm giá trị `before` cho request tiếp theo.
+Possible `status` values: `"none"`, `"pending_sent"`, `"pending_received"`, `"friends"`, `"blocked"`.
 
 ---
 
-### POST /chat/messages — Gửi tin nhắn
+### DELETE /friendships/:targetUserId
+
+Unfriend a user.
 
 ```bash
-# Gửi tin nhắn text thuần
-curl -X POST http://localhost:3000/chat/messages \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": "conv-uuid-here",
-    "content": "Xin chào mọi người trong nhóm!",
-    "type": "text",
-    "clientMessageId": "client-gen-uuid-v4-001"
-  }'
-```
-
-```bash
-# Gửi tin nhắn kèm file đã upload
-curl -X POST http://localhost:3000/chat/messages \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": "conv-uuid-here",
-    "content": "Đây là file báo cáo tháng 3",
-    "type": "file",
-    "mediaId": "media-uuid-abc123",
-    "clientMessageId": "client-gen-uuid-v4-002"
-  }'
-```
-
-```bash
-# Gửi nhiều ảnh/video cùng lúc (type: 'media' với attachments[])
-curl -X POST http://localhost:3000/chat/messages \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": "conv-uuid-here",
-    "content": "Album ảnh chuyến đi",
-    "type": "media",
-    "clientMessageId": "client-gen-uuid-v4-003",
-    "attachments": [
-      { "mediaId": "media-uuid-001", "type": "image" },
-      { "mediaId": "media-uuid-002", "type": "image" },
-      { "mediaId": "media-uuid-003", "type": "video" }
-    ]
-  }'
-```
-
-Khi `type: 'media'`, `content` là tùy chọn. Tối đa **30 attachments** mỗi tin nhắn. Khi `type: 'sticker'`, `content` cũng là tùy chọn.
-
-`clientMessageId` là UUID do client tự tạo, dùng để dedup — nếu mạng timeout nhưng server đã lưu, gửi lại với cùng `clientMessageId` sẽ không tạo tin trùng.
-
-Luồng backend: Gateway → ChatCore (validate quyền) → Kafka `chat.event.message_accepted` → MessageStore (lưu vào DB) → Kafka `chat.event.message_saved` → RealtimeGW (broadcast WebSocket).
-
----
-
-### POST /chat/pre-check-media — Kiểm tra quyền gửi file trước khi upload
-
-```bash
-curl -X POST http://localhost:3000/chat/pre-check-media \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": "conv-uuid-here",
-    "mimeType": "application/pdf",
-    "fileSize": 2097152
-  }'
-```
-
-Gọi trước khi bắt đầu upload file để kiểm tra: loại file có được phép không, kích thước có vượt giới hạn không, user có đủ quyền không. Tránh upload xong mới bị từ chối, lãng phí thời gian và bandwidth.
-
-Response: `{ "data": { "approved": true } }` hoặc `{ "data": { "approved": false, "reason": "FORBIDDEN_MEDIA_CLASSIFICATION" } }`
-
----
-
-### PATCH /messages/:id — Chỉnh sửa tin nhắn
-
-```bash
-curl -X PATCH "http://localhost:3000/messages/msg-uuid-001" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "content": "Nội dung đã được chỉnh sửa"
-  }'
-```
-
-Chỉ có thể chỉnh sửa trong **10 phút** kể từ khi gửi. Nếu quá hạn, trả về lỗi `FORBIDDEN_TIME_WINDOW`. Lịch sử chỉnh sửa được lưu đầy đủ để audit.
-
----
-
-### DELETE /messages/:id — Xóa tin nhắn
-
-```bash
-curl -X DELETE "http://localhost:3000/messages/msg-uuid-001" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Thành viên chỉ có thể xóa tin của mình trong **24 giờ**. ADMIN có thể xóa tin của bất kỳ ai trong 24 giờ (kèm audit log).
-
----
-
-### POST /messages/:id/pin — Ghim tin nhắn
-
-Chỉ ADMIN hoặc MODERATOR mới có quyền ghim.
-
-```bash
-curl -X POST "http://localhost:3000/messages/msg-uuid-001/pin" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "conversationId": "conv-uuid-here" }'
-```
-
-Mỗi conversation ghim tối đa 3 tin nhắn.
-
----
-
-### DELETE /messages/:id/pin — Bỏ ghim tin nhắn
-
-> `conversationId` truyền qua **query param** (không phải request body).
-
-```bash
-curl -X DELETE "http://localhost:3000/messages/msg-uuid-001/pin?conversationId=conv-uuid-here" \\
+curl -X DELETE http://localhost:3000/friendships/target-user-id \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### GET /conversations/:id/pinned — Danh sách tin nhắn đã ghim
+### POST /friendships/blocks/:targetUserId
+
+Block a user. Blocked users cannot send friend requests or messages to the blocker.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/conversations/conv-uuid-here/pinned"
-```
-
-Trả về tối đa 3 tin nhắn đang được ghim, kèm metadata `pinnedBy`, `pinnedAt`.
-
----
-
-### POST /messages/:id/revoke — Thu hồi tin nhắn
-
-An tin nhắn với tất cả mọi người (hiển thị thành "Tin nhắn đã thu hồi"). Chỉ hoạt động trong cửa sổ thời gian ~2 phút kể từ khi gửi.
-
-```bash
-curl -X POST "http://localhost:3000/messages/msg-uuid-001/revoke" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "conversationId": "conv-uuid-here" }'
-```
-
-| Lỗi | HTTP | Mô tả |
-|-----|------|-------|
-| `FORBIDDEN_NOT_OWNER` | 403 | Tin nhắn không thuộc về bạn |
-| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | 403 | Quá ~2 phút kể từ khi gửi |
-| `MESSAGE_NOT_FOUND` | 404 | Tin nhắn không tồn tại |
-
----
-
-### DELETE /messages/:id/for-me — Xóa tin nhắn phía tôi
-
-Ẩn tin nhắn khỏi lịch sử của riêng bạn. Người khác vẫn thấy bình thường. Không có giới hạn thời gian.
-
-> `conversationId` truyền qua **query param** (không phải request body).
-
-```bash
-curl -X DELETE "http://localhost:3000/messages/msg-uuid-001/for-me?conversationId=conv-uuid-here" \\
+curl -X POST http://localhost:3000/friendships/blocks/target-user-id \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### POST /messages/forward — Chuyển tiếp tin nhắn
+### DELETE /friendships/blocks/:targetUserId
 
-Chuyển tiếp một tin nhắn sang một hoặc nhiều conversation khác.
-
-```bash
-curl -X POST http://localhost:3000/messages/forward \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "sourceMessageId": "msg-uuid-001",
-    "sourceConversationId": "conv-uuid-source",
-    "targetConversationIds": ["conv-uuid-target-1", "conv-uuid-target-2"]
-  }'
-```
-
-Phải là thành viên của cả conversation nguồn và đích. Tối đa 10 conversation đích mỗi lần gọi.
-
----
-
-## 7. Friendships — Kết bạn
-
-### POST /friendships/requests/:targetUserId — Gửi lời mời kết bạn
+Unblock a user.
 
 ```bash
-curl -X POST "http://localhost:3000/friendships/requests/b2c3d4e5-f6a7-8901-uuid" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Target user nhận push notification `friend_request`. Không thể gửi lời mời nếu đã bị block.
-
----
-
-### POST /friendships/requests/:fromUserId/accept — Chấp nhận lời mời
-
-```bash
-curl -X POST "http://localhost:3000/friendships/requests/a1b2c3d4-uuid/accept" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Khi chấp nhận: hệ thống tự động tạo conversation `DIRECT` giữa 2 người nếu chưa có (thông qua Kafka). Cả hai nhận WebSocket event `conversation:member-added`.
-
----
-
-### POST /friendships/requests/:fromUserId/reject — Từ chối lời mời
-
-```bash
-curl -X POST "http://localhost:3000/friendships/requests/a1b2c3d4-uuid/reject" \\
+curl -X DELETE http://localhost:3000/friendships/blocks/target-user-id \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### GET /friendships/requests — Danh sách lời mời đang chờ
+## 8. Media — File Upload & Access
 
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  http://localhost:3000/friendships/requests
-```
+All routes require authentication.
 
-Trả về cả lời mời đã gửi (`PENDING_SENT`) và lời mời đã nhận (`PENDING_RECEIVED`).
+The media system uses **MinIO** (S3-compatible) as object storage. Files are never served through the API itself — the client receives **presigned URLs** that expire after a configured TTL.
 
----
-
-### GET /friendships — Danh sách bạn bè
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/friendships
-```
+Two upload flows are available:
+- **Single-file** (`POST /media/upload`): for files up to ~10 MB (images ≤ 15 MB)
+- **Multipart** (`POST /media/multipart/init`): for large files, up to 1 GB for video/file
 
 ---
 
-### GET /friendships/:targetUserId/status — Trạng thái quan hệ với user
+### GET /media
+
+List all media files owned by the authenticated user.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/friendships/b2c3d4e5-f6a7-uuid/status"
-```
-
-Response các trạng thái: `NONE`, `PENDING_SENT`, `PENDING_RECEIVED`, `FRIENDS`, `BLOCKED`.
-
----
-
-### DELETE /friendships/:targetUserId — Hủy kết bạn
-
-```bash
-curl -X DELETE "http://localhost:3000/friendships/b2c3d4e5-f6a7-uuid" \\
+curl http://localhost:3000/media \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### POST /friendships/blocks/:targetUserId — Chặn user
+### POST /media/upload
+
+**Step 1 of 3** — Initiate a single-file upload session. Returns a presigned PUT URL.
 
 ```bash
-curl -X POST "http://localhost:3000/friendships/blocks/b2c3d4e5-f6a7-uuid" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Người bị chặn sẽ không gửi được tin nhắn, không gửi được lời mời kết bạn đến bạn.
-
----
-
-### DELETE /friendships/blocks/:targetUserId — Bỏ chặn user
-
-```bash
-curl -X DELETE "http://localhost:3000/friendships/blocks/b2c3d4e5-f6a7-uuid" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-## 8. Media — Tải lên file / ảnh / video
-
-Luồng upload 3 bước: **Tạo upload URL → Upload trực tiếp lên MinIO → Báo hoàn tất**.
-
-Client upload thẳng lên MinIO bằng pre-signed URL, không qua Gateway làm proxy file, tiết kiệm bandwidth.
-
-### Bước 1 — POST /media/upload — Khởi tạo upload, lấy pre-signed URL
-
-```bash
-# Upload ảnh
-curl -X POST http://localhost:3000/media/upload \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/media/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
     "type": "image",
     "mimeType": "image/jpeg",
-    "size": 1048576,
-    "filename": "avatar.jpg"
+    "size": 204800,
+    "filename": "photo.jpg"
   }'
 ```
 
-```bash
-# Upload PDF
-curl -X POST http://localhost:3000/media/upload \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "type": "file",
-    "mimeType": "application/pdf",
-    "size": 2097152,
-    "filename": "bao-cao-q1.pdf"
-  }'
-```
+**Request body (`CreateMediaUploadDto`):**
 
-```bash
-# Upload video
-curl -X POST http://localhost:3000/media/upload \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "type": "video",
-    "mimeType": "video/mp4",
-    "size": 52428800,
-    "filename": "demo.mp4"
-  }'
-```
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `type` | `'image'\|'video'\|'audio'\|'file'` | ✓ | Media category (lowercase) |
+| `mimeType` | `string` | ✓ | e.g. `"image/jpeg"`, `"video/mp4"` |
+| `size` | `number` | ✓ | File size in bytes (1 – 2 147 483 648) |
+| `filename` | `string` | | Original filename |
 
-Các giá trị `type` hợp lệ: `image`, `video`, `file`. Kích thước tối đa: 2GB (2147483648 bytes).
-
-Response:
-
+**Response 200:**
 ```json
 {
-  "statusCode": 201,
+  "statusCode": 200,
+  "message": "Resource created successfully",
   "data": {
-    "mediaId": "media-uuid-abc123",
-    "uploadUrl": "http://minio:9000/chat-bucket/media-uuid?X-Amz-Signature=...",
-    "expiresAt": "2026-03-28T10:30:00.000Z"
+    "mediaId": "media-uuid",
+    "uploadUrl": "https://storage.minio.../presigned-put-url",
+    "expiresIn": 3600
   }
 }
 ```
 
----
-
-### Bước 2 — Upload file trực tiếp lên MinIO (không qua Gateway)
-
-```bash
-curl -X PUT "<uploadUrl từ bước 1>" \\
-  -H "Content-Type: image/jpeg" \\
-  --data-binary @avatar.jpg
-```
-
-Dùng `uploadUrl` nhận được ở bước 1. URL này có chữ ký và hết hạn sau ~30 phút. Không truyền `Authorization` khi upload lên MinIO.
+> **Step 2** (client action): `PUT <uploadUrl>` with the file binary.
+> ```
+> PUT <uploadUrl>
+> Content-Type: <mimeType>    ← must match the mimeType sent in step 1
+> Body: <raw file bytes>
+> ```
 
 ---
 
-### Bước 3 — POST /media/upload/complete — Báo hoàn tất upload
+### POST /media/upload/complete
+
+**Step 3 of 3** — Notify the server the upload is complete. Triggers the media processing pipeline (thumbnail, transcoding).
 
 ```bash
-curl -X POST http://localhost:3000/media/upload/complete \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/media/upload/complete \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "mediaId": "media-uuid-abc123",
-    "checksum": "sha256:abc123def456...",
+    "mediaId": "media-uuid",
+    "checksum": "sha256:abc123...",
     "checksumAlgorithm": "sha256"
   }'
 ```
 
-Sau bước này, Media Worker bắt đầu scan virus, tạo thumbnail (ảnh), transcode (video). Trạng thái file chuyển từ `UPLOADED` → `PROCESSING` → `READY` (hoặc `FAILED`). Lắng nghe WebSocket event để biết khi file sẵn sàng.
+**Request body:**
 
----
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `mediaId` | `string` | ✓ | Media ID from step 1 |
+| `checksum` | `string` | | File checksum for integrity validation |
+| `checksumAlgorithm` | `string` | | e.g. `"sha256"`, `"md5"` |
 
-### GET /media/:mediaId/url — Lấy URL truy cập file
-
-```bash
-# Lấy URL file gốc
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/media/media-uuid-abc123/url?prefer=ORIGINAL"
-
-# Lấy URL đã tối ưu (thumbnail / transcoded)
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/media/media-uuid-abc123/url?prefer=OPTIMIZED&conversationId=conv-uuid"
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource updated successfully",
+  "data": { "mediaId": "media-uuid", "status": "PROCESSING" }
+}
 ```
 
-URL trả về là signed URL có thời hạn (thường 1 giờ). Client nên cache URL và chỉ gọi lại khi hết hạn (HTTP 403).
+> Processing is asynchronous. Listen for WS `message:media_ready` to know when the file is ready.
 
 ---
 
-### GET /media — Danh sách media của user
+### GET /media/:mediaId/url
+
+Get a time-limited presigned access URL for a media file. Call this immediately before displaying the file (URLs expire).
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/media
-```
-
----
-
-### DELETE /media/:mediaId — Xóa file
-
-```bash
-curl -X DELETE "http://localhost:3000/media/media-uuid-abc123" \\
+curl "http://localhost:3000/media/media-uuid/url?prefer=OPTIMIZED&conversationId=conv-uuid" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Chỉ chủ sở hữu mới có quyền xóa. File đã gắn vào tin nhắn sẽ không thể xóa (bảo vệ tính toàn vẹn).
+**Query params:**
+
+| Param | Type | Notes |
+|---|---|---|
+| `prefer` | `'ORIGINAL'\|'OPTIMIZED'` | `OPTIMIZED` returns the processed/transcoded version |
+| `conversationId` | `string` | Required for media attached to a conversation (access control) |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "url": "https://storage.minio.../presigned-get-url",
+    "expiresAt": "2026-01-15T11:00:00.000Z"
+  }
+}
+```
 
 ---
 
-### POST /media/:mediaId/cross-share — Chia sẻ file sang conversation khác
+### GET /media/:mediaId/play-info
+
+Get streaming metadata for video/audio files (HLS manifest URL, duration, dimensions).
 
 ```bash
-curl -X POST "http://localhost:3000/media/media-uuid-abc123/cross-share" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl "http://localhost:3000/media/media-uuid/play-info?conversationId=conv-uuid" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:** `conversationId` (optional, for access control).
+
+---
+
+### DELETE /media/:mediaId
+
+Delete a media file. Only the owner may delete their own files.
+
+```bash
+curl -X DELETE http://localhost:3000/media/media-uuid \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+| HTTP | Scenario |
+|---|---|
+| 403 | `FORBIDDEN_MEDIA_OWNERSHIP` — not the owner |
+
+---
+
+### POST /media/:mediaId/cross-share
+
+Share a media file to another conversation. **Business rule `DOC.CROSS_SHARE`:** caller must be `ADMIN` or `OWNER` in both conversations.
+
+```bash
+curl -X POST http://localhost:3000/media/media-uuid/cross-share \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "sourceConversationId": "conv-uuid-source",
-    "targetConversationId": "conv-uuid-target"
+    "sourceConversationId": "conv-uuid-1",
+    "targetConversationId": "conv-uuid-2"
   }'
 ```
 
-Chỉ ADMIN mới có quyền cross-share giữa các conversation. File gốc không bị nhân đôi, chỉ tạo reference mới, giữ nguyên phân quyền truy cập.
+**Request body:**
+
+| Field | Type | Required |
+|---|---|---|
+| `sourceConversationId` | `string` | ✓ |
+| `targetConversationId` | `string` | ✓ |
 
 ---
 
-### Multipart Upload — Upload file lớn (≥ 10 MB)
+### POST /media/multipart/init
 
-Dùng cho video và file lớn. Chia file thành nhiều phần 10MB, upload song song, server ghép lại. Giới hạn: `IMAGE` ≤ 15MB, `VIDEO`/`FILE` ≤ 1GB.
+**Step 1 of 4** — Initiate a multipart upload. For files **> 10 MB**.
 
-#### POST /media/multipart/init — Khởi tạo phiên
+Size limits: IMAGE ≤ 15 MB, VIDEO/FILE ≤ 1 GB.
+
+**201 Created**
 
 ```bash
-curl -X POST http://localhost:3000/media/multipart/init \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/media/multipart/init \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "filename": "demo-video.mp4",
+    "filename": "lecture.mp4",
     "mimeType": "video/mp4",
     "type": "VIDEO",
-    "totalSize": 52428800
+    "totalSize": 104857600
   }'
 ```
 
-> Trường `type` dùng chữ **HOA** (`'IMAGE'`, `'VIDEO'`, `'FILE'`) cho multipart — khác với upload thông thường dùng chữ thường.
+**Request body:**
 
-Response:
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `filename` | `string` | ✓ | Original filename |
+| `mimeType` | `string` | ✓ | e.g. `"video/mp4"` |
+| `type` | `'IMAGE'\|'VIDEO'\|'AUDIO'\|'FILE'` | ✓ | Uppercase enum |
+| `totalSize` | `number` | ✓ | Total file size in bytes |
+
+**Response 201:**
 ```json
-{ "data": { "mediaId": "uuid", "uploadId": "VXBsb2FkSWQ=", "objectKey": "owner-id/uuid/original.mp4" } }
+{
+  "statusCode": 201,
+  "message": "Resource created successfully",
+  "data": {
+    "mediaId": "media-uuid",
+    "uploadId": "s3-multipart-upload-id",
+    "objectKey": "uploads/media-uuid/lecture.mp4"
+  }
+}
 ```
 
-#### POST /media/multipart/presign-parts — Lấy URL cho từng phần
+---
+
+### POST /media/multipart/presign-parts
+
+**Step 2 of 4** — Get presigned PUT URLs for each chunk. Parts are 1-indexed.
+
+Recommended chunk size: **5–50 MB**. Max 10 000 parts.
 
 ```bash
-curl -X POST http://localhost:3000/media/multipart/presign-parts \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/media/multipart/presign-parts \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "mediaId": "uuid-from-init",
-    "partNumbers": [1, 2, 3, 4, 5]
+    "mediaId": "media-uuid",
+    "partNumbers": [1, 2, 3, 4],
+    "expiresIn": 3600
   }'
 ```
 
-Response: mảng `[{ partNumber: 1, uploadUrl: "...", ... }, ...]`
+**Request body:**
 
-Sau đó `PUT <uploadUrl>` để upload từng phần, lưu lại **ETag** từ response header của mỗi PUT.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `mediaId` | `string` | ✓ | |
+| `partNumbers` | `number[]` | ✓ | 1-indexed part numbers |
+| `expiresIn` | `number` | | URL TTL in seconds |
 
-#### POST /media/multipart/complete — Hoàn tất ghép phần
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": [
+    { "partNumber": 1, "url": "https://storage.minio.../part1" },
+    { "partNumber": 2, "url": "https://storage.minio.../part2" }
+  ]
+}
+```
+
+> **Step 3** (client): `PUT <url>` each part in parallel. Save the `ETag` response header from each upload.
+
+---
+
+### POST /media/multipart/complete
+
+**Step 4 of 4** — Assemble all parts and trigger the processing pipeline.
 
 ```bash
-curl -X POST http://localhost:3000/media/multipart/complete \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/media/multipart/complete \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "mediaId": "uuid-from-init",
+    "mediaId": "media-uuid",
     "parts": [
-      { "partNumber": 1, "eTag": "d41d8cd98f00b204e9800998ecf8427e" },
-      { "partNumber": 2, "eTag": "a87ff679a2f3e71d9181a67b7542122c" }
+      { "partNumber": 1, "eTag": "\"etag1\"" },
+      { "partNumber": 2, "eTag": "\"etag2\"" }
     ]
   }'
 ```
 
-Sau bước này Media Worker bắt đầu xử lý (giống upload thông thường).
+**Request body:**
 
-#### DELETE /media/multipart/:mediaId — Hủy upload
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `mediaId` | `string` | ✓ | |
+| `parts` | `Array<{ partNumber: number; eTag: string }>` | ✓ | Must be sorted by `partNumber` ascending |
 
-```bash
-curl -X DELETE "http://localhost:3000/media/multipart/media-uuid" \\
-  -H "Authorization: Bearer $TOKEN"
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Resource updated successfully",
+  "data": { "mediaId": "media-uuid", "status": "UPLOADED" }
+}
 ```
-
-Hủy phiên multipart đang dở, giải phóng tất cả phần đã upload. Gọi khi user hủy upload giữa chừng.
 
 ---
 
-## 9. Notifications — Thông báo & Thiết bị
+### DELETE /media/multipart/:mediaId
 
-### GET /notifications/vapid-public-key — Lấy VAPID public key (Web Push)
+Abort an in-progress multipart upload. Cleans up all uploaded parts from storage.
 
-**Không cần token (Public)**
+```bash
+curl -X DELETE http://localhost:3000/media/multipart/media-uuid \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 9. Notifications — Push Notifications & Preferences
+
+---
+
+### GET /notifications/vapid-public-key
+
+**Public — no token required**
+
+Returns the VAPID public key needed to create a Web Push subscription in the browser.
 
 ```bash
 curl http://localhost:3000/notifications/vapid-public-key
 ```
 
-Dùng cho Web Push Notification trên trình duyệt. VAPID key dùng để subscribe push notification từ Service Worker. Gọi 1 lần khi khởi động app.
-
----
-
-### POST /notifications/devices — Đăng ký thiết bị nhận push notification
-
-```bash
-# Thiết bị Android (FCM)
-curl -X POST http://localhost:3000/notifications/devices \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "token": "fcm-device-token-from-firebase-sdk",
-    "platform": "FCM",
-    "deviceId": "android-device-unique-id"
-  }'
-```
-
-```bash
-# Thiết bị iOS (APNS)
-curl -X POST http://localhost:3000/notifications/devices \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "token": "apns-device-token-hex-string",
-    "platform": "APNS",
-    "deviceId": "ios-device-unique-id"
-  }'
-```
-
-```bash
-# Trình duyệt (Web Push)
-curl -X POST http://localhost:3000/notifications/devices \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "token": "{\\"endpoint\\":\\"https://fcm.googleapis.com/fcm/send/...\\",\\"keys\\":{\\"p256dh\\":\\"BNcRdreALRFXTkOOUHK1EtK2wtTNMF9EZ...\\",\\"auth\\":\\"tBHItJI5svbpez7KI4CCXg\\"}}",
-    "platform": "WEB",
-    "deviceId": "browser-subscription-id"
-  }'
-```
-
-Các platform hợp lệ: `FCM` (Android), `APNS` (iOS), `WEB` (browser). Gọi lại mỗi khi token push thay đổi (token FCM có thể thay đổi sau khi cập nhật app).
-
----
-
-### DELETE /notifications/devices/:deviceId — Hủy đăng ký thiết bị
-
-```bash
-curl -X DELETE "http://localhost:3000/notifications/devices/android-device-unique-id" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Gọi khi user logout hoặc thu hồi quyền notification để server không gửi push đến thiết bị này nữa.
-
----
-
-### PUT /notifications/preferences — Cập nhật tùy chọn thông báo
-
-```bash
-# Tắt thông báo toàn bộ trong 8 giờ (global, conversationId = null)
-curl -X PUT http://localhost:3000/notifications/preferences \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": null,
-    "muteUntil": "2026-03-28T18:00:00.000Z",
-    "notifyOnMessage": false,
-    "notifyOnMention": true
-  }'
-```
-
-```bash
-# Tắt thông báo cho một kênh cụ thể
-curl -X PUT http://localhost:3000/notifications/preferences \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": "conv-uuid-here",
-    "muteUntil": "2026-03-30T08:00:00.000Z"
-  }'
-```
-
-```bash
-# Bật giờ yên lặng (quiet hours) — không nhận thông báo ban đêm
-curl -X PUT http://localhost:3000/notifications/preferences \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "conversationId": null,
-    "quietHoursEnabled": true,
-    "quietHoursStart": "22:00",
-    "quietHoursEnd": "08:00",
-    "timezone": "Asia/Ho_Chi_Minh"
-  }'
-```
-
-`conversationId: null` = cài đặt toàn cục. Quiet hours không áp dụng cho cuộc gọi đến (priority `high`) và mention quan trọng.
-
----
-
-### GET /notifications/preferences — Lấy tùy chọn thông báo
-
-```bash
-# Lấy cài đặt toàn cục
-curl -H "Authorization: Bearer $TOKEN" \\
-  http://localhost:3000/notifications/preferences
-
-# Lấy cài đặt cho kênh cụ thể
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/notifications/preferences?conversationId=conv-uuid-here"
-```
-
----
-
-## 10. Presence — Trạng thái trực tuyến
-
-Trạng thái được cập nhật tự động bởi RealtimeGW khi kết nối / ngắt WebSocket. REST API dưới đây chỉ để đọc trạng thái.
-
-### GET /presence/status — Trạng thái của bản thân
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/presence/status
-```
-
-Response:
-
+**Response 200:**
 ```json
 {
   "statusCode": 200,
-  "data": {
-    "userId": "a1b2c3d4-uuid",
-    "status": "online",
-    "lastSeen": "2026-03-28T09:55:00.000Z"
-  }
+  "message": "Data retrieved successfully",
+  "data": { "publicKey": "BNxx...base64url" }
 }
 ```
 
-`lastSeen` là thời điểm cuối cùng online, được lưu trong Redis 30 ngày.
-
 ---
 
-### GET /presence/friends — Trạng thái của tất cả bạn bè
+### POST /notifications/devices
+
+Register (or refresh) a push notification token for the authenticated user.
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/presence/friends
-```
-
-Trả về mảng `UserPresence[]` với `userId`, `status` (`online`/`offline`), `lastSeen`. Gọi 1 lần khi mở app, sau đó lắng nghe WebSocket events `user:online` / `user:offline` trong namespace `/chat` để cập nhật realtime.
-
----
-
-## 11. Calls — Cuộc gọi video/voice
-
-Hệ thống dùng **LiveKit** làm WebRTC media server. Luồng cơ bản: khởi tạo cuộc gọi qua REST → nhận LiveKit token → kết nối LiveKit SDK → nhận sự kiện realtime qua WebSocket `/call`.
-
-Rate limit mỗi endpoint được ghi chú riêng. Endpoint join/leave có giá trị cao (1500/phút) để hỗ trợ reconnect linh hoạt.
-
-### GET /calls/health — Kiểm tra call service
-
-**Không cần token, không giới hạn rate**
-
-```bash
-curl http://localhost:3000/calls/health
-```
-
----
-
-### POST /calls/start — Bắt đầu cuộc gọi
-
-**Rate limit: 120 request/phút**
-
-```bash
-curl -X POST http://localhost:3000/calls/start \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -X POST http://localhost:3000/notifications/devices \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{
-    "conversationId": "conv-uuid-here",
-    "allowWaitingRoom": true
+    "token": "fcm-registration-token",
+    "platform": "FCM",
+    "deviceId": "device-unique-id"
   }'
 ```
 
-Response trả về `meetingId`. Hệ thống gửi Kafka event `call.event.started` → RealtimeGW thông báo các thành viên qua `meeting:started`.
+**Request body:**
 
----
-
-### GET /calls/active/:conversationId — Cuộc gọi đang diễn ra trong conversation
-
-**Rate limit: 60 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/calls/active/conv-uuid-here"
-```
-
----
-
-### GET /calls/me/active — Cuộc gọi đang diễn ra của bản thân
-
-**Rate limit: 120 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/calls/me/active
-```
-
----
-
-### POST /calls/:meetingId/join — Tham gia cuộc gọi
-
-**Rate limit: 1500 request/phút (hỗ trợ reconnect)**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/join" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Nếu host bật `allowWaitingRoom`, user vào phòng chờ và host nhận sự kiện `meeting:join_requested`. Nếu không có waiting room, tham gia ngay.
-
----
-
-### POST /calls/:meetingId/token — Lấy LiveKit token để kết nối media
-
-**Rate limit: 20 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/token" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "participantName": "Alice Nguyen",
-    "canPublish": true,
-    "canSubscribe": true
-  }'
-```
-
-Gọi sau khi join thành công. Token này dùng với LiveKit Client SDK để publish/subscribe audio và video. Token có thời hạn ngắn, khởi tạo lại khi hết hạn.
-
----
-
-### POST /calls/:meetingId/waiting/:userId/approve — Duyệt người chờ vào phòng
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/waiting/b2c3d4e5-uuid/approve" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### POST /calls/:meetingId/waiting/:userId/reject — Từ chối người chờ
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/waiting/b2c3d4e5-uuid/reject" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{ "reason": "Cuộc họp nội bộ" }'
-```
-
----
-
-### PATCH /calls/:meetingId/media-state — Cập nhật trạng thái mic/camera
-
-**Rate limit: 60 request/phút**
-
-```bash
-curl -X PATCH "http://localhost:3000/calls/meeting-uuid-here/media-state" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "micOn": false,
-    "cameraOn": true,
-    "screenSharing": false
-  }'
-```
-
----
-
-### POST /calls/:meetingId/leave — Rời cuộc gọi
-
-**Rate limit: 1500 request/phút (hỗ trợ reconnect)**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/leave" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### POST /calls/:meetingId/end — Kết thúc cuộc gọi (host)
-
-**Rate limit: 120 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/end" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Kết thúc cuộc gọi cho tất cả mọi người. Chỉ host / OWNER mới có quyền.
-
----
-
-### POST /calls/:meetingId/participants/:userId/moderate — Kiểm soát người tham gia
-
-**Rate limit: 30 request/phút**
-
-```bash
-# Tắt mic của người khác
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/participants/b2c3d4e5-uuid/moderate" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "action": "MUTE_AUDIO",
-    "reason": "Nhiễu nền"
-  }'
-```
-
-```bash
-# Kick người tham gia
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/participants/b2c3d4e5-uuid/moderate" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "action": "KICK",
-    "reason": "Vi phạm nội quy cuộc họp"
-  }'
-```
-
-Các action hợp lệ: `MUTE_AUDIO`, `MUTE_VIDEO`, `DISABLE_SCREEN`, `KICK`.
-
----
-
-### POST /calls/:meetingId/recording/start — Bắt đầu ghi âm/hình
-
-**Rate limit: 20 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/recording/start" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### POST /calls/:meetingId/recording/pause — Tạm dừng ghi
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/recording/pause" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### POST /calls/:meetingId/recording/resume — Tiếp tục ghi
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/recording/resume" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### POST /calls/:meetingId/recording/stop — Dừng ghi
-
-**Rate limit: 20 request/phút**
-
-```bash
-curl -X POST "http://localhost:3000/calls/meeting-uuid-here/recording/stop" \\
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### GET /calls/:meetingId/recordings — Danh sách bản ghi
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/calls/meeting-uuid-here/recordings"
-```
-
----
-
-### GET /calls/history/:conversationId — Lịch sử cuộc gọi
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/calls/history/conv-uuid-here?page=1&limit=20"
-```
-
----
-
-### GET /calls/:meetingId/summary — Tóm tắt cuộc gọi
-
-**Rate limit: 30 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/calls/meeting-uuid-here/summary"
-```
-
----
-
-### GET /calls/:meetingId/snapshot — Snapshot trực tiếp (danh sách người trong phòng)
-
-**Rate limit: 60 request/phút**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \\
-  "http://localhost:3000/calls/meeting-uuid-here/snapshot"
-```
-
----
-
-## 12. WebSocket — Realtime Gateway
-
-**Server**: `ws://localhost:3002`
-**Transport**: Socket.IO (hỗ trợ reconnect tự động)
-**Namespaces**: `/chat` và `/call` (2 namespace độc lập)
-**Authentication**: 2-phase (kết nối → authenticate)
-
----
-
-### Kết nối và xác thực
-
-Bước 1: Kết nối Socket.IO
-
-```javascript
-// Kết nối namespace /chat
-const chatSocket = io('ws://localhost:3002/chat', {
-  // Truyền token ngay trong auth object (ưu tiên nhất)
-  auth: { token: 'Bearer <JWT>' },
-  // Hoặc truyền qua query param
-  // query: { token: '<JWT>' }
-  reconnectionAttempts: Infinity,
-  reconnectionDelay: 1000,
-});
-
-// Kết nối namespace /call
-const callSocket = io('ws://localhost:3002/call', {
-  auth: { token: 'Bearer <JWT>' }
-});
-```
-
-Bước 2: Xác thực (bắt buộc trong 30 giây sau khi kết nối)
-
-```javascript
-chatSocket.emit('authenticate', {
-  token: '<JWT_TOKEN>',
-  deviceId: 'device-unique-id',
-  deviceType: 'web'  // 'web' | 'mobile' | 'desktop'
-});
-
-chatSocket.on('authenticated', (data) => {
-  console.log('Authenticated:', data.userId, data.socketId);
-  // Sau bước này: presence = ONLINE, đã join room user:{userId}
-});
-```
-
-Nếu không xác thực trong 30 giây, server tự động ngắt kết nối.
-
----
-
-### Namespace `/chat` — Sự kiện từ client gửi lên server
-
-| Event | Payload | Mô tả |
-|---|---|---|
-| `authenticate` | `{ token, deviceId?, deviceType? }` | Xác thực socket, bắt buộc trước mọi event khác |
-| `conversation:join` | `{ conversationId }` | Vào phòng nhận tin realtime |
-| `conversation:leave` | `{ conversationId }` | Rời phòng conversation |
-| `message:send` | `{ conversationId, content, type?, replyToMessageId?, metadata?, clientMessageId? }` | Gửi tin nhắn qua WebSocket |
-| `typing:start` | `{ conversationId }` | Bắt đầu gõ phím (broadcast cho members) |
-| `typing:stop` | `{ conversationId }` | Dừng gõ phím |
-| `conversation:update_seen_cursor` | `{ conversationId, upToOffset }` | Cập nhật con trỏ đã đọc |
-| `conversation:update_delivered_cursor` | `{ conversationId, upToOffset }` | Cập nhật con trỏ đã nhận |
-| `message:get_status` | `{ messageId }` | Hỏi trạng thái tin nhắn |
-| `heartbeat` | _(không có payload)_ | Giữ kết nối sống, cập nhật presence (gọi mỗi 30s) |
-
----
-
-### Namespace `/chat` — Sự kiện server broadcast xuống client
-
-| Event | Nguồn | Payload mẫu | Mô tả |
+| Field | Type | Required | Notes |
 |---|---|---|---|
-| `message:new` | Tin nhắn mới | `{ messageId, conversationId, senderId, offset }` | Broadcast cho tất cả người đang join phòng conversation đó |
-| `message:saved` | Tin đã lưu (chỉ sender) | `{ messageId, conversationId, offset }` | Xác nhận tin nhắn đã lưu, dùng để map clientMessageId → messageId và lấy offset |
-| `message:notify` | Tin nhắn mới (batch 80ms) | `{ conversationId, latestOffset }` | Thông báo cho member không đang active trong phòng — dùng để cập nhật badge unread |
-| `message:edited` | Tin bị sửa nội dung | `{ messageId, conversationId, content, editedAt }` | Cập nhật nội dung tin nhắn trong UI |
-| `message:deleted` | Tin bị xóa | `{ messageId, conversationId }` | Đánh dấu tin nhắn là đã xóa trong UI |
-| `message:updated` | Attachment đổi trạng thái | `{ messageId, conversationId, mediaStatus }` | File xử lý xong — cập nhật trạng thái file trong tin nhắn |
-| `message:queued` | Xác nhận nhận sự kiện | `{ clientMessageId, messageId }` | Server nhận được message:send, đã xếp vào hàng xử lý |
-| `message:rejected` | ChatCore từ chối | `{ clientMessageId, code, reason }` | Lỗi nghiệp vụ — hiển thị lỗi, xóa optimistic UI |
-| `message:error` | Lỗi hệ thống | `{ clientMessageId, error }` | Lỗi kỹ thuật |
-| `typing:started` | Ai đó đang gõ | `{ conversationId, userId }` | Broadcast cho cả phòng — hiển thị "đang nhập..." |
-| `typing:stopped` | Dừng gõ | `{ conversationId, userId }` | Ẩn chỉ báo "đang nhập..." |
-| `user:online` | Bạn bè vừa online | `{ userId }` | Cập nhật trạng thái online trong danh sách bạn bè |
-| `user:offline` | Bạn bè vừa offline | `{ userId, lastSeen }` | Cập nhật trạng thái offline và thời điểm cuối hoạt động |
-| `conversation:member-added` | Thành viên mới | `{ conversationId, userId, addedBy }` | Cập nhật danh sách thành viên |
-| `conversation:member-removed` | Thành viên bị xóa | `{ conversationId, userId, removedBy }` | Xóa khỏi phòng, cập nhật UI |
-| `conversation:removed` | Bị xóa khỏi nhóm | `{ conversationId }` | Server force-leave socket — xóa conversation khỏi danh sách |
-| `conversation:updated` | Thông tin kênh thay đổi | `{ conversationId, changes, updatedBy?, timestamp? }` | Tên, mô tả, hoặc avatar bị thay đổi — client gọi `GET /conversations/:id` để lấy `avatarUrl` mới (presigned URL không có trong payload) |
-| `cursor:seen_updated` | Xác nhận | `{ conversationId, upToOffset }` | Cập nhật seen cursor thành công |
-| `cursor:delivered_updated` | Xác nhận | `{ conversationId, upToOffset }` | Cập nhật delivered cursor thành công |
-| `heartbeat:ack` | Phản hồi heartbeat | `{ timestamp }` | Xác nhận kết nối vẫn sống |
+| `token` | `string` | ✓ | FCM / APNS / Web Push subscription token |
+| `platform` | `'FCM'\|'APNS'\|'WEB'` | ✓ | Token type |
+| `deviceId` | `string` | ✓ | Unique device identifier (for de-registration) |
 
 ---
 
-### Namespace `/call` — Sự kiện từ client gửi lên server
+### DELETE /notifications/devices/:deviceId
 
-| Event | Payload | Rate limit (mỗi socket) | Mô tả |
-|---|---|---|---|
-| `authenticate` | `{ token }` | — | Xác thực (giống /chat) |
-| `meeting:start` | `{ conversationId, allowWaitingRoom? }` | 20 event/10s | Bắt đầu cuộc gọi qua WebSocket |
-| `meeting:get_active` | `{ conversationId }` | 20 event/10s | Hỏi cuộc gọi đang diễn ra trong conversation |
-| `meeting:join` | `{ conversationId }` | 20 event/10s | Yêu cầu tham gia cuộc gọi |
-| `meeting:approve_waiting` | `{ meetingId, userId }` | 20 event/10s | Duyệt người đang chờ vào phòng |
-| `meeting:reject_waiting` | `{ meetingId, userId, reason? }` | 20 event/10s | Từ chối người đang chờ |
-| `meeting:leave` | `{ meetingId }` | 20 event/10s | Rời cuộc gọi |
-| `meeting:end` | `{ meetingId }` | 20 event/10s | Kết thúc cuộc gọi |
-| `meeting:media_state` | `{ meetingId, micOn, cameraOn, screenSharing }` | 40 event/10s | Cập nhật trạng thái mic/camera |
-| `meeting:snapshot` | `{ meetingId }` | 60 event/10s | Lấy danh sách người đang trong phòng qua WebSocket |
-| `meeting:hand_raise` | `{ meetingId, raised }` | 20 event/10s | Giơ tay / hạ tay |
-| `meeting:invite` | `{ meetingId, userIds[] }` | 20 event/10s | Mời thêm người |
-| `meeting:moderate` | `{ meetingId, targetUserId, action, reason? }` | 20 event/10s | Kiểm soát người tham gia |
-| `webrtc:offer` | `{ meetingId, targetUserId, sdp }` | 60 event/10s | WebRTC SDP offer |
-| `webrtc:answer` | `{ meetingId, targetUserId, sdp }` | 60 event/10s | WebRTC SDP answer |
-| `webrtc:ice_candidate` | `{ meetingId, targetUserId, candidate }` | 300 event/10s | ICE candidate |
-| `webrtc:leave` | `{ meetingId, targetUserId }` | 60 event/10s | Thông báo peer rời khỏi kết nối WebRTC |
+Unregister a device (call on logout or app uninstall).
 
-Khi vượt rate limit: nhận sự kiện `meeting:throttled` (chat) hoặc `webrtc:rejected` (WebRTC).
-
----
-
-### Namespace `/call` — Sự kiện server broadcast xuống client
-
-| Event | Target | Kafka topic | Mô tả |
-|---|---|---|---|
-| `meeting:started` | Mỗi member | `call.event.started` | Có cuộc gọi mới trong conversation |
-| `meeting:join_requested` | Host | `call.event.join_requested` | Có người xếp hàng chờ vào |
-| `meeting:participant_joined` | Phòng meeting | `call.event.participant_joined` | Thành viên mới tham gia |
-| `meeting:participant_left` | Phòng meeting | `call.event.participant_left` | Thành viên rời đi |
-| `meeting:approved` | User được duyệt | `call.event.waiting_approved` | Được cho vào từ waiting room |
-| `meeting:rejected` | User bị từ chối | `call.event.waiting_rejected` | Bị host từ chối |
-| `meeting:ended` | Phòng meeting | `call.event.ended` | Cuộc gọi kết thúc |
-| `meeting:media_state` | Phòng meeting | `call.event.media_state_updated` | Mic/camera của ai đó thay đổi |
-| `meeting:recording_state` | Phòng meeting | `call.event.recording_state_updated` | Trạng thái ghi âm thay đổi |
-| `meeting:participant_moderated` | Phòng meeting | `call.event.participant_moderated` | Ai đó bị can thiệp (tắt mic, kick) |
-| `meeting:kicked` | User bị kick | `call.event.participant_moderated` | Thông báo riêng cho người bị kick |
-
----
-
-## 13. Luồng hoạt động chính
-
-### Luồng 1 — Đăng nhập và khởi tạo ứng dụng
-
-```
-1. Keycloak login → lấy JWT token + refresh_token
-2. Lưu token vào secure storage (Keychain iOS, Keystore Android, sessionStorage Web)
-3. GET /me                  → lấy userId, roles từ JWT (nhanh, không query DB)
-4. GET /users/me            → lấy profile đầy đủ (settings, avatarUrl)
-5. GET /conversations       → hiển thị danh sách cuộc trò chuyện
-6. Kết nối WebSocket /chat  → emit 'authenticate' với token
-7. Sau 'authenticated':
-   - Server tự động set presence = ONLINE
-   - Server tự động join room user:{userId}
-8. GET /presence/friends    → lấy trạng thái online của bạn bè
-9. POST /notifications/devices  → đăng ký thiết bị để nhận push notification
+```bash
+curl -X DELETE http://localhost:3000/notifications/devices/device-unique-id \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### Luồng 2 — Mở conversation và đọc tin nhắn
+### PUT /notifications/preferences
 
-```
-1. User click vào conversation (từ danh sách)
-2. GET /conversations/:id                     → lấy thông tin kênh
-3. socket.emit('conversation:join', ...)       → join phòng nhận tin realtime
-4. GET /conversations/:id/messages?limit=30  → load 30 tin mới nhất
-5. Hiển thị tin nhắn
-6. socket.emit('conversation:update_seen_cursor', { conversationId, upToOffset: newestOffset })
-7. Lắng nghe 'message:new' để append tin mới vào cuối list
-8. Lắng nghe 'message:notify' để cập nhật badge unread ở conversation khác
-9. Lắng nghe 'conversation:updated' — khi nhận, gọi `GET /conversations/:id` để lấy
-   thông tin mới (đặc biệt là `avatarUrl` mới nếu avatar vừa đổi)
-```
+Save mute settings and quiet hours. Set `conversationId: null` for global preference (applies to all conversations without an override).
 
-Load more (scroll lên): `GET /conversations/:id/messages?before=<oldestOffset>&limit=30`.
-
-Khi reconnect / re-open app:
-```
-GET /conversations/:id/messages?after=<lastKnownOffset>&limit=50  → lấy lại tin bị miss
-```
-
----
-
-### Luồng 3 — Gửi tin nhắn text (WebSocket — khuyến nghị)
-
-```
-1. Tạo clientMessageId = uuid_v4()
-2. Hiển thị tin nhắn ngay lập tức (optimistic UI) với trạng thái "đang gửi"
-3. socket.emit('message:send', { conversationId, content, clientMessageId })
-4. Server trả về 'message:queued' { clientMessageId, messageId }
-   → Cập nhật: "đang gửi" → "đã xếp hàng"
-5. Kafka: ChatCore → MessageStore → Kafka event → RealtimeGW
-6. Nhận 'message:saved' { messageId, offset }
-   → Cập nhật: hiển thị offset, trạng thái "đã gửi"
-7. Nếu nhận 'message:rejected' { code, reason }
-   → Hiển thị lỗi tương ứng, xóa optimistic UI
-```
-
-Fallback (khi WebSocket mất kết nối):
-```
-POST /chat/messages { conversationId, content, clientMessageId }
-Server vẫn broadcast qua Kafka → WebSocket đến tất cả
-```
-
----
-
-### Luồng 4 — Gửi tin nhắn kèm file / ảnh / video
-
-```
-1. POST /chat/pre-check-media { conversationId, mimeType, fileSize }
-   → Kiểm tra trước (tiết kiệm thời gian nếu bị từ chối)
-
-2. POST /media/upload { type, mimeType, size, filename }
-   → Nhận { mediaId, uploadUrl }
-
-3. PUT <uploadUrl> --data-binary @file
-   → Upload thẳng lên MinIO (không qua Gateway)
-
-4. POST /media/upload/complete { mediaId }
-   → Media Worker bắt đầu scan / xử lý file
-
-5. Hiển thị placeholder "Đang xử lý file..."
-
-6. POST /chat/messages { conversationId, content, mediaId, clientMessageId }
-   → Gửi tin nhắn (có thể gửi ngay cả khi file còn PROCESSING)
-
-7. Lắng nghe 'message:updated' khi field mediaStatus = READY
-   → Tự động cập nhật UI hiển thị file thực sự
-```
-
----
-
-### Luồng 5 — Nhận tin nhắn realtime
-
-```
-Tier 1 — Khi đang mở conversation đó:
-  Nhận 'message:new' { messageId, conversationId, senderId, offset }
-  → Append tin nhắn vào cuối chat list
-  → emit 'conversation:update_seen_cursor' { conversationId, upToOffset: offset }
-
-Tier 2 — Khi đang ở màn hình khác hoặc app background:
-  Nhận 'message:notify' { conversationId, latestOffset }
-  → Cập nhật badge unread count trên list
-  → Tùy ý: fetch snippet tin để hiển thị preview
-```
-
----
-
-### Luồng 6 — Nhận push notification (app nền / tắt app)
-
-```
-Notification Service lắng nghe Kafka MESSAGE_SAVED:
-1. Lấy danh sách member từ Redis
-2. Bỏ qua sender
-3. Bỏ qua user đang ONLINE (kiểm tra Redis presence)
-4. Kiểm tra quiet hours / mute preferences
-5. Dedup 30s (tránh gửi trùng)
-6. Gửi push qua FCM / APNS / Web Push
-
-Payload push notification:
-{
-  "title": "Nguyễn Văn A",
-  "body": "Xin chào mọi người...",
-  "data": {
-    "type": "new_message",
+```bash
+curl -X PUT http://localhost:3000/notifications/preferences \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
     "conversationId": "conv-uuid",
-    "messageId": "msg-uuid"
+    "muteUntil": "2026-01-16T00:00:00.000Z",
+    "notifyOnMention": true,
+    "notifyOnMessage": false
+  }'
+```
+
+**Request body:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `conversationId` | `string\|null` | | `null` = global preference |
+| `muteUntil` | `string` (ISO datetime) | | Mute until this time; `null` to unmute |
+| `notifyOnMention` | `boolean` | | Notify when @mentioned |
+| `notifyOnMessage` | `boolean` | | Notify for every new message |
+| `quietHoursEnabled` | `boolean` | | Enable quiet hours schedule |
+| `quietHoursStart` | `string` | | Time string e.g. `"22:00"` |
+| `quietHoursEnd` | `string` | | Time string e.g. `"08:00"` |
+| `timezone` | `string` | | IANA timezone for quiet hours |
+
+---
+
+### GET /notifications/preferences
+
+Returns global preference and (optionally) a conversation-level override.
+
+```bash
+curl "http://localhost:3000/notifications/preferences?conversationId=conv-uuid" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Notes |
+|---|---|---|
+| `conversationId` | `string` | If provided, returns both global and conversation preferences |
+
+---
+
+## 10. Presence — Online Status
+
+Online/offline status changes are driven automatically by **WebSocket connect/disconnect**. These HTTP endpoints are for **initial page-load data only**; do not poll them for real-time updates. Subscribe to WS `user:online` / `user:offline` events instead.
+
+---
+
+### GET /presence/status
+
+Returns the authenticated user's own current presence.
+
+```bash
+curl http://localhost:3000/presence/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": {
+    "userId": "user-uuid",
+    "status": "online",
+    "lastSeen": "2026-01-15T10:00:00.000Z"
   }
 }
-
-FE/Mobile xử lý:
-- Tap vào notification → mở app → navigate đến conversation tương ứng
-- Dùng conversationId để deep link chính xác
 ```
 
 ---
 
-### Luồng 7 — Kết bạn và tạo chat trực tiếp
+### GET /presence/friends
 
-```
-1. POST /friendships/requests/:targetUserId  → gửi lời mời
-2. targetUser nhận push notification 'type: friend_request'
-3. targetUser: POST /friendships/requests/:fromUserId/accept
-   → Hệ thống tự tạo conversation DIRECT qua Kafka
-4. Cả hai nhận WebSocket event 'conversation:member-added'
-5. GET /conversations → refresh list, thấy conversation DIRECT mới
-6. Mở conversation, bắt đầu nhắn tin
+Returns presence status for all friends of the authenticated user.
+
+```bash
+curl http://localhost:3000/presence/friends \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
----
-
-### Luồng 8 — Cuộc gọi video/voice
-
-```
-1. Host: POST /calls/start { conversationId, allowWaitingRoom: true }
-   → Nhận { meetingId }
-
-2. Members nhận WebSocket 'meeting:started' { meetingId, conversationId, hostId }
-   → Hiển thị popup "Cuộc gọi đang đến từ [tên nhóm]"
-
-3. Member muốn tham gia:
-   POST /calls/:meetingId/join
-   → Nếu waiting room: nhận { status: 'waiting' }
-   → Nếu không: nhận { status: 'joined' }
-
-4. Nếu waiting room:
-   - Host nhận socket 'meeting:join_requested' { userId, meetingId }
-   - Host approve: POST /calls/:meetingId/waiting/:userId/approve
-   - Member nhận socket 'meeting:approved'
-
-5. Lấy LiveKit token:
-   POST /calls/:meetingId/token { canPublish: true, canSubscribe: true }
-   → Nhận { livekitToken, livekitUrl }
-   → Khởi tạo LiveKit Room SDK: new Room().connect(livekitUrl, livekitToken)
-
-6. Trong cuộc gọi:
-   - PATCH /calls/:meetingId/media-state khi bật/tắt mic/camera
-   - Members nhận 'meeting:media_state' cập nhật trạng thái
-
-7. Kết thúc:
-   - Member: POST /calls/:meetingId/leave
-   - Host: POST /calls/:meetingId/end (kết thúc cho tất cả)
-   - Tất cả nhận 'meeting:ended'
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": [
+    { "userId": "friend-uuid", "status": "online", "lastSeen": null },
+    { "userId": "friend-uuid-2", "status": "offline", "lastSeen": "2026-01-15T09:00:00.000Z" }
+  ]
+}
 ```
 
 ---
 
-### Luồng 9 — Xử lý mất kết nối WebSocket
+## 11. Stickers — Sticker Catalog
 
-```
-Khi socket disconnect:
-1. Server giữ grace period 10s cho presence
-2. Nếu reconnect trong 10s: presence vẫn ONLINE
-3. Nếu không reconnect: presence → OFFLINE
-
-Khi client reconnect (Socket.IO tự động retry):
-1. Socket.IO re-connect tự động (exponential backoff)
-2. emit 'authenticate' lại với token (refresh nếu cần)
-3. Sau 'authenticated':
-   - Re-join các conversation đang mở: emit 'conversation:join' mỗi conversationId
-   - Fetch tin nhắn bị miss: GET /conversations/:id/messages?after=<lastOffset>&limit=50
-   - emit 'conversation:update_delivered_cursor' với offset mới nhất
-4. Tiếp tục như bình thường
-```
-
-Lưu ý quan trọng: Socket.IO có cơ chế reconnect tự động. Chỉ cần xử lý sự kiện `connect` (lần đầu) và `reconnect` (sau khi mất kết nối) để re-authenticate và re-join các phòng.
+All routes require authentication.
 
 ---
 
-### Luồng 10 — Quên mật khẩu và đặt lại qua OTP email
+### GET /stickers/packages
 
-```
-1. User không đăng nhập được, nhấn "Quên mật khẩu"
+Returns all available sticker packages. Use `thumbnailUrl` for the tab icon in the sticker keyboard.
 
-2. Client: POST /auth/forgot-password { email }
-   → Server luôn trả 200 (không tiết lộ email có tồn tại hay không)
-   → Nếu email tồn tại: gửi email có OTP 6 số (hiệu lực 10 phút)
-
-3. User mở email, lấy mã OTP (ví dụ: 482951)
-
-4. Client: POST /auth/reset-password { email, otp, newPassword }
-   → OTP đúng + chưa hết hạn + chưa dùng: đặt lại mật khẩu thành công
-   → Tất cả phiên đăng nhập cũ bị thu hồi ngay lập tức
-
-5. Client: Keycloak login với mật khẩu mới → lấy token mới
+```bash
+curl http://localhost:3000/stickers/packages \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Sơ đồ lỗi:
-```
-Email không đúng định dạng        → 400 Bad Request
-Gửi quá 5 lần / 15 phút          → 429 Too Many Requests
-Gửi lại trước 60 giây            → 429 Too Many Requests
-OTP sai lần 1, 2, 3              → 400 (generic - không tiết lộ lý do)
-OTP sai lần 4 (quá 3 lần)        → 400 + XÓA OTP (phải yêu cầu OTP mới)
-OTP đúng nhưng đã dùng rồi       → 400 (race condition protection)
-newPassword yếu                  → 400 Bad Request
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": [
+    {
+      "id": "pck_sprite",
+      "name": "Zolo Sprites",
+      "thumbnailUrl": "https://storage.bcn.id.vn/zolo-stickers/sprite_thumb.webp",
+      "isFree": true,
+      "createdAt": "2026-04-12T00:00:00.000Z"
+    }
+  ]
+}
 ```
 
 ---
 
-### Luồng 11 — Đổi mật khẩu (đang đăng nhập)
+### GET /stickers/packages/:packageId/stickers
+
+Returns paginated stickers for a specific package.
+
+```bash
+curl "http://localhost:3000/stickers/packages/pck_sprite/stickers?limit=50&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Query params:**
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `limit` | `number` | `50` | Max `100` |
+| `offset` | `number` | `0` | Items to skip |
+
+**Response 200:**
+```json
+{
+  "statusCode": 200,
+  "message": "Data retrieved successfully",
+  "data": [
+    {
+      "id": "stk_001",
+      "packageId": "pck_sprite",
+      "url": "https://storage.bcn.id.vn/zolo-stickers/stk_001.webp",
+      "tags": ["happy", "wave"]
+    }
+  ]
+}
+```
+
+> To send a sticker, use `POST /chat/messages` with `type: 'sticker'` and put the sticker ID in `metadata.stickerId`, package ID in `metadata.packageId`.
+
+---
+
+## 12. Client Implementation Guides
+
+Implement these flows in the exact order shown to avoid race conditions and data inconsistencies.
+
+---
+
+### Guide 1: Fast-Ack Message Send Flow
+
+The message lifecycle has **two asynchronous confirmation stages** after the HTTP response.
 
 ```
-1. User muốn đổi mật khẩu (trong Settings)
+POST /chat/messages
+        │
+        ▼ (< 200ms)
+  201 Created { messageId, status:'accepted' }   ← Gateway fast-ack
+        │
+        ▼ (< 2s async via Kafka)
+  WS message:saved { messageId, offset }         ← Persistence confirmed
+        │
+        ▼ (broadcast)
+  WS message:new { full message object }         ← Stream delivery (conversation room)
+  WS message:notify { conversationId, offset }   ← Notification (personal rooms)
+```
 
-2. Client: POST /users/me/change-password
+**Step-by-step:**
+
+1. **Generate `clientMessageId`** — create a UUID v4 on the client **before** the request.
+2. **Optimistic UI** — immediately render the message with a "sending" indicator (single ✓) and local state `{ status: 'sending', clientMessageId }`.
+3. **POST /chat/messages** — include `clientMessageId`, `conversationId`, `content`, `type`.
+4. **On 201 response** — update local state: `{ status: 'accepted', messageId }`. UI shows pending ✓✓.
+5. **On WS `message:saved`** — match by `messageId`. Update `status: 'saved'`, store `offset`. UI shows ✓✓ sent.
+6. **On WS `message:new`** on sender's own socket — replace the optimistic copy with the full server message object (includes enriched fields, final offset).
+7. **On network failure** — retry with the **same `clientMessageId`**. Chat Core deduplicates — no double-save.
+8. **On 403 / 429** — show error, remove the optimistic message from UI.
+
+---
+
+### Guide 2: Single-File Media Upload (≤ 10 MB)
+
+```
+POST /chat/pre-check-media    ← Validate before upload (avoids wasted bandwidth)
+POST /media/upload            ← Get presigned PUT URL
+PUT  <presignedUrl>           ← Upload directly to MinIO (bypasses API server)
+POST /media/upload/complete   ← Finalize + trigger processing
+POST /chat/messages           ← Send message with attachments[]
+```
+
+**Step-by-step:**
+
+1. **Pre-check** — `POST /chat/pre-check-media` with `{ conversationId, mimeType, fileSize }`. If `approved: false`, show error and abort.
+2. **Initiate upload** — `POST /media/upload` with `{ type, mimeType, size, filename }`. Save `mediaId` and `uploadUrl`.
+3. **Upload to MinIO** — `PUT <uploadUrl>` with the raw file binary:
+   ```
+   Content-Type: <mimeType>    ← must match step 2
+   Body: <raw file bytes>
+   ```
+4. **Finalize** — `POST /media/upload/complete` with `{ mediaId }`. Response: `status: 'PROCESSING'`.
+5. **Render locally** — use the local `blob:` URL for immediate preview. The sender does not need to fetch from server.
+6. **Send message** — `POST /chat/messages` with `type: 'image'` (or other) and `attachments: [{ mediaId }]`.
+7. **Listen for `message:media_ready`** — when fired, replace local blob URL with presigned server URL via `GET /media/:mediaId/url`.
+
+---
+
+### Guide 3: Multipart Media Upload (> 10 MB)
+
+```
+POST /media/multipart/init           ← Create session, get mediaId + uploadId
+POST /media/multipart/presign-parts  ← Get N presigned PUT URLs
+PUT  <url1>, PUT <url2>, ...         ← Upload chunks in parallel
+POST /media/multipart/complete       ← Assemble + finalize (include ETags)
+POST /chat/messages                  ← Send message
+```
+
+**Step-by-step:**
+
+1. **Init** — `POST /media/multipart/init` with `{ filename, mimeType, type, totalSize }`. Save `mediaId`.
+2. **Chunk the file** — split into parts of **5–50 MB**. Build `partNumbers = [1, 2, ..., N]`.
+3. **Get presigned URLs** — `POST /media/multipart/presign-parts` with `{ mediaId, partNumbers }`.
+4. **Upload parts in parallel** — `PUT <url>` for each part. Collect the `ETag` response header.
+   ```javascript
+   const etags = await Promise.all(
+     parts.map(async ({ partNumber, url }, i) => {
+       const resp = await fetch(url, { method: 'PUT', body: chunks[i] });
+       return { partNumber, eTag: resp.headers.get('ETag') };
+     })
+   );
+   ```
+5. **Complete** — `POST /media/multipart/complete` with `{ mediaId, parts: etags }`. Parts **must be sorted by `partNumber` ascending**.
+6. **Send message** — same as Guide 2 step 6.
+7. **On failure** — call `DELETE /media/multipart/:mediaId` to remove orphaned parts from storage.
+
+---
+
+### Guide 4: Cursor Tracking & Read Receipts
+
+The system uses **offset-based cursors** (monotonically increasing integers per conversation), not timestamps, for read receipts. Unread count = `maxOffset - myOffset`.
+
+**Key values:**
+- `conversation.maxOffset` — highest message offset in the conversation
+- `myOffset` — last offset the current user has confirmed seen (stored per user per conversation)
+
+**Client state machine:**
+
+```
+On app start / WS authenticate:
+  → GET /conversations  (load list with maxOffset, myOffset for each)
+  → Render unread badges: max(0, maxOffset - myOffset)
+
+On open conversation:
+  → Emit WS 'conversation:join' { conversationId }
+  → Server replies: { latestOffset }
+  → Immediately emit 'conversation:update_seen_cursor' { conversationId, upToOffset: latestOffset }
+  → Clear unread badge for this conversation
+
+On receive WS 'message:new' (conversation is OPEN):
+  → Append message to UI
+  → Emit 'conversation:update_seen_cursor' { conversationId, upToOffset: message.offset }
+
+On receive WS 'message:new' (conversation is BACKGROUND):
+  → Emit 'conversation:update_delivered_cursor' { conversationId, upToOffset: message.offset }
+  → Increment unread badge by 1
+
+On receive WS 'message:notify' (conversation not open):
+  → Update maxOffset in conversation list
+  → Increment unread badge
+
+On close / leave conversation:
+  → Emit WS 'conversation:leave' { conversationId }
+
+On app background / suspend:
+  → Stop emitting seen cursors
+  → Switch to delivered-only updates
+
+On reconnect / re-authenticate:
+  → Re-join all open conversation rooms
+  → PATCH /conversations/:id/offset for any cursors missed while offline
+```
+
+**Cursor types:**
+- `conversation:update_delivered_cursor` → message received by device (sender sees ✓✓)
+- `conversation:update_seen_cursor` → user actively viewed the message (sender sees "read" indicator)
+
+Both are fire-and-forget — ACK immediately with `status: 'processing'`. The actual DB write is handled by `OffsetSyncJob` every 5 s via Write-Behind caching.
+
+---
+
+### Guide 5: Reaction Optimistic Updates
+
+Reactions bypass Kafka for sub-100 ms delivery via Redis Pub/Sub.
+
+```
+User taps 👍
+  │
+  ├─ IMMEDIATELY update local UI (optimistic +1)
+  │
+  ├─ POST /messages/:id/reactions { conversationId, emoji: '👍', action: 'add' }
+  │         │
+  │         └─ Server: Redis HSET + SADD dirty + Redis PUBLISH
+  │                    ReactionPubSubService → WS 'message:reaction_updated'
+  │
+  └─ Receive WS 'message:reaction_updated' (authoritative server state)
+         │
+         └─ Replace optimistic local state with server state
+```
+
+**Step-by-step:**
+
+1. **Optimistic add** — immediately increment the `👍` count in local state.
+2. **POST reaction** — `POST /messages/:id/reactions` with `{ conversationId, emoji, action: 'add' }`.
+3. **On WS `message:reaction_updated`** — match by `messageId`, replace entire `reactions` map:
+   ```typescript
    {
-     "currentPassword": "OldPass@2025",
-     "newPassword": "NewPass@2026"
+     messageId: string;
+     reactions: {
+       [emoji: string]: {
+         count: number;
+         reactors: string[];     // User IDs who reacted
+         myReaction: boolean;    // Whether current user has this reaction
+       }
+     }
    }
-   Header: Authorization: Bearer <token>
-
-3. Server xác minh currentPassword với Keycloak (ROPC grant)
-   → Sai: 401 Unauthorized, dừng
-
-4. Server đặt newPassword qua Keycloak Admin API
-5. Server thu hồi TẤT CẢ phiên đăng nhập (logout toàn bộ thiết bị)
-6. Client nhận 200: "Mật khẩu đã được đổi thành công. Vui lòng đăng nhập lại."
-
-7. Client xóa token cũ → redirect đến màn hình đăng nhập
-```
-
-> **Lưu ý UX**: Sau bước 6, token hiện tại cũng bị vô hiệu hóa. Client phải redirect đến trang đăng nhập.
-
----
-
-### Bảng tổng hợp toàn bộ endpoint
-
-| Module | Method | Path | Auth | Mô tả |
-|---|---|---|---|---|
-| Health | GET | `/` | Public | Ping |
-| Health | GET | `/health` | Public | Trạng thái gateway |
-| Health | GET | `/health/circuit-breakers` | Public | Circuit breaker status |
-| Auth | GET | `/me` | JWT | Thông tin user từ JWT |
-| Auth | GET | `/admin` | JWT + admin | Kiểm tra quyền admin |
-| Auth | POST | `/auth/forgot-password` | Public | Gửi OTP đặt lại mật khẩu |
-| Auth | POST | `/auth/reset-password` | Public | Đặt lại mật khẩu bằng OTP |
-| Users | GET | `/users` | JWT | Danh sách user |
-| Users | GET | `/users/me` | JWT | Profile bản thân |
-| Users | PUT | `/users/me` | JWT | Cập nhật profile |
-| Users | GET | `/users/search` | JWT | Tìm kiếm user |
-| Users | GET | `/users/:id` | JWT | Xem user |
-| Users | POST | `/users/me/change-password` | JWT | Đổi mật khẩu (có xác minh hiện tại) |
-| Conversations | GET | `/conversations/health/outbox` | Public | Outbox health |
-| Conversations | GET | `/conversations` | JWT | Danh sách conversation |
-| Conversations | POST | `/conversations` | JWT | Tạo conversation |
-| Conversations | GET | `/conversations/:id` | JWT | Chi tiết conversation |
-| Conversations | PATCH | `/conversations/:id/info` | JWT | Cập nhật thông tin |
-| Conversations | POST | `/conversations/:id/members` | JWT | Thêm thành viên |
-| Conversations | DELETE | `/conversations/:id/members` | JWT | Xóa thành viên |
-| Conversations | GET | `/conversations/:id/members` | JWT | Danh sách thành viên |
-| Conversations | PATCH | `/conversations/:id/members/:userId/role` | JWT | Đổi role thành viên |
-| Conversations | GET | `/conversations/:id/unread` | JWT | Số tin chưa đọc |
-| Conversations | PATCH | `/conversations/:id/offset` | JWT | Cập nhật read cursor |
-| Conversations | GET | `/conversations/:id/pinned` | JWT | Tin nhắn được ghim |
-| Conversations | GET | `/conversations/:id/messages` | JWT | Lấy tin nhắn |
-| Chat | POST | `/chat/messages` | JWT | Gửi tin nhắn |
-| Chat | POST | `/chat/pre-check-media` | JWT | Kiểm tra trước khi upload |
-| Messages | PATCH | `/messages/:id` | JWT | Sửa tin nhắn |
-| Messages | DELETE | `/messages/:id` | JWT | Xóa tin nhắn |
-| Messages | POST | `/messages/:id/pin` | JWT | Ghim tin nhắn |
-| Messages | DELETE | `/messages/:id/pin?conversationId=` | JWT | Bỏ ghim tin nhắn |
-| Messages | POST | `/messages/:id/revoke` | JWT | Thu hồi tin nhắn (ẩn tất cả, ~2 phút) |
-| Messages | DELETE | `/messages/:id/for-me?conversationId=` | JWT | Xóa tin nhắn phía tôi |
-| Messages | POST | `/messages/forward` | JWT | Chuyển tiếp tin nhắn |
-| Friendships | POST | `/friendships/requests/:targetUserId` | JWT | Gửi lời mời |
-| Friendships | POST | `/friendships/requests/:fromUserId/accept` | JWT | Chấp nhận |
-| Friendships | POST | `/friendships/requests/:fromUserId/reject` | JWT | Từ chối |
-| Friendships | GET | `/friendships/requests` | JWT | Danh sách lời mời |
-| Friendships | GET | `/friendships` | JWT | Danh sách bạn bè |
-| Friendships | GET | `/friendships/:targetUserId/status` | JWT | Trạng thái quan hệ |
-| Friendships | DELETE | `/friendships/:targetUserId` | JWT | Hủy kết bạn |
-| Friendships | POST | `/friendships/blocks/:targetUserId` | JWT | Chặn user |
-| Friendships | DELETE | `/friendships/blocks/:targetUserId` | JWT | Bỏ chặn user |
-| Media | POST | `/media/upload` | JWT | Khởi tạo upload |
-| Media | POST | `/media/upload/complete` | JWT | Báo hoàn tất upload |
-| Media | GET | `/media` | JWT | Danh sách media |
-| Media | GET | `/media/:mediaId/url` | JWT | Lấy URL truy cập |
-| Media | DELETE | `/media/:mediaId` | JWT | Xóa file |
-| Media | POST | `/media/:mediaId/cross-share` | JWT | Chia sẻ file |
-| Media | POST | `/media/multipart/init` | JWT | Khởi tạo multipart upload |
-| Media | POST | `/media/multipart/presign-parts` | JWT | Lấy pre-signed URLs cho từng phần |
-| Media | POST | `/media/multipart/complete` | JWT | Hoàn tất ghép phần |
-| Media | DELETE | `/media/multipart/:mediaId` | JWT | Hủy multipart upload |
-| Notifications | GET | `/notifications/vapid-public-key` | Public | VAPID key |
-| Notifications | POST | `/notifications/devices` | JWT | Đăng ký thiết bị |
-| Notifications | DELETE | `/notifications/devices/:deviceId` | JWT | Hủy đăng ký thiết bị |
-| Notifications | PUT | `/notifications/preferences` | JWT | Cập nhật tùy chọn |
-| Notifications | GET | `/notifications/preferences` | JWT | Lấy tùy chọn |
-| Presence | GET | `/presence/status` | JWT | Trạng thái bản thân |
-| Presence | GET | `/presence/friends` | JWT | Trạng thái bạn bè |
-| Calls | GET | `/calls/health` | Public | Health check |
-| Calls | POST | `/calls/start` | JWT | Bắt đầu cuộc gọi |
-| Calls | GET | `/calls/active/:conversationId` | JWT | Cuộc gọi đang diễn ra |
-| Calls | GET | `/calls/me/active` | JWT | Cuộc gọi của bản thân |
-| Calls | POST | `/calls/:meetingId/join` | JWT | Tham gia cuộc gọi |
-| Calls | POST | `/calls/:meetingId/token` | JWT | Lấy LiveKit token |
-| Calls | POST | `/calls/:meetingId/waiting/:userId/approve` | JWT | Duyệt người chờ |
-| Calls | POST | `/calls/:meetingId/waiting/:userId/reject` | JWT | Từ chối người chờ |
-| Calls | PATCH | `/calls/:meetingId/media-state` | JWT | Cập nhật media state |
-| Calls | POST | `/calls/:meetingId/leave` | JWT | Rời cuộc gọi |
-| Calls | POST | `/calls/:meetingId/end` | JWT | Kết thúc cuộc gọi |
-| Calls | POST | `/calls/:meetingId/participants/:userId/moderate` | JWT | Kiểm soát người tham gia |
-| Calls | POST | `/calls/:meetingId/recording/start` | JWT | Bắt đầu ghi |
-| Calls | POST | `/calls/:meetingId/recording/pause` | JWT | Tạm dừng ghi |
-| Calls | POST | `/calls/:meetingId/recording/resume` | JWT | Tiếp tục ghi |
-| Calls | POST | `/calls/:meetingId/recording/stop` | JWT | Dừng ghi |
-| Calls | GET | `/calls/:meetingId/recordings` | JWT | Danh sách bản ghi |
-| Calls | GET | `/calls/history/:conversationId` | JWT | Lịch sử cuộc gọi |
-| Calls | GET | `/calls/:meetingId/summary` | JWT | Tóm tắt cuộc gọi |
-| Calls | GET | `/calls/:meetingId/snapshot` | JWT | Snapshot phòng họp |
+   ```
+4. **On HTTP error** — revert the optimistic change.
+5. **Remove reaction** — same flow, `action: 'remove'`. Optimistically decrement, server confirms.
+6. **Idempotency** — calling `add` twice for the same emoji by the same user is safe (Redis HSET is idempotent).
+7. **Write-Behind note** — reaction state is written to Redis immediately and synced to the database every 5 s by `ReactionSyncJob`. The WS event reflects Redis-live state (may be slightly ahead of DB).

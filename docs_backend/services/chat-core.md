@@ -79,7 +79,30 @@ Redis INCR + EXPIRE. Per-sender bucket. Shared cho text + sticker.
 
 ### ACL & Strategy
 
-ACL chain và ConversationStrategy đã được **inlined** vào `MessageSendOrchestrator` để loại bỏ overhead. Không còn `AclRuleChainFactory` hay `ConversationStrategyRegistry` trên hot path.
+**Hot path (SEND):** Content validation, membership check, và friendship/block check đều được inlined trực tiếp vào `MessageSendOrchestrator` — không qua `AclRuleChainFactory`.
+
+**Mutation path (EDIT / DELETE / REVOKE / PIN):** Sử dụng `AclRuleChainFactory` để build singleton Chain-of-Responsibility per operation type:
+
+| Chain | Rules | Operation |
+|-------|-------|-----------|
+| `_messageEditChain` | AccountStatusRule → MembershipRule → TimeWindowRule (1h) | MSG_EDIT_OWN |
+| `_messageDeleteChain` | AccountStatusRule → MembershipRule → TimeWindowRule (24h) | MSG_DELETE_OWN / MSG_DELETE_ANY |
+| `_messageRevokeChain` | AccountStatusRule → MembershipRule → TimeWindowRule (1h) | MSG_REVOKE_OWN |
+| `_membershipChain` | AccountStatusRule → MembershipRule | PIN/UNPIN |
+| `_mediaChain` | AccountStatusRule → MembershipRule → MediaValidationRule | PRE_CHECK_MEDIA |
+
+## Orchestrator Summary
+
+| Orchestrator | TCP Pattern | ACL Window | Kafka Topic Published | Notes |
+|---|---|---|---|---|
+| `MessageSendOrchestrator` | `SEND_MESSAGE` | None (inline validation) | `MESSAGE_ACCEPTED` | Fire-and-forget; Redis outbox fallback |
+| `MessageEditOrchestrator` | `EDIT_MESSAGE` | 1 hour (EDIT_OWN) | `MESSAGE_EDITED` | Sender only; history saved |
+| `MessageDeleteOrchestrator` | `DELETE_MESSAGE` | 24 hours | `MESSAGE_DELETED` | DELETE_OWN (sender) or DELETE_ANY (admin + audit log) |
+| `MessageRevokeOrchestrator` | `REVOKE_MESSAGE` | 1 hour (REVOKE_OWN) | `MESSAGE_REVOKED` | Tombstone pattern; `is_revoked=true`, record kept; payload includes `tombstoneTextKey: 'message.revoked'` |
+| `MessageDeleteForUserOrchestrator` | `DELETE_MESSAGE_FOR_USER` | **No time window** | `MESSAGE_DELETED_FOR_USER` | Hides message for requesting user only; partitioned by `userId`; no conversation broadcast |
+| `MessageForwardOrchestrator` | `FORWARD_MESSAGE` | None | `MESSAGE_ACCEPTED` (per target) | Validates ALL target memberships before ANY publish; cannot forward revoked/deleted messages; `forwardSnapshot.text` capped at 80 chars |
+| `MessagePinOrchestrator` | `PIN_MESSAGE` / `UNPIN_MESSAGE` | None | PIN event | OWNER/ADMIN/MODERATOR only; max 3 pinned messages per conversation |
+| `MediaPreCheckOrchestrator` | `PRE_CHECK_MEDIA` | None | None | Phase-1 of two-phase commit: validates membership + media policy BEFORE upload |
 
 ## Luồng Send Message (tóm tắt)
 
@@ -119,8 +142,12 @@ setInterval(500ms) → processKafkaOutbox()
 ## Kafka Events Published
 
 | Topic | When | Consumer |
-|-------|------|---------|
-| `MESSAGE_ACCEPTED` | Validation passed | Message Store |
+|-------|------|----------|
+| `MESSAGE_ACCEPTED` | Send/Forward validation passed | Message Store |
+| `MESSAGE_EDITED` | Edit ACL passed (within 1h) | Message Store |
+| `MESSAGE_DELETED` | Delete ACL passed (within 24h) | Message Store |
+| `MESSAGE_REVOKED` | Revoke ACL passed (within 1h) | Message Store |
+| `MESSAGE_DELETED_FOR_USER` | Delete-for-me requested (no time window) | Message Store |
 
 ## Kafka Events Consumed
 

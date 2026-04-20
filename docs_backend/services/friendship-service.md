@@ -33,29 +33,32 @@ This prevents inconsistencies like:
 
 **friendship** (Bidirectional records)
 ```sql
-userId         VARCHAR (PK, part 1)
-targetUserId   VARCHAR (PK, part 2)
-status         ENUM('FRIEND', 'PENDING_IN', 'PENDING_OUT', 'BLOCKED')
+id             UUID (PK, auto-generated)
+userId         UUID (indexed)
+targetUserId   UUID (indexed)
+status         ENUM('NONE', 'PENDING_OUT', 'PENDING_IN', 'FRIEND', 'BLOCKED'), default 'NONE'
 createdAt      TIMESTAMP
+updatedAt      TIMESTAMP
+UNIQUE(userId, targetUserId)
 ```
 
 **friend_request** (Source of truth for pending requests)
 ```sql
-id             UUID (PK)
-fromUserId     VARCHAR (indexed)
-toUserId       VARCHAR (indexed)
-status         ENUM('PENDING', 'ACCEPTED', 'REJECTED')
+id             UUID (PK, auto-generated)
+fromUserId     UUID (indexed)
+toUserId       UUID (indexed)
 createdAt      TIMESTAMP
 UNIQUE(fromUserId, toUserId)
 ```
 
+> Note: There is **no `status` column** on this table. A `FriendRequest` row exists only while the request is pending. It is **deleted** (not updated) when accepted or rejected.
+
 **block** (Source of truth for blocks)
 ```sql
-id             SERIAL (PK)
-userId         VARCHAR (blocker)
-blockedUserId  VARCHAR (blocked user)
+userId         UUID (PK, composite part 1, blocker)
+blockedUserId  UUID (PK, composite part 2, blocked user)
 createdAt      TIMESTAMP
-UNIQUE(userId, blockedUserId)
+-- Composite PK serves as implicit UNIQUE(userId, blockedUserId)
 ```
 
 ---
@@ -90,11 +93,11 @@ UNIQUE(userId, blockedUserId)
 **Transaction Steps**:
 1. Validate: Check if incoming request exists (`PENDING_IN`)
 2. Update both `Friendship` records to `status=FRIEND`
-3. Update `FriendRequest` to `status=ACCEPTED`
+3. **Delete** the `FriendRequest` record (row is removed, not updated to ACCEPTED)
 4. Write to `outbox`: `eventType='friend.request_accepted'`
 5. Invalidate cache for both users
 6. **Commit transaction**
-7. **Write `FRIENDSHIP_PROOF` key** (synchronous, after commit): Gateway sets `{chat:rel:{lo}:{hi}}:proof = "1"` TTL 30s in Redis. This key bridges the lag between Kafka event publish and `FriendshipFriendsConsumer` processing in Chat Core, ensuring the two new friends can message immediately.
+7. **Write `FRIENDSHIP_PROOF` key** (in the **Gateway**, after the TCP call returns): `FriendshipGatewayService` sets `{chat:rel:{lo}:{hi}}:proof = "1"` TTL 30s in Redis. This key bridges the lag between Kafka event publish and `FriendshipFriendsConsumer` processing in Chat Core, ensuring the two new friends can message immediately.
 
 **Outbox Event** → Kafka:
 - Topic: `friendship.request_accepted`
@@ -378,7 +381,7 @@ await this.invalidateFriendCache(userB);
 **Deterministic Pair Key** (for Kafka partitioning):
 ```typescript
 private getPairKey(userA: string, userB: string): string {
-  return [userA, userB].sort().join('-'); // Always 'alice-bob', never 'bob-alice'
+  return [userA, userB].sort().join(':'); // Always 'alice:bob', never 'bob:alice'
 }
 ```
 

@@ -46,13 +46,23 @@ This service does not perform business validation or data persistence. Instead, 
    - Caching: Members list cached in Redis (TTL: 10 min)
    - Events emitted: `message:saved` (to sender), `message:notify` (to other members), `message:new` (to conversation room)
 
-2. **`chat.event.message_updated`** / **`chat.event.message_edited`** / **`chat.event.message_pinned`** / **`chat.event.message_unpinned`** (MessageUpdatedConsumer)
-   - Purpose: Broadcast message mutation events
-   - Events emitted: `message:edited`, `message:pinned`, `message:unpinned`
+2. **`chat.event.message_updated`** (MessageUpdatedConsumer)
+   - Purpose: Broadcast message mutation events to all conversation participants
+   - Events emitted depend on `patch` content:
+     - `patch.isRevoked = true` → emits `message:revoked` to conversation room
+     - `patch.isDeleted = true` → emits `message:deleted` to conversation room
+     - `patch.content` set → emits `message:edited` to conversation room
+     - otherwise → emits `message:updated` (e.g. attachment status change)
+   - Payload: `{ messageId, conversationId, ...patch }`
+
+3. **`chat.event.message_deleted_for_user`** (MessageDeletedForUserConsumer)
+   - Purpose: Notify a specific user that a message was hidden for them only
+   - Events emitted: `message:deleted_for_me` → sent to **personal room** `user:{userId}` only (not conversation broadcast)
+   - Payload: `{ messageId, conversationId, deletedAt }`
 
 3. **`chat.event.member_added`** / **`chat.event.member_removed`** (MemberChangesConsumer)
    - Purpose: Notify when members added to or removed from a conversation
-   - Events emitted: `member:added`, `member:removed`
+   - Events emitted: `conversation:member-added`, `conversation:member-removed`
 
 5. **`chat.event.conversation_updated`** (ConversationUpdatedConsumer)
    - Purpose: Broadcast conversation info changes (name, description, avatar) to all members
@@ -68,7 +78,6 @@ This service does not perform business validation or data persistence. Instead, 
 
 **Incoming Events from Clients:**
 
-- `message:send` - Client sends a message to a conversation
 - `typing:start` - Client starts typing (DIRECT/GROUP only)
 - `typing:stop` - Client stops typing (DIRECT/GROUP only)
 - `message:read` - Client marks messages as read
@@ -76,16 +85,24 @@ This service does not perform business validation or data persistence. Instead, 
 
 **Outgoing Events to Clients:**
 
-- `message:new` - New message notification (full payload to conversation room)
+- `message:new` - New message (full payload to conversation room); includes `attachments[]` for media messages and `forwardedFrom` for forwarded messages
 - `message:notify` - Lightweight notification (to personal user rooms)
+- `message:saved` - Sent to message sender only (confirmation with `messageId`, `offset`)
+- `message:media_ready` - Media processing completed (image/video/file only; audio is not server-processed); FE should update media display (optimized image, poster); payload: `{ messageId, conversationId, attachment: { mediaId, kind, status, meta?, thumbReady?, variantsReady?, error? } }`
+- `message:revoked` - Message tombstoned (all participants); payload: `{ messageId, conversationId, revokedAt, tombstoneTextKey }`
+- `message:deleted` - Message soft-deleted for all; payload: `{ messageId, conversationId, deletedAt }`
+- `message:edited` - Message content updated; payload: `{ messageId, conversationId, content, isEdited, editedAt }`
+- `message:deleted_for_me` - Message hidden for this user only (**private** — emitted to `user:{userId}` room); payload: `{ messageId, conversationId, deletedAt }`
+- `message:reaction_updated` - Reaction changed on message; payload: `{ messageId, conversationId, reactions, action, reactorId, emoji }`
+- `message:updated` - Generic fallback for other mutations
 - `community:notify` - Lightweight large-channel new message indicator
 - `typing:start` - User started typing
 - `typing:stop` - User stopped typing
-- `member:added` - New member added to conversation
-- `member:removed` - Member removed from conversation
+- `conversation:member-added` - New member added to conversation
+- `conversation:member-removed` - Member removed from conversation
+- `account:status-changed` - Force-disconnect signal: emitted to `user:{userId}` room when account is deactivated or deleted; payload: `{ reason: 'deactivated' | 'deleted' }`; sockets are force-closed immediately after
 - `conversation:updated` - Conversation info changed (name/description/avatar); payload: `{ conversationId, changes, updatedBy?, timestamp? }`; client should refetch `GET /conversations/:id` to get updated `avatarUrl`
 - `user:profile-updated` - User profile changed (name or avatar); payload: `{ userId, changedFields, snapshot: { displayName, avatarMediaId }, timestamp }`; client should invalidate cached avatar URL and refetch presigned URL via `GET /media/avatar/:mediaId` when `changedFields` includes `avatarMediaId`
-- `message:saved` - Sent to message sender only (confirmation)
 - `error` - Error notification
 - `authenticated` - Authentication success confirmation
 
@@ -142,14 +159,26 @@ None. This service does not publish Kafka events; it only consumes them.
 - Event Type: MESSAGE_SAVED
 - Consumer Group: `realtime-gateway`
 - Purpose: Notify conversation members that a new message has been persisted
-- Payload: messageId, conversationId, senderId, offset, timestamp
-- Processing: 80ms batch window; broadcast to personal rooms (lightweight) and conversation room (full payload); members list fetched from Redis cache (TTL: 10 min)
+- Payload: messageId, conversationId, senderId, offset, content, type, attachments[], forwardedFrom, timestamp
+- Processing: 80ms batch window; broadcast to personal rooms (lightweight `message:notify`) and conversation room (full `message:new` with attachments); members list fetched from Redis cache (TTL: 10 min)
 
-**Topic: `chat.event.message_updated`** / **`chat.event.message_edited`** / **`chat.event.message_pinned`** / **`chat.event.message_unpinned`**
+**Topic: `chat.event.message_updated`**
 
 - Consumer Group: `realtime-gateway`
-- Purpose: Broadcast message mutation events to conversation members
-- Processing: Direct broadcast to `conversation:{id}` room
+- Purpose: Broadcast message mutation events to all conversation participants
+- Processing: Direct broadcast to `conversation:{id}` room; event name derived from `patch` content:
+  - `patch.isRevoked` → emits `message:revoked`
+  - `patch.isDeleted` → emits `message:deleted`
+  - `patch.content` → emits `message:edited`
+  - `patch.attachment` → emits `message:media_ready` (media processing complete)
+  - fallback → emits `message:updated`
+
+**Topic: `chat.event.message_deleted_for_user`**
+
+- Consumer Group: `realtime-gateway`
+- Purpose: Notify the specific user that a message was hidden for them only
+- Processing: Emit `message:deleted_for_me` to personal room `user:{userId}` — **not broadcast to conversation**
+- Payload emitted: `{ messageId, conversationId, deletedAt }`
 
 **Topic: `chat.event.member_added`**
 
@@ -250,7 +279,7 @@ Used by `ChatGateway` on `connect`/`disconnect` events and by WS revocation subs
 
 ### SoftLimitService
 
-Per-namespace configurable connection thresholds. When a namespace exceeds `softLimit`, new connections are accepted but a warning metric is recorded. Does not drop connections.
+Enforces per-platform connection limits on authenticate. MAX_WEB = 1, MAX_MOBILE = 1. When a user authenticates a new socket and the platform already has an active socket from the **same Keycloak session** (same `keycloakSid`), the oldest same-session socket is force-kicked via `session:revoked` event. Sockets from a different login session are left for `SessionRevocationService`.
 
 **No persistent in-memory state survives across restarts.** `ConnectionManager` is rebuilt from live Socket.IO adapter on startup.
 
@@ -321,17 +350,19 @@ Per-namespace configurable connection thresholds. When a namespace exceeds `soft
 - Clients authenticate via JWT token in connection handshake (query or auth object)
 - WsKeycloakGuard validates JWT signature using Keycloak JWKS
 - On successful connection, user is marked online in Presence Service
-- On disconnection, offline status is scheduled with configurable delay (default 30 seconds)
+- On disconnection, offline status is scheduled with a hardcoded **10-second** grace period (not configurable)
 - Reconnection within delay window cancels scheduled offline status
 - Connection state is stored in Redis to enable multi-instance deployments
 
 ### Message Broadcasting
 
-- MESSAGE_SAVED events are broadcast to all conversation members as lightweight notifications
-- Only metadata is sent (messageId, conversationId, senderId, offset, timestamp); clients must fetch full message via HTTP
-- Broadcasting is performed for all conversation types: DIRECT, GROUP, COMMUNITY
-- Broadcast targets are determined by querying Conversation Service for member IDs
-- Offline members do not receive broadcasts; they sync on reconnection
+- **Two-tier broadcast** per `MESSAGE_SAVED` event:
+  - **Tier 2** (`conversation:{id}` room): `message:new` with **full payload** (content, type, attachments, forwardedFrom, metadata) — received by users who have actively joined the conversation room.
+  - **Tier 1** (personal `user:{userId}` rooms): `message:notify` with lightweight payload `{ conversationId, latestOffset }` — received by all members regardless of which conversation they are viewing; batched over an 80 ms window to reduce WS spam.
+  - `message:saved` (personal `user:{senderId}` room): delivery confirmation to sender immediately (not batched).
+- Broadcasting is performed for all conversation types: DIRECT, GROUP, COMMUNITY.
+- Member IDs for the Tier 1 `message:notify` broadcast are fetched from a Redis JSON cache (key: `conversation:{id}:members`, TTL 600 s); on miss, fetched from Conversation Service via TCP.
+- Offline members do not receive broadcasts; they sync on reconnection.
 
 ### Typing Indicators
 

@@ -19,6 +19,14 @@ This document explains the design patterns used to reduce tight coupling in this
 6. [Strategy (Per-Kind Channel Logic in Chat Core)](#6-strategy-per-kind-channel-logic-in-chat-core)
 7. [Orchestrator (Operation Flows in Chat Core)](#7-orchestrator-operation-flows-in-chat-core)
 8. [Pattern Interaction Map](#8-pattern-interaction-map)
+9. [Singleflight (Concurrent Deduplication)](#9-singleflight-concurrent-deduplication)
+10. [Kafka Outbox (Redis List Retry)](#10-kafka-outbox-redis-list-retry)
+11. [LWW Register (FriendshipFriendsConsumer)](#11-lww-register-friendshipfriendsconsumer)
+12. [Factory (AclRuleChainFactory)](#12-factory-aclrulechainfactory)
+13. [Adapter (Service Contracts TCP Adapters)](#13-adapter-service-contracts-tcp-adapters)
+14. [Write-Behind Caching (Reactions & Message Offsets)](#14-write-behind-caching-reactions--message-offsets)
+15. [Observer / Redis Pub-Sub (Reactions & Session Revocation)](#15-observer--redis-pub-sub-reactions--session-revocation)
+16. [Write-Through Cache (ConversationService)](#16-write-through-cache-conversationservice)
 
 ---
 
@@ -33,13 +41,18 @@ Without a facade layer, every HTTP controller in the Gateway would directly hold
 **SDK/Facade Pattern** — `BaseGatewayService` is an abstract class that wraps a `ClientProxy` inside a `ProxyHelper`. Every service module in the Gateway exposes exactly one facade class that extends it.
 
 ```
-apps/gateway/src/modules/base/base-gateway.service.ts   ← abstract base
-apps/gateway/src/modules/chat/chat-gateway.service.ts   ← facade for Chat Core + Message Store (hard-fail)
-apps/gateway/src/modules/presence/                      ← facade for Presence (soft-fail with fallback)
-apps/gateway/src/modules/friendship/                    ← facade for Friendship (soft-fail with fallback)
-apps/gateway/src/modules/media/                         ← facade for Media Service
-apps/gateway/src/modules/users/                         ← facade for Users Service
-apps/gateway/src/modules/conversation/                  ← two facades: management + operations
+apps/gateway/src/modules/base/base-gateway.service.ts                  ← abstract base
+apps/gateway/src/modules/chat/chat-gateway.service.ts                  ← ChatGatewayService (Chat Core, hard-fail)
+apps/gateway/src/modules/chat/conversation-management.gateway.ts       ← ConversationManagementGatewayService (hard-fail)
+apps/gateway/src/modules/chat/message-operations.gateway.ts            ← MessageOperationsGatewayService (hard-fail)
+apps/gateway/src/modules/conversation/conversation-gateway.service.ts  ← ConversationGatewayService
+apps/gateway/src/modules/presence/presence.gateway.ts                  ← PresenceGatewayService (soft-fail, returns offline)
+apps/gateway/src/modules/friendship/friendship.gateway.ts              ← FriendshipGatewayService (soft-fail, returns empty list)
+apps/gateway/src/modules/media/media.gateway.ts                        ← MediaGatewayService
+apps/gateway/src/modules/users/users.gateway.ts                        ← UsersGatewayService
+apps/gateway/src/modules/call/call.gateway.ts                          ← CallGatewayService
+apps/gateway/src/modules/notification/notification.gateway.ts          ← NotificationGatewayService
+apps/gateway/src/modules/sticker/sticker.gateway.service.ts            ← StickerGatewayService
 ```
 
 The base class:
@@ -230,7 +243,7 @@ Any service that publishes a Kafka event after a DB write faces the **dual-write
 
 ### Pattern Applied
 
-**Transactional Outbox** — the Kafka event payload is written into an `outbox` table **in the same database transaction** as the domain data. A background `OutboxProcessor` polls the outbox table every 30 seconds, publishes pending rows to Kafka, then marks them as published.
+**Transactional Outbox** — the Kafka event payload is written into an `outbox` table **in the same database transaction** as the domain data. A background `OutboxProcessor` polls the outbox table every **5 seconds** (configurable via `intervalMs`, default 5000ms), publishes pending rows to Kafka, then marks them as published.
 
 ```
 libs/database-postgres/src/outbox/
@@ -456,8 +469,9 @@ apps/chat-core/src/strategies/conversation/
 Usage in an orchestrator:
 
 ```typescript
-const strategy = this.strategyRegistry.get(conversation.kind);
-const allowed = strategy.canPerformAction(ctx.actor.role, action);
+const strategy = this.strategyRegistry.resolveOrThrow(conversation.kind);
+const result = await strategy.validateMessage(context);
+if (!result.isValid) throw new ForbiddenException(result.errorCode);
 ```
 
 Each strategy encapsulates:
@@ -502,11 +516,14 @@ Business operations like "send message" require multiple steps: validate user, v
 
 ```
 apps/chat-core/src/orchestrators/
-  message-send.orchestrator.ts     ← validates + emits MESSAGE_ACCEPTED
-  message-edit.orchestrator.ts     ← enforces 10-min window + stores version
-  message-delete.orchestrator.ts   ← enforces 24h window + role check (DELETE_ANY)
-  message-pin.orchestrator.ts      ← permission check + broadcast pin event
-  media-precheck.orchestrator.ts   ← pre-upload DLP + classification check
+  message-send.orchestrator.ts            ← validates + emits MESSAGE_ACCEPTED
+  message-edit.orchestrator.ts            ← enforces 10-min window + ACL chain
+  message-delete.orchestrator.ts          ← enforces 24h window + role check (DELETE_ANY)
+  message-pin.orchestrator.ts             ← permission check + broadcasts pin event
+  message-revoke.orchestrator.ts          ← Tombstone pattern: sets is_revoked, 1-hour window
+  message-forward.orchestrator.ts         ← validates source + all target memberships; emits MESSAGE_ACCEPTED per target
+  message-delete-for-user.orchestrator.ts ← per-user soft hide (inserts into message_user_deletions)
+  media-precheck.orchestrator.ts          ← pre-upload DLP + media classification check
 ```
 
 `MessageSendOrchestrator` coordination sequence (v2 hot path):
@@ -599,15 +616,21 @@ HTTP Request (Client)
 |-----------|-------|
 | New external microservice added to Gateway | Service Facade (extend `BaseGatewayService`) |
 | Chat Core needs data from a new service | Service Contracts (add interface + adapter to `@app/service-contracts`) |
+| New TCP transport for a service dependency | Adapter (add adapter to `libs/service-contracts/src/adapters/`) |
 | New service emits Kafka events | Transactional Outbox (import `OutboxModule`) |
 | Hot-path data read hammering another service | Event-Driven Cache (Redis Set + Kafka consumer) |
 | New business rule in Chat Core validation | Chain of Responsibility (add rule class, register in factory) |
-| New `ConversationKind` or permission change | Strategy (add strategy class, update permission map in `getPermissionsForRole()`) |
+| New operation type needs its own ACL chain | Factory (`AclRuleChainFactory.createFor*()`) |
+| New `ConversationKind` or permission change | Strategy (add strategy class, update `getPermissionsForRole()`) |
 | New multi-step operation in Chat Core | Orchestrator (add orchestrator class, add controller handler) |
 | N concurrent TCP calls for same resource | Singleflight (inflight Map<string, Promise>) |
 | Kafka failure must not lose messages | Kafka Outbox + Redis List + background poller |
 | Friend/block status lookup per message | LWW Register (FriendshipFriendsConsumer + Lua CAS) |
-| Write DB counter but reduce PG row-lock | Redis INCR + write-behind (OffsetSyncJob) |
+| Write DB counter but reduce PG row-lock | Write-Behind Caching (Redis INCR → OffsetSyncJob) |
+| High-frequency mutable data, defer DB writes | Write-Behind Caching (Redis Hash → ReactionSyncJob) |
+| Push event to WebSocket rooms without polling | Observer / Redis Pub-Sub (psubscribe + emit) |
+| Cache must be warm immediately after DB commit | Write-Through Cache (pipeline after transaction) |
+| CQRS | **Not used** — no CQRS infrastructure in this codebase |
 
 ---
 
@@ -697,48 +720,341 @@ return 0
 - `REMOVED` event → store `-brokerTs` as tombstone (TTL 60s).
 - Read: `value > 0` means friends, `value < 0` means tombstone (not friends), `nil` = unknown (TCP fallback).
 
-**Used in**: `FriendshipFriendsConsumer` (Chat Core).
+**Used in**: `FriendshipFriendsConsumer` (`apps/chat-core/src/consumers/friendship-friends.consumer.ts`).
 
 ---
 
-## 12. Write-Through Cache (ConversationService)
+## 12. Factory (AclRuleChainFactory)
 
 ### Problem
 
-After Kafka publishes `MEMBER_ADDED`, there is a lag before `MembershipCacheConsumer` processes the event and warms the Redis membership cache. During this lag, membership validation in ChatCore falls back to TCP for every request.
+Each Chat Core operation (edit, delete, pin, revoke, media-precheck) requires a different subset of ACL rules. Without a factory, each orchestrator would hard-code its own `new AclRuleChain([...])` call, duplicating rule instantiation and making it easy for two operations to accidentally share mutable state.
 
 ### Pattern Applied
 
-After each DB transaction commit, immediately pipeline-write to Redis (non-blocking, soft-fail):
+**Factory Pattern** — `AclRuleChainFactory` instantiates all rule and chain objects once at NestJS boot time. Orchestrators receive pre-built singleton chains via DI; no orchestrator ever calls `new AclRuleChain()`.
+
+```
+apps/chat-core/src/acl/
+  acl-rule-chain.factory.ts   ← @Injectable() factory; builds 5 pre-warmed chains
+  acl-rule-chain.ts           ← AclRuleChain: executes rules in priority order
+  rules/
+    account-status.rule.ts    ← AccountStatusRule (CRITICAL priority)
+    membership.rule.ts        ← MembershipRule (HIGH priority)
+    time-window.rule.ts       ← TimeWindowRule (HIGH priority)
+    media-validation.rule.ts  ← MediaValidationRule (HIGH priority)
+```
+
+Factory source (`acl-rule-chain.factory.ts`):
+
+```typescript
+@Injectable()
+export class AclRuleChainFactory {
+  // Singleton rule instances
+  private readonly accountStatusRule  = new AccountStatusRule();
+  private readonly membershipRule     = new MembershipRule();
+  private readonly timeWindowRule     = new TimeWindowRule();
+  private readonly mediaValidationRule = new MediaValidationRule();
+
+  // Singleton chain instances — one per operation type
+  private readonly _messageEditChain   = new AclRuleChain([this.accountStatusRule, this.membershipRule, this.timeWindowRule]);
+  private readonly _messageDeleteChain = new AclRuleChain([this.accountStatusRule, this.membershipRule, this.timeWindowRule]);
+  private readonly _mediaChain         = new AclRuleChain([this.accountStatusRule, this.membershipRule, this.mediaValidationRule]);
+  private readonly _membershipChain    = new AclRuleChain([this.accountStatusRule, this.membershipRule]);
+  private readonly _messageRevokeChain = new AclRuleChain([this.accountStatusRule, this.membershipRule, this.timeWindowRule]);
+
+  createForMessageEdit():          AclRuleChain { return this._messageEditChain; }
+  createForMessageDelete():        AclRuleChain { return this._messageDeleteChain; }
+  createForMediaOperations():      AclRuleChain { return this._mediaChain; }
+  createForMembershipOperations(): AclRuleChain { return this._membershipChain; }
+  createForMessageRevoke():        AclRuleChain { return this._messageRevokeChain; }
+}
+```
+
+Orchestrator usage:
+
+```typescript
+@Injectable()
+export class MessageRevokeOrchestrator {
+  private readonly aclChain: AclRuleChain;
+
+  constructor(private readonly aclFactory: AclRuleChainFactory, ...) {
+    this.aclChain = this.aclFactory.createForMessageRevoke();
+  }
+}
+```
+
+### What it Solves
+
+- **No duplicate instantiation**: rule objects are created once regardless of how many orchestrators use them
+- **Isolated chain configs**: `_messageEditChain` and `_mediaChain` hold different rule sets — sharing the same `accountStatusRule` instance is safe because rules are stateless
+- **Single registration point**: adding a rule to all `edit`-like operations means touching only `createForMessageEdit()` in one file
+
+### How to Extend
+
+**Adding a new operation that needs ACL:**
+
+1. Add `createForNewOperation(): AclRuleChain { return new AclRuleChain([...]); }` in `acl-rule-chain.factory.ts`
+2. Call `this.aclFactory.createForNewOperation()` in the new orchestrator constructor
+
+**Adding a new rule globally:** create the rule class in `rules/`, instantiate it as a private field in `AclRuleChainFactory`, then add it to the relevant chain constructor calls.
+
+---
+
+## 13. Adapter (Service Contracts TCP Adapters)
+
+### Problem
+
+Chat Core needs to call six downstream services (Users, Conversation, Friendship, Media, MessageStore, CallService). Without adapters, Chat Core orchestrators would directly import `ClientProxy`, hard-code TCP patterns, and manage timeout/CB logic in-line. Swapping the transport (TCP → gRPC) or adding a Circuit Breaker would require editing every orchestrator.
+
+### Pattern Applied
+
+**Adapter Pattern** — six concrete adapter classes implement the corresponding `IXxxService` interface from `@app/service-contracts`. All TCP transport, timeout, and Circuit Breaker logic is encapsulated inside the adapter. Chat Core only sees the interface.
+
+```
+libs/service-contracts/src/adapters/
+  conversation-service.adapter.ts  ← ConversationServiceAdapter implements IConversationService
+  user-service.adapter.ts          ← UserServiceAdapter implements IUserService
+  friendship-service.adapter.ts    ← FriendshipServiceAdapter implements IFriendshipService
+  media-service.adapter.ts         ← MediaServiceAdapter implements IMediaService
+  message-service.adapter.ts       ← MessageServiceAdapter implements IMessageService
+  call-service.adapter.ts          ← CallServiceAdapter implements ICallService
+```
+
+Each adapter follows the same internal structure:
+
+```typescript
+@Injectable()
+export class ConversationServiceAdapter implements IConversationService {
+  constructor(
+    @Inject(SERVICES.CONVERSATION) private readonly client: ClientProxy,
+    @Optional() private readonly circuitBreaker?: CircuitBreakerService,
+  ) {}
+
+  private async call<T>(pattern: object, payload: any): Promise<T> {
+    if (this.circuitBreaker) {
+      return this.circuitBreaker.execute(
+        { serviceName: 'conversation-service', timeout: 3000, retries: 0, halfOpenAfter: 5000 },
+        () => firstValueFrom(this.client.send(pattern, payload)),
+      );
+    }
+    return firstValueFrom(this.client.send(pattern, payload).pipe(timeout(3000)));
+  }
+
+  async getConversation(id: string): Promise<ConversationDto | null> {
+    return this.call(CONVERSATION_PATTERNS.GET_CONVERSATION, { conversationId: id });
+  }
+}
+```
+
+`@Optional()` makes `CircuitBreakerService` backward-compatible — services that do not register it fall back to a plain RxJS `timeout(3000)`. Adapters are registered in `ChatCoreModule.onModuleInit()` via `ServiceRegistry`:
+
+```typescript
+onModuleInit(): void {
+  this.registry.register(SERVICE_NAMES.CONVERSATION, this.conversationService);
+  this.registry.register(SERVICE_NAMES.FRIENDSHIP,   this.friendshipService);
+  // ...
+}
+```
+
+### What it Solves
+
+- **Transport isolation**: changing a service from TCP to gRPC means rewriting one adapter file; all orchestrators are untouched
+- **Uniform CB policy**: timeout / retries / `halfOpenAfter` are configured once per service, not scattered across orchestrators
+- **Testability**: inject a mock implementing the interface; no TCP server needed
+
+### How to Extend
+
+To add a new downstream service to Chat Core:
+1. Define `INewService.interface.ts` in `libs/service-contracts/src/<new-service>/`
+2. Create `new-service.adapter.ts` in `libs/service-contracts/src/adapters/`
+3. Export from `libs/service-contracts/src/index.ts`
+4. Register in `ChatCoreModule.onModuleInit()`
+
+---
+
+## 14. Write-Behind Caching (Reactions & Message Offsets)
+
+### Problem
+
+Two write-intensive paths — reaction toggles and message offset increments — hit PostgreSQL directly in the hot path, causing row-level lock contention under concurrent traffic. Reactions are toggled many times per second; every new message increments a `max_offset` counter that multiple pods would race to update.
+
+### Pattern Applied
+
+**Write-Behind Caching** — writes land in Redis (O(1), no row-lock). Background cron jobs flush Redis state to PostgreSQL every 5 seconds under a leader lock, so only one pod writes per tick.
+
+#### Instance A: Reaction Sync (`ReactionSyncJob`)
+
+```
+apps/message-store/src/jobs/reaction-sync.job.ts
+```
+
+Write path (synchronous TCP call `REACT_MESSAGE` → `MessageStoreService.reactToMessage()`):
+
+```typescript
+// 1. Update Redis Hash (O(1))
+await this.redis.hset(REDIS_KEYS.CHAT.REACTION_HASH(messageId), `${emoji}:${reactorId}`, '1');
+// 2. Mark messageId dirty
+await this.redis.sadd(REDIS_KEYS.CHAT.REACTION_DIRTY_SET, messageId);
+// 3. Publish aggregated reactions to Redis Pub/Sub → RealtimeGateway → WS
+await this.redis.publish(REDIS_KEYS.CHAT.REACTION_PUBSUB_CHANNEL(conversationId), JSON.stringify(payload));
+```
+
+Flush path (`@Cron('*/5 * * * * *')` under `tryLeaderLock`):
+
+```typescript
+// 1. SMEMBERS msg:reaction:dirty
+// 2. HGETALL msg:reaction:{messageId}   → { 'emoji:userId': '1', ... }
+// 3. Aggregate → { emoji: userId[] }
+// 4. UPDATE messages SET metadata = jsonb_set(…, '{reactions}', $1) WHERE id = $2
+// 5. SREM msg:reaction:dirty {processedIds}
+```
+
+**Redis keys**: `msg:reaction:{messageId}` (Hash), `msg:reaction:dirty` (Set).
+
+#### Instance B: Message Offset Sync (`OffsetSyncJob`)
+
+```
+apps/conversation-service/src/jobs/offset-sync.job.ts
+```
+
+Write path (`MessageAcceptedConsumer` in message-store, after inserting a new message):
+
+```typescript
+// Redis INCR — no PG row-lock
+await this.redis.incr(REDIS_KEYS.CHAT.CONVERSATION_MAX_OFFSET(conversationId));
+await this.redis.sadd(REDIS_KEYS.CHAT.CONVERSATION_OFFSET_DIRTY_SET, conversationId);
+```
+
+Flush path (`@Cron('*/5 * * * * *')`):
+
+```typescript
+// 1. SMEMBERS chat:conv:dirty_offsets
+// 2. Pipeline GET chat:conv:offset:{id} for all dirty IDs
+// 3. UPDATE conversations SET max_offset = $2 WHERE id = $1 AND max_offset < $2  ← never goes backwards
+// 4. SREM chat:conv:dirty_offsets {synced IDs}
+```
+
+**Redis key**: `chat:conv:offset:{conversationId}` (String counter). The `AND max_offset < $2` guard prevents a stale slow flush from overwriting a newer value.
+
+### What it Solves
+
+- **No hot-row contention**: reaction hash fields and INCR counters are Redis operations with no DB locks
+- **Horizontal-scale safe**: `CacheService.tryLeaderLock()` (SET NX PX + Lua release) ensures exactly one pod flushes per tick
+- **Failure recovery**: if a flush fails, the dirty set retains the ID; next cron tick retries — no data lost
+- **Client responsiveness**: `REACT_MESSAGE` TCP call returns the updated reaction map immediately (from Redis), without waiting for DB write
+
+### How to Extend
+
+Follow the `ReactionSyncJob` template:
+1. Write fast path → Redis data structure + add to dirty Set
+2. Create a `@Cron`-based flush job; acquire `tryLeaderLock` at the start
+3. Read all dirty IDs → batch-update PG → remove from dirty Set
+
+---
+
+## 15. Observer / Redis Pub-Sub (Reactions & Session Revocation)
+
+### Problem
+
+When a user reacts to a message, all WebSocket clients in the conversation room must see the update in real time. The `MessageStore` service (where the reaction is processed) cannot directly reach the `RealtimeGateway` service (where WebSocket connections live) — they are separate processes with no shared memory.
+
+Similarly, when a user logs in from a new device, the previous session's WebSocket connection must be forcibly terminated without a direct service-to-service call.
+
+### Pattern Applied
+
+**Observer Pattern via Redis Pub/Sub** — the publisher (message-store, gateway) publishes to a channel; the subscriber (realtime-gateway) holds a dedicated ioredis connection in `SUBSCRIBE` mode that dispatches events to all connected WebSocket rooms.
+
+#### Instance A: Reaction Broadcast (`ReactionPubSubService`)
+
+```
+apps/realtime-gateway/src/chat/services/reaction-pubsub.service.ts
+```
+
+```
+Publisher: MessageStoreService.reactToMessage()
+  → redis.publish('reactions:conv:{conversationId}', JSON.stringify(payload))
+
+Subscriber: ReactionPubSubService (onModuleInit)
+  → subscriber.psubscribe('reactions:conv:*')
+  → on 'pmessage': extract conversationId from channel name
+  → server.to('conversation:{conversationId}').emit('message:reaction_updated', payload)
+```
+
+#### Instance B: Session Revocation (`SessionRevocationService`)
+
+```
+apps/realtime-gateway/src/chat/services/session-revocation.service.ts
+```
+
+```
+Publisher: Gateway (on login from new device / logout)
+  → redis.publish('auth:session:revoked', JSON.stringify({ userId, platform, keycloakSid }))
+
+Subscriber: SessionRevocationService (onModuleInit)
+  → subscriber.subscribe('auth:session:revoked')
+  → on 'message': find all sockets matching userId + platform + keycloakSid
+  → emit 'session_revoked' to each socket → ConnectionManager.unregisterConnection() → socket.disconnect()
+```
+
+Both services use a **dedicated ioredis connection** for the subscriber (the ioredis `SUBSCRIBE`/`PSUBSCRIBE` mode is exclusive — a subscribed connection cannot issue regular Redis commands). The WebSocket `Server` reference is injected into each service by `ChatGateway` after `afterInit()`:
+
+```typescript
+afterInit(server: Server): void {
+  this.reactionPubSubService.server = server;
+  this.sessionRevocationService.server = server;
+}
+```
+
+### What it Solves
+
+- **Process decoupling**: `message-store` pushes reactions without knowing anything about WebSocket topology
+- **Fan-out at socket layer**: one `PUBLISH` reaches N WebSocket pods because each pod subscribes independently — no shared Socket.IO adapter needed for this path
+- **Low-latency push**: Redis Pub/Sub delivery is typically < 1 ms across pods on the same network
+
+### How to Extend
+
+**Adding a new real-time push event:**
+1. In the producing service, call `redis.publish('<channel>', JSON.stringify(payload))`
+2. In `realtime-gateway`, create a new service implementing `OnModuleInit` / `OnModuleDestroy`, subscribe to the channel, and emit the appropriate WebSocket event to the correct room
+3. Register the service in `RealtimeGatewayModule` and inject the `server` reference from `ChatGateway.afterInit()`
+
+---
+
+## 16. Write-Through Cache (ConversationService)
+
+### Problem
+
+After Kafka publishes `MEMBER_ADDED`, there is a lag before `MembershipCacheConsumer` processes the event and warms the Redis membership cache. During this lag, membership validation in Chat Core falls back to TCP for every request — defeating the hot-path optimisation.
+
+### Pattern Applied
+
+**Write-Through Cache** — `ConversationService` immediately pipeline-writes to Redis after each DB transaction commit (non-blocking, soft-fail). This ensures the cache is warm before the first subsequent message check, regardless of Kafka consumer lag.
+
+```
+apps/conversation-service/src/conversation.service.ts
+```
 
 ```typescript
 // After DB commit in createConversation() / addMembers():
-const pipeline = redis.pipeline();
-pipeline.sadd(membersKey, ...memberIds);
-for (const uid of memberIds) {
-  pipeline.set(`${membersKey}:${uid}:role`, role, 'EX', 7 * 24 * 3600);
+const pipeline = this.redis.pipeline();
+pipeline.sadd(memberCacheKey, ...normalizedMemberIds);
+for (const uid of normalizedMemberIds) {
+  pipeline.set(`${memberCacheKey}:${uid}:role`, role, 'EX', 7 * 24 * 3600);
 }
-pipeline.expire(membersKey, 7 * 24 * 3600);
-await pipeline.exec().catch(err => logger.warn('Cache write-through non-critical', err));
+pipeline.expire(memberCacheKey, 7 * 24 * 3600);
+await pipeline.exec().catch(err =>
+  this.logger.warn(`Cache write-through for createConversation (non-critical): ${err.message}`)
+);
 ```
 
-**Result**: Cache is warm _immediately_ after DB commit. Kafka consumer is idempotent (SADD/SET with same values = no-op).
+The Kafka `MembershipCacheConsumer` in Chat Core is fully idempotent (`SADD` / `SET` with the same values = no-op), so there is no conflict between the two write paths. Write-through provides the guarantee; event-driven cache provides the fallback for Conversation Service restarts.
 
----
+### What it Solves
 
-## 13. Redis INCR + Write-Behind (Offset Assignment)
-
-### Problem
-
-The old `INCREMENT_MAX_OFFSET` pattern creates a PostgreSQL row-lock per message at high throughput (each `UPDATE conversations SET max_offset = max_offset + 1` holds the row lock for the duration of the DB round-trip).
-
-### Pattern Applied
-
-1. **Redis INCR** (atomic, O(1), no locks): `INCR chat:conv:{id}:max_offset` via Lua `INCR_IF_EXISTS`.
-2. **Dirty set**: `SADD chat:conv:dirty_offsets {convId}` after each INCR.
-3. **OffsetSyncJob** (`@Cron('*/5 * * * * *')`): batch-UPDATE PostgreSQL every 5 seconds using `WHERE max_offset < :val`.
-
-**Cold path**: Redis key absent after restart → TCP `INCREMENT_MAX_OFFSET` once → seed Redis with `SET NX`.
+- **Zero cold-start lag**: cache is warm immediately after DB commit; no TCP fallback on the first message
+- **Dual-write safety**: write-through is soft-fail (`catch` + warn) — a Redis blip does not roll back the DB transaction
+- **Idempotent consumer**: event-driven path (Section 4) can re-run without overwriting valid cache entries
 
 ---
 

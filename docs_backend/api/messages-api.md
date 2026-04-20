@@ -19,8 +19,9 @@
 9. [Bỏ ghim tin nhắn — DELETE /messages/:id/pin](#9-bỏ-ghim-tin-nhắn--delete-messagesidpin)
 10. [Danh sách tin nhắn đã ghim — GET /conversations/:id/pinned](#10-danh-sách-tin-nhắn-đã-ghim--get-conversationsidpinned)
 11. [Kiểm tra trước khi upload — POST /chat/pre-check-media](#11-kiểm-tra-trước-khi-upload--post-chatpre-check-media)
-12. [Mã lỗi nghiệp vụ](#12-mã-lỗi-nghiệp-vụ)
-13. [Luồng gửi tin nhắn đầy đủ](#13-luồng-gửi-tin-nhắn-đầy-đủ)
+12. [WebSocket Events cho FE](#12-websocket-events-cho-fe)
+13. [Mã lỗi nghiệp vụ](#13-mã-lỗi-nghiệp-vụ)
+14. [Luồng gửi tin nhắn đầy đủ](#14-luồng-gửi-tin-nhắn-đầy-đủ)
 
 ---
 
@@ -89,7 +90,7 @@ curl -X POST http://localhost:3000/chat/messages \
     "conversationId": "95782059-71f1-4489-97ec-d3a7b1e25553",
     "content": "Đúng rồi!",
     "type": "text",
-    "replyToId": "msg-uuid-replied-to",
+    "replyToMessageId": "msg-uuid-replied-to",
     "clientMessageId": "550e8400-e29b-41d4-a716-446655440004"
   }'
 ```
@@ -106,7 +107,7 @@ curl -X POST http://localhost:3000/chat/messages \
 | `attachments` | `AttachmentRef[]` | ✗ | Danh sách tệp đính kèm (dùng cho `type: 'media'`) |
 | `attachments[].mediaId` | string (UUID v4) | ✓ (trong mảng) | ID media đã upload |
 | `attachments[].type` | `'image'` \| `'video'` \| `'audio'` \| `'file'` | ✗ | Loại attachment |
-| `replyToId` | string (UUID) | ✗ | ID tin nhắn đang trả lời |
+| `replyToMessageId` | string (UUID) | ✗ | ID tin nhắn đang trả lời |
 | `mentions` | string[] | ✗ | Danh sách userId được mention |
 | `metadata` | object | ✗ | Dữ liệu mở rộng tùy chỉnh |
 
@@ -239,7 +240,7 @@ curl -X PATCH "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c
 ### Ràng buộc
 
 - Chỉ **chủ sở hữu** tin nhắn mới được sửa.
-- Chỉ được sửa trong vòng **10 phút** kể từ khi gửi.
+- Chỉ được sửa trong vòng **1 giờ** kể từ khi gửi.
 - Lịch sử sửa đổi được lưu đầy đủ (có thể xem qua `GET /messages/:id/history`).
 
 ### Lỗi phổ biến
@@ -247,14 +248,14 @@ curl -X PATCH "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c
 | HTTP | Code | Mô tả |
 |------|------|-------|
 | 403 | `FORBIDDEN_NOT_OWNER` | Tin nhắn không thuộc về bạn |
-| 403 | `FORBIDDEN_TIME_WINDOW` | Quá 10 phút kể từ khi gửi |
+| 403 | `FORBIDDEN_TIME_WINDOW` | Quá 1 giờ kể từ khi gửi |
 | 404 | `MESSAGE_NOT_FOUND` | Tin nhắn không tồn tại hoặc đã bị xóa |
 
 ---
 
 ## 4. Xóa tin nhắn — DELETE /messages/:id
 
-Xóa cứng một tin nhắn (xóa cho tất cả mọi người trong conversation).
+Xóa mềm (soft delete) một tin nhắn cho tất cả mọi người trong conversation.
 
 ```bash
 curl -X DELETE "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c4b" \
@@ -325,7 +326,7 @@ curl -X POST "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c4
 |---|---|---|
 | Hiển thị với người khác | "Tin nhắn đã thu hồi" | Biến mất hoàn toàn |
 | Ai thực hiện được | Chỉ chủ sở hữu | Chủ sở hữu hoặc ADMIN |
-| Giới hạn thời gian | ~2 phút (cửa sổ thu hồi) | 24 giờ |
+| Giới hạn thời gian | **1 giờ** kể từ khi gửi | 24 giờ |
 | Lưu trong DB | Có (`is_revoked = true`) | Có (`is_deleted = true`) |
 
 ### Lỗi phổ biến
@@ -333,7 +334,7 @@ curl -X POST "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c4
 | HTTP | Code | Mô tả |
 |------|------|-------|
 | 403 | `FORBIDDEN_NOT_OWNER` | Tin nhắn không thuộc về bạn |
-| 403 | `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | Quá cửa sổ thời gian thu hồi (~2 phút) |
+| 403 | `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | Quá cửa sổ thu hồi (1 giờ kể từ khi gửi) |
 | 404 | `MESSAGE_NOT_FOUND` | Tin nhắn không tồn tại hoặc đã bị thu hồi trước đó |
 
 ---
@@ -373,7 +374,7 @@ curl -X DELETE "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50
 |---|---|---|---|
 | Ai thấy thay đổi | Chỉ bạn | Tất cả mọi người | Tất cả mọi người |
 | Người khác có thấy không | Vẫn thấy bình thường | Thấy "Đã thu hồi" | Không thấy |
-| Giới hạn thời gian | Không có | ~2 phút | 24 giờ |
+| Giới hạn thời gian | Không có | 1 giờ | 24 giờ |
 
 ---
 
@@ -590,7 +591,182 @@ curl -X POST http://localhost:3000/chat/pre-check-media \
 
 ---
 
-## 12. Mã lỗi nghiệp vụ
+## 12. WebSocket Events cho FE
+
+WebSocket server chạy tại `ws://localhost:3002` (namespace `/chat`).  
+Tất cả events lắng nghe thụ động — FE **không gọi** mà chỉ `socket.on(event, handler)`.
+
+### Kết nối và xác thực
+
+```js
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:3002/chat', {
+  auth: { token: accessToken },     // hoặc query: { token: accessToken }
+  transports: ['websocket'],
+});
+socket.on('authenticated', () => console.log('Connected'));
+socket.on('error', (err) => console.error(err));
+
+// Join conversation room để nhận tin mới
+socket.emit('conversation:join', { conversationId });
+```
+
+---
+
+### Sự kiện tin nhắn
+
+#### `message:new`
+Tin nhắn mới xuất hiện trong conversation room (broadcast cho tất cả thành viên).
+
+```json
+{
+  "messageId": "186c65d5-...",
+  "clientMessageId": "550e8400-...",
+  "conversationId": "95782059-...",
+  "senderId": "e8394128-...",
+  "content": "Xin chào!",
+  "type": "text",
+  "offset": 42,
+  "metadata": null,
+  "attachments": null,
+  "replyToId": null,
+  "forwardedFrom": null,
+  "timestamp": "2026-04-18T10:00:00.000Z"
+}
+```
+
+> FE nên dùng `offset` để sort và dedup tin nhắn. `forwardedFrom` ≠ null khi đây là tin chuyển tiếp.
+
+#### `message:saved`
+Xác nhận riêng gửi cho **người gửi** (chỉ gửi đến socket của sender), xác nhận tin đã được lưu vào DB.
+
+```json
+{
+  "messageId": "186c65d5-...",
+  "clientMessageId": "550e8400-...",
+  "offset": 42,
+  "conversationId": "95782059-...",
+  "timestamp": "2026-04-18T10:00:00.000Z"
+}
+```
+
+> Dùng để chuyển optimistic UI từ "đang gửi" → "đã gửi" (hiển thị tick đơn).
+
+#### `message:edited`
+Tin nhắn đã được sửa — broadcast cho tất cả thành viên conversation.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "content": "Nội dung đã chỉnh sửa",
+  "isEdited": true,
+  "editedAt": "2026-04-18T10:05:00.000Z"
+}
+```
+
+#### `message:revoked`
+Tin nhắn bị thu hồi — broadcast cho **tất cả** thành viên conversation.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "isRevoked": true,
+  "revokedAt": "2026-04-18T10:06:00.000Z",
+  "tombstoneTextKey": "message.revoked"
+}
+```
+
+> Thay thế nội dung tin nhắn bằng chuỗi i18n `"Tin nhắn đã bị thu hồi"` (dùng `tombstoneTextKey`).
+
+#### `message:deleted`
+Tin nhắn bị xóa cứng — broadcast cho **tất cả** thành viên conversation.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "isDeleted": true,
+  "deletedAt": "2026-04-18T10:07:00.000Z"
+}
+```
+
+#### `message:deleted_for_me`
+Tin nhắn đã được ẩn phía người dùng — **chỉ gửi cho user thực hiện** (room `user:{userId}`), không broadcast cho cả conversation.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "deletedAt": "2026-04-18T10:08:00.000Z"
+}
+```
+
+> Xóa tin nhắn này khỏi danh sách hiển thị của user hiện tại. Các thiết bị khác của cùng user cũng nhận event này (vì cùng room `user:{userId}`).
+
+#### `message:updated`
+Thay đổi generic — thường là trạng thái attachment sau khi Media Worker xử lý xong.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "mediaStatus": "READY",
+  "attachments": [{ "mediaId": "...", "type": "image", "status": "READY" }]
+}
+```
+
+---
+
+### Bảng tóm tắt sự kiện tin nhắn
+
+| Event | Ai nhận | Trigger |
+|-------|---------|---------|
+| `message:new` | Tất cả thành viên conversation | Có tin nhắn mới được lưu |
+| `message:saved` | Chỉ người gửi | Server xác nhận tin đã lưu vào DB |
+| `message:edited` | Tất cả thành viên conversation | Tin nhắn được sửa |
+| `message:revoked` | Tất cả thành viên conversation | Tin nhắn bị thu hồi |
+| `message:deleted` | Tất cả thành viên conversation | Tin nhắn bị xóa (ADMIN/chủ sở hữu) |
+| `message:deleted_for_me` | **Chỉ người thực hiện** (tất cả thiết bị) | Xóa tin nhắn phía mình |
+| `message:updated` | Tất cả thành viên conversation | Cập nhật trạng thái media / patch generic |
+
+---
+
+### Xử lý event thực tế (pseudocode)
+
+```typescript
+// Khuyến nghị: dùng một handler duy nhất cập nhật message store
+function applyMessagePatch(messageId: string, patch: Partial<Message>) {
+  const msg = messageStore.get(messageId);
+  if (!msg) return; // tin chưa tải — bỏ qua
+  Object.assign(msg, patch);
+}
+
+socket.on('message:revoked', ({ messageId, revokedAt, tombstoneTextKey }) => {
+  applyMessagePatch(messageId, { isRevoked: true, revokedAt, content: i18n(tombstoneTextKey) });
+});
+
+socket.on('message:deleted', ({ messageId, deletedAt }) => {
+  messageStore.remove(messageId);                         // xóa khỏi danh sách
+});
+
+socket.on('message:deleted_for_me', ({ messageId }) => {
+  messageStore.remove(messageId);                         // ẩn với user này
+});
+
+socket.on('message:edited', ({ messageId, content, editedAt }) => {
+  applyMessagePatch(messageId, { content, isEdited: true, editedAt });
+});
+
+socket.on('message:updated', (patch) => {
+  applyMessagePatch(patch.messageId, patch);              // cập nhật trạng thái media
+});
+```
+
+---
+
+## 13. Mã lỗi nghiệp vụ
 
 | Code | HTTP | Mô tả |
 |------|------|-------|
@@ -598,8 +774,8 @@ curl -X POST http://localhost:3000/chat/pre-check-media \
 | `SOURCE_MESSAGE_NOT_FOUND` | 404 | Tin nhắn gốc không tồn tại (khi forward) |
 | `FORBIDDEN_NOT_MEMBER` | 403 | Không phải thành viên của conversation |
 | `FORBIDDEN_NOT_OWNER` | 403 | Tin nhắn không thuộc về bạn |
-| `FORBIDDEN_TIME_WINDOW` | 403 | Quá cửa sổ thời gian cho phép (sửa: 10 phút, xóa: 24 giờ) |
-| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | 403 | Quá cửa sổ thu hồi (~2 phút) |
+| `FORBIDDEN_TIME_WINDOW` | 403 | Quá cửa sổ thời gian cho phép (sửa: 1 giờ, xóa: 24 giờ) |
+| `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | 403 | Quá cửa sổ thu hồi (1 giờ kể từ khi gửi) |
 | `FORBIDDEN_ROLE_REQUIRED` | 403 | Cần role ADMIN hoặc MODERATOR để thực hiện (ghim) |
 | `FORBIDDEN_MEDIA_NOT_READY` | 403 | File chưa xử lý xong (vẫn đang PROCESSING) |
 | `FORBIDDEN_MEDIA_OWNERSHIP` | 403 | File không thuộc về bạn |
@@ -607,6 +783,19 @@ curl -X POST http://localhost:3000/chat/pre-check-media \
 
 ---
 
+## 14. Luồng gửi tin nhắn đầy đủ
+
+### Luồng A — Gửi text (HTTP POST, khuyến nghị)
+
+```
+1. Tạo clientMessageId = uuid_v4()
+2. Hiển thị tin nhắn ngay (optimistic UI) — trạng thái "đang gửi"
+3. POST /chat/messages { conversationId, content, type: 'text', clientMessageId }
+   → Server trả về 201 { messageId } (~50ms)
+4. Gateway → ChatCore → Kafka chat.event.message_accepted → MessageStore → DB
+5. Nhận 'message:new'  qua WebSocket { messageId, offset }  → "đã gửi" (hiển thị tick)
+6. Nếu lỗi: HTTP 4xx/5xx                                     → hiển thị lỗi, xóa optimistic UI
+```
 
 ### Luồng B — Gửi file/ảnh/video kèm tin nhắn
 
