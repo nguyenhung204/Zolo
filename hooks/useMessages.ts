@@ -17,12 +17,13 @@ import { useAuthStore } from "@/stores/authStore";
 
 export type MessagesInfiniteData = InfiniteData<MessagePage>;
 
-/** Number of messages per page and max pages to keep in cache (3 × 30 = 90 messages). */
-export const MESSAGE_PAGE_SIZE = 30;
+/** Number of messages per page and max pages to keep in cache (3 × 20 = 60 messages). */
+export const MESSAGE_PAGE_SIZE = 20;
 export const MAX_MESSAGE_PAGES = 3;
 
 export function useMessages(conversationId: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
   return useInfiniteQuery<MessagePage, Error, MessagesInfiniteData, ReturnType<typeof queryKeys.messages.list>, number | undefined>({
     queryKey: queryKeys.messages.list(conversationId),
     queryFn: ({ pageParam }) =>

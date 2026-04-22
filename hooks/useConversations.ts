@@ -16,6 +16,7 @@ import {
 } from "@/lib/api/conversations";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
+import { usePresenceStore } from "@/stores/presenceStore";
 import { prefetchMessages } from "@/hooks/useMessages";
 
 const TOP_CONVERSATIONS_TO_PREFETCH = 10;
@@ -77,6 +78,7 @@ export function useConversation(id: string) {
 
 export function useConversationMembers(id: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const profileMap = usePresenceStore((s) => s.profileMap);
   const { data: conversation } = useConversation(id);
 
   const { data: memberRecords = [], isLoading } = useQuery({
@@ -86,18 +88,32 @@ export function useConversationMembers(id: string) {
     staleTime: 30_000,
   });
 
-  // Merge cursor data from API with display info from conversation.participants
+  // Merge cursor data from API with the freshest profile data we have so the
+  // conversation list, member sheet, and message avatars stay in sync.
   const participantMap = new Map(
     (conversation?.participants ?? []).map((p) => [p.userId, p])
   );
+  const directOtherUser = conversation?.kind === "direct" ? conversation.otherUser : null;
 
   const members = memberRecords.map((m) => {
-    const p = participantMap.get(m.userId);
+    const participant = participantMap.get(m.userId);
+    const profile = profileMap[m.userId];
+    const otherUser = directOtherUser?.id === m.userId ? directOtherUser : null;
     return {
       ...m,
-      displayName: (p as { displayName?: string } | undefined)?.displayName,
-      username: (p as { username?: string } | undefined)?.username,
-      avatarUrl: (p as { avatarUrl?: string | null } | undefined)?.avatarUrl ?? null,
+      displayName:
+        profile?.displayName ??
+        participant?.displayName ??
+        otherUser?.displayName ??
+        participant?.username ??
+        otherUser?.username ??
+        "User",
+      username: participant?.username ?? otherUser?.username,
+      avatarUrl:
+        profile?.avatarUrl ??
+        (participant as { avatarUrl?: string | null } | undefined)?.avatarUrl ??
+        otherUser?.avatarUrl ??
+        null,
     };
   });
 

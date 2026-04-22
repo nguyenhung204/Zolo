@@ -49,7 +49,7 @@ export function VoiceMessage({ message, isMine }: Props) {
       const url = await fetchPlayableUrl(message.mediaId, message.conversationId);
       setIsLoadingUrl(false);
       if (url) { setAudioSrc(url); }
-      else { toast.error("Không thể tải âm thanh"); }
+      else { toast.error("Could not load the audio."); }
       return;
     }
     if (!el || !audioSrc) return;
@@ -58,12 +58,30 @@ export function VoiceMessage({ message, isMine }: Props) {
   }, [playing, audioSrc, isPlayed, message.mediaId, message.conversationId, isUploading, isLoadingUrl]);
 
   const didAutoPlayRef = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (audioSrc && audioRef.current && !didAutoPlayRef.current) {
       didAutoPlayRef.current = true;
       audioRef.current.play().catch(() => {});
     }
   }, [audioSrc]);
+
+  // Pause audio when scrolled out of viewport
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting && audioRef.current && !audioRef.current.paused) {
+          audioRef.current.pause();
+        }
+      },
+      { threshold: 0 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const handleSeek = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     const el = audioRef.current;
@@ -87,7 +105,7 @@ export function VoiceMessage({ message, isMine }: Props) {
   }
 
   return (
-    <div className="relative flex items-center gap-2.5 min-w-[240px] max-w-[320px] px-1 py-0.5">
+    <div ref={containerRef} className="relative flex items-center gap-2.5 min-w-[240px] max-w-[320px] px-1 py-0.5">
       {audioSrc && (
         <audio
           ref={audioRef}

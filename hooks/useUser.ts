@@ -14,6 +14,7 @@ import {
 } from "@/lib/api/users";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
+import { usePresenceStore } from "@/stores/presenceStore";
 import { usePreferencesStore } from "@/stores/preferencesStore";
 import type { Theme, MessageDensity } from "@/stores/preferencesStore";
 import { clearClientAuthSession } from "@/lib/auth/logout";
@@ -22,6 +23,7 @@ export function useMyProfile() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const token = useAuthStore((s) => s.token);
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setUserProfile = usePresenceStore((s) => s.setUserProfile);
 
   const query = useQuery({
     queryKey: queryKeys.users.me(),
@@ -40,6 +42,11 @@ export function useMyProfile() {
         [query.data.firstName, query.data.lastName].filter(Boolean).join(" ") ||
         query.data.username;
       setAuth({ token, user: { avatarUrl: query.data.avatarUrl, name: displayName } });
+      setUserProfile(query.data.id, {
+        displayName,
+        avatarMediaId: query.data.avatarMediaId ?? null,
+        avatarUrl: query.data.avatarUrl ?? null,
+      });
     }
   }, [query.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -50,6 +57,7 @@ export function useUpdateProfile() {
   const qc = useQueryClient();
   const token = useAuthStore((s) => s.token);
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setUserProfile = usePresenceStore((s) => s.setUserProfile);
 
   return useMutation({
     mutationFn: (dto: UpdateProfileDto) => updateMyProfile(dto, "thumb"),
@@ -65,6 +73,11 @@ export function useUpdateProfile() {
           },
         });
       }
+      setUserProfile(data.id, {
+        displayName: [data.firstName, data.lastName].filter(Boolean).join(" ") || data.username,
+        avatarMediaId: data.avatarMediaId ?? null,
+        avatarUrl: data.avatarUrl ?? null,
+      });
     },
   });
 }

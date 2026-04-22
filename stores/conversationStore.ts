@@ -4,9 +4,11 @@ interface ConversationState {
   activeConversationId: string | null;
   replyToMessage: ReplyTarget | null;
   editingMessage: EditTarget | null;
+  targetOffset: number | null;
   setActiveConversation: (id: string | null) => void;
   setReplyTo: (msg: ReplyTarget | null) => void;
   setEditingMessage: (msg: EditTarget | null) => void;
+  setTargetOffset: (offset: number | null) => void;
 }
 
 export interface ReplyTarget {
@@ -31,7 +33,9 @@ export const useConversationStore = create<ConversationState>((set) => ({
   activeConversationId: null,
   replyToMessage: null,
   editingMessage: null,
+  targetOffset: null,
   setActiveConversation: (id) => set({ activeConversationId: id }),
   setReplyTo: (msg) => set({ replyToMessage: msg }),
   setEditingMessage: (msg) => set({ editingMessage: msg }),
+  setTargetOffset: (offset) => set({ targetOffset: offset }),
 }));

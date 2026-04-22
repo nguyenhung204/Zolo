@@ -26,6 +26,9 @@ import { formatDateDivider } from "@/lib/utils/date";
 import { Loader2, MessageSquare } from "lucide-react";
 import type { MessagesInfiniteData } from "@/hooks/useMessages";
 import { toast } from "sonner";
+import { getUserById } from "@/lib/api/users";
+import { usePresenceStore } from "@/stores/presenceStore";
+import { getMediaSignedUrl } from "@/lib/api/media";
 
 interface VirtualMessageListProps {
   conversationId: string;
@@ -35,6 +38,8 @@ interface VirtualMessageListProps {
   onViewDetails?: (msg: Message) => void;
   detailsTarget?: Message | null;
   onCloseDetails?: () => void;
+  /** Jump to specific offset (from notification) */
+  targetOffset?: number | null;
 }
 
 // ─── List item types ──────────────────────────────────────────────────────────
@@ -72,7 +77,6 @@ interface RowData {
   memberMap: Map<string, ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }>;
   otherMembers: Array<{ userId: string; lastSeenOffset: number; lastDeliveredOffset: number; avatarUrl?: string | null; displayName?: string; username?: string }>;
   setReplyTo: (msg: ReplyTarget | null) => void;
-  observeRowElements: (els: Element[] | NodeListOf<Element>) => () => void;
   onEdit: (msg: Message) => void;
   onDelete: (msg: Message) => void;
   onRevoke: (msg: Message) => void;
@@ -92,7 +96,6 @@ function MessageRowComponent({
   memberMap,
   otherMembers,
   setReplyTo,
-  observeRowElements,
   onEdit,
   onDelete,
   onRevoke,
@@ -112,7 +115,6 @@ function MessageRowComponent({
     return (
       <div
         style={style}
-        ref={(el) => { if (el) observeRowElements([el]); }}
         className="flex items-center gap-3 px-6 py-3"
       >
         <div className="flex-1 h-px bg-border" />
@@ -146,7 +148,7 @@ function MessageRowComponent({
   const replyMsg = msg.replyToMessageId ? messageById.get(msg.replyToMessageId) ?? null : null;
 
   return (
-    <div style={style} ref={(el) => { if (el) observeRowElements([el]); }}>
+    <div style={style}>
       <MessageRow
         message={msg}
         isMine={isMine}
@@ -178,6 +180,7 @@ export function VirtualMessageList({
   onViewDetails: externalViewDetails,
   detailsTarget: externalDetailsTarget,
   onCloseDetails,
+  targetOffset,
 }: VirtualMessageListProps) {
   const userId = useAuthStore((s) => s.user?.id ?? "");
   const setReplyTo = useConversationStore((s) => s.setReplyTo);
@@ -243,7 +246,7 @@ export function VirtualMessageList({
       );
     } catch (err) {
       if ((err as { response?: { status?: number } }).response?.status === 403) {
-        toast.error("Đã quá thời gian cho phép thực hiện thao tác");
+        toast.error("The allowed time window for this action has expired.");
       }
     }
   }, [conversationId]);
@@ -276,7 +279,7 @@ export function VirtualMessageList({
         }
       );
     } catch {
-      alert("Tối đa 3 tin nhắn ghim trong một cuộc trò chuyện.");
+      alert("You can pin up to 3 messages in a conversation.");
     }
   }, [conversationId]);
 
@@ -301,6 +304,10 @@ export function VirtualMessageList({
   fetchNextPageRef.current = fetchNextPage;
   // Tracks previous scrollTop to derive scroll direction in handleScroll
   const prevScrollTopRef = useRef(0);
+  // Programmatic scroll-to-bottom lock — prevents handleScroll from setting atBottomRef=false
+  // while heights are still being measured after a virtual-coordinate scroll.
+  const isScrollingToBottomRef = useRef(false);
+  const scrollToBottomTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Flatten pages — oldest first
   const messages: Message[] = data?.pages
@@ -324,6 +331,68 @@ export function VirtualMessageList({
       username: (m as { username?: string }).username,
     }));
 
+  // ─── Populate profiles for message senders ────────────────────────────────
+  const profileMap = usePresenceStore((s) => s.profileMap);
+  const setUserProfile = usePresenceStore((s) => s.setUserProfile);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    // Collect unique sender IDs from messages
+    const senderIds = new Set(messages.map((m) => m.senderId));
+
+    // Fetch profiles for senders not in profileMap or memberMap
+    for (const senderId of senderIds) {
+      if (profileMap[senderId] || memberMap.has(senderId)) continue;
+
+      getUserById(senderId)
+        .then(async (profile) => {
+          let avatarUrl: string | null = null;
+          if (profile.avatarMediaId) {
+            try {
+              avatarUrl = await getMediaSignedUrl(profile.avatarMediaId, "OPTIMIZED");
+            } catch {
+              // Swallow error
+            }
+          }
+          const displayName =
+            [profile.firstName, profile.lastName].filter(Boolean).join(" ") ||
+            profile.username;
+          setUserProfile(senderId, {
+            displayName,
+            avatarMediaId: profile.avatarMediaId ?? null,
+            avatarUrl,
+          });
+        })
+        .catch(() => {
+          // Swallow — UI falls back to "User" placeholder
+        });
+    }
+  }, [messages, profileMap, memberMap, setUserProfile]);
+
+  // Scroll to the absolute DOM bottom — reliable regardless of virtual row heights.
+  // Retries at 80 ms and 220 ms so positions stabilise as ResizeObserver fires.
+  const domScrollToBottom = useCallback(() => {
+    scrollToBottomTimersRef.current.forEach(clearTimeout);
+    scrollToBottomTimersRef.current = [];
+    isScrollingToBottomRef.current = true;
+    atBottomRef.current = true;
+    setShowFab(false);
+    const doScroll = () => {
+      const el = listRef.current?.element;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      } else {
+        listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+      }
+    };
+    doScroll();
+    const t1 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 80);
+    const t2 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 220);
+    const t3 = setTimeout(() => { isScrollingToBottomRef.current = false; }, 320);
+    scrollToBottomTimersRef.current = [t1, t2, t3];
+  }, []);
+
   // Reset on conversation switch
   useEffect(() => {
     prevCountRef.current = 0;
@@ -332,25 +401,43 @@ export function VirtualMessageList({
     setShowFab(false);
     initialScrollDoneRef.current = false;
     setLastVisibleOffset(null);
+    // Cancel any pending scroll-to-bottom retries from the previous conversation
+    scrollToBottomTimersRef.current.forEach(clearTimeout);
+    scrollToBottomTimersRef.current = [];
+    isScrollingToBottomRef.current = false;
   }, [conversationId]);
 
-  // Scroll to bottom once when first page of messages arrives (double-scroll technique)
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => { scrollToBottomTimersRef.current.forEach(clearTimeout); };
+  }, []);
+  // Jump to a specific message offset when requested (e.g. deep-link, pinned message)
+  useEffect(() => {
+    if (targetOffset === null || targetOffset === undefined || messages.length === 0) return;
+    const targetIndex = items.findIndex(
+      (item) => item.kind === "message" && item.msg.offset === targetOffset
+    );
+    if (targetIndex >= 0 && listRef.current) {
+      listRef.current.scrollToRow({ index: targetIndex, align: "center" });
+      initialScrollDoneRef.current = true;
+      prevCountRef.current = messages.length;
+      atBottomRef.current = false;
+      setShowFab(true);
+    }
+    useConversationStore.getState().setTargetOffset(null);
+  }, [targetOffset, items, messages.length]);
+
+  // Scroll to bottom when the first page of messages arrives for this conversation.
+  // Uses DOM-native el.scrollTop = el.scrollHeight so virtual coordinate inaccuracies
+  // (from unmeasured row heights) cannot cause wrong positioning.
   useEffect(() => {
     if (initialScrollDoneRef.current) return;
+    if (targetOffset !== null && targetOffset !== undefined) return;
     if (messages.length === 0) return;
-    if (!listRef.current) return;
-    // First scroll — lands close to bottom immediately
-    listRef.current.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
     initialScrollDoneRef.current = true;
-    atBottomRef.current = true;
     prevCountRef.current = messages.length;
-    // Secondary scroll fires after dynamic heights have been calculated and painted,
-    // correcting any residual offset caused by rows whose heights weren't yet known.
-    const timer = setTimeout(() => {
-      listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
-    }, 50);
-    return () => clearTimeout(timer);
-  // conversationId ensures this re-runs when switching conversations even if cache already has messages
+    domScrollToBottom();
+  // conversationId ensures re-run when switching conversations even if cache already has data
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, messages.length]);
 
@@ -379,7 +466,7 @@ export function VirtualMessageList({
       const lastMsg = messages[messages.length - 1];
       const isMine = lastMsg?.senderId === userId;
       if (atBottomRef.current || isMine) {
-        listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+        domScrollToBottom();
       }
     }
 
@@ -398,10 +485,24 @@ export function VirtualMessageList({
       const scrollDirection = scrollTop < prevScrollTopRef.current ? "backward" : "forward";
       prevScrollTopRef.current = scrollTop;
 
-      // Keep atBottom ref accurate for new-message auto-scroll
-      atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
-      setShowFab(!atBottomRef.current);
-      onScrollChange?.(atBottomRef.current, 0);
+      // If the user scrolls upward while we're in a programmatic scroll-to-bottom,
+      // release the lock immediately so their intent takes precedence.
+      if (scrollDirection === "backward" && isScrollingToBottomRef.current) {
+        isScrollingToBottomRef.current = false;
+        scrollToBottomTimersRef.current.forEach(clearTimeout);
+        scrollToBottomTimersRef.current = [];
+        atBottomRef.current = false;
+        setShowFab(true);
+        onScrollChange?.(false, 0);
+      }
+
+      // Only update atBottom tracking when not in a programmatic scroll so that
+      // height-measurement reflows don't incorrectly flip atBottomRef to false.
+      if (!isScrollingToBottomRef.current) {
+        atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
+        setShowFab(!atBottomRef.current);
+        onScrollChange?.(atBottomRef.current, 0);
+      }
 
       // Trigger history load when scrolling backward near the top
       if (
@@ -440,8 +541,8 @@ export function VirtualMessageList({
   );
 
   const scrollToBottom = useCallback(() => {
-    listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
-  }, []);
+    domScrollToBottom();
+  }, [domScrollToBottom]);
 
   if (isLoading) {
     return (
@@ -478,7 +579,7 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, observeRowElements: rowHeight.observeRowElements, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
+        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
         overscanCount={8}

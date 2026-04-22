@@ -3,8 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import type { Message } from "@/lib/api/messages";
-import { getPlayInfo } from "@/lib/api/media";
-import { fetchPlayableUrl } from "./shared";
+import { fetchDisplayUrl } from "./shared";
 import { UploadOverlay } from "./UploadProgress";
 import { ImageLightbox } from "./ImageLightbox";
 
@@ -31,7 +30,7 @@ export function MediaImage({ message, isMine }: Props) {
       (entries) => {
         if (entries[0].isIntersecting && !imageSrc && !isLoadingRef.current) {
           isLoadingRef.current = true;
-          fetchPlayableUrl(message.mediaId!, message.conversationId)
+          fetchDisplayUrl(message.mediaId!, message.conversationId)
             .then((url) => { if (url) setImageSrc(url); })
             .catch(() => {})
             .finally(() => { isLoadingRef.current = false; });
@@ -43,22 +42,16 @@ export function MediaImage({ message, isMine }: Props) {
     return () => observer.disconnect();
   }, [isUploading, message.mediaId, message.conversationId, imageSrc]);
 
-  // Upgrade to optimized URL once READY
+  // Upgrade local blob preview → CDN URL once upload is READY.
+  // Only fires when imageSrc is still a blob: URL (local preview for own messages).
+  // For received messages imageSrc is already a CDN URL from the observer above — skip.
   useEffect(() => {
     if (!isMediaReady || !message.mediaId) return;
     if (hasOptimizedRef.current) return;
-    if (!imageSrc) {
-      if (isLoadingRef.current) return;
-      isLoadingRef.current = true;
-      fetchPlayableUrl(message.mediaId, message.conversationId)
-        .then((url) => { if (url) setImageSrc(url); })
-        .catch(() => {})
-        .finally(() => { isLoadingRef.current = false; });
-      return;
-    }
+    if (!imageSrc?.startsWith("blob:")) return; // already CDN URL or not yet set
     hasOptimizedRef.current = true;
-    getPlayInfo(message.mediaId, message.conversationId)
-      .then((playInfo) => setImageSrc(playInfo.url))
+    fetchDisplayUrl(message.mediaId, message.conversationId)
+      .then((url) => { if (url) setImageSrc(url); })
       .catch(() => {});
   }, [isMediaReady, message.mediaId, message.conversationId, imageSrc]);
 
@@ -69,7 +62,7 @@ export function MediaImage({ message, isMine }: Props) {
       <>
         <div
           ref={imgRef}
-          className="relative rounded-2xl overflow-hidden max-w-[500px] w-full bg-border/20 cursor-zoom-in"
+          className="relative rounded-2xl overflow-hidden max-w-[420px] w-full bg-border/20 cursor-zoom-in"
           onClick={() => !isUploading && setLightboxSrc(previewSrc)}
           role="button"
           aria-label="Xem ảnh"
@@ -77,8 +70,8 @@ export function MediaImage({ message, isMine }: Props) {
           <img
             src={previewSrc}
             alt=""
-            className="w-full object-cover block"
-            style={{ maxHeight: "540px", objectFit: "cover", aspectRatio: "auto" }}
+            className="w-full block"
+            style={{ maxHeight: "420px", objectFit: "cover" }}
             loading="lazy"
           />
           {isUploading && <UploadOverlay isMine={isMine} progress={message._uploadProgress} />}
@@ -97,7 +90,7 @@ export function MediaImage({ message, isMine }: Props) {
   }
 
   return (
-    <div ref={imgRef} className="w-[360px] aspect-video rounded-2xl bg-black/10 flex items-center justify-center">
+    <div ref={imgRef} className="max-w-[420px] w-full aspect-video rounded-2xl bg-black/10 flex items-center justify-center">
       <Loader2 className="w-5 h-5 animate-spin text-muted/60" />
     </div>
   );

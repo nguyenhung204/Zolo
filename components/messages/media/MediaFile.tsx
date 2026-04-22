@@ -4,8 +4,8 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { FileText, FileType2, FileSpreadsheet, Download, Eye, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message, AttachmentRef } from "@/lib/api/messages";
-import { getPlayInfo } from "@/lib/api/media";
-import { blobDownload, fetchPlayableUrl, formatBytes } from "./shared";
+import { getMediaUrl } from "@/lib/api/media";
+import { blobDownload, fetchDisplayUrl, formatBytes } from "./shared";
 import { FilePreviewModal, canPreviewFile } from "./FilePreviewModal";
 import { UploadProgressBar } from "./UploadProgress";
 import { toast } from "sonner";
@@ -66,11 +66,12 @@ export function MediaFile({ message, mediaId, filename, isMine, conversationId }
     if (!resolvedMediaId || isLoadingUrl) return null;
     setIsLoadingUrl(true);
     try {
-      const playInfo = await getPlayInfo(resolvedMediaId, resolvedConversationId);
-      setFileUrl(playInfo.url);
-      return playInfo.url;
+      const entity = await getMediaUrl(resolvedMediaId, "ORIGINAL", resolvedConversationId);
+      const url = (entity as unknown as { url?: string }).url ?? null;
+      if (url) setFileUrl(url);
+      return url;
     } catch {
-      toast.error("Không thể tải file");
+      toast.error("Could not load the file.");
       return null;
     } finally {
       setIsLoadingUrl(false);
@@ -85,7 +86,7 @@ export function MediaFile({ message, mediaId, filename, isMine, conversationId }
       try {
         await blobDownload(url, resolvedFilename);
       } catch {
-        toast.error("Không thể tải file");
+        toast.error("Could not download the file.");
       }
     },
     [fetchUrl, resolvedFilename]
@@ -257,8 +258,8 @@ function AttachmentThumb({
         if (entries[0].isIntersecting && !thumbUrl && !isLoadingRef.current) {
           isLoadingRef.current = true;
           setIsLoading(true);
-          getPlayInfo(attachment.mediaId, conversationId)
-            .then((playInfo) => setThumbUrl(playInfo.url))
+          fetchDisplayUrl(attachment.mediaId, conversationId)
+            .then((url) => setThumbUrl(url))
             .catch(() => {})
             .finally(() => {
               isLoadingRef.current = false;

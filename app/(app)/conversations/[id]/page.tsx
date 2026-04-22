@@ -30,6 +30,7 @@ export default function ConversationPage({ params }: Props) {
   const id = useMemo(() => decodeId(slug), [slug]);
   const router = useRouter();
   const setActive = useConversationStore((s) => s.setActiveConversation);
+  const targetOffset = useConversationStore((s) => s.targetOffset);
   const { data: members = [] } = useConversationMembers(id);
   const myId = useAuthStore((s) => s.user?.id);
   const qc = useQueryClient();
@@ -52,6 +53,9 @@ export default function ConversationPage({ params }: Props) {
     setActive(id);
     const socket = getChatSocket();
     socket.emit("conversation:join", { conversationId: id });
+    // Clear stale cache so fresh messages load — prevents wrong scroll position
+    // when returning to a conversation that received messages while away.
+    qc.removeQueries({ queryKey: queryKeys.messages.list(id) });
 
     // Immediately mark all messages as seen so the unread badge clears without
     // waiting for the IntersectionObserver. Use maxOffset from the local cache —
@@ -83,6 +87,7 @@ export default function ConversationPage({ params }: Props) {
 
   // Emit delivered cursor once when messages are first loaded
   const { data: messagesData } = useMessages(id);
+
   const deliveredEmittedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!messagesData || deliveredEmittedRef.current === id) return;
@@ -129,6 +134,7 @@ export default function ConversationPage({ params }: Props) {
           onViewDetails={setDetailsTarget}
           detailsTarget={detailsTarget}
           onCloseDetails={() => setDetailsTarget(null)}
+          targetOffset={targetOffset}
         />
         <TypingIndicator conversationId={id} memberNames={memberNames} />
       </div>

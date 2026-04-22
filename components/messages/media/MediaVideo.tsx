@@ -30,6 +30,7 @@ export function MediaVideo({ message, isMine }: Props) {
   const [thumbPosterUrl, setThumbPosterUrl] = useState<string | undefined>(undefined);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const isPlayingRef = useRef(false);
   const pendingRefreshRef = useRef(false);
   const shouldAutoPlayRef = useRef(false);
@@ -62,6 +63,36 @@ export function MediaVideo({ message, isMine }: Props) {
     videoRef.current?.play().catch(() => {});
   }, [videoSrc]);
 
+  // ── Pause + free resources when video scrolls out of viewport ───────────
+  useEffect(() => {
+    if (!videoSrc) return; // only observe when src is loaded
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) {
+          const vid = videoRef.current;
+          if (vid) {
+            vid.pause();
+            vid.removeAttribute("src");
+            vid.load(); // forces browser to release buffered data
+          }
+          shouldAutoPlayRef.current = false;
+          setVideoSrc(null);
+          setPlaying(false);
+          setCurrentTime(0);
+          setDuration(0);
+          setShowControls(true);
+          isPlayingRef.current = false;
+        }
+      },
+      { threshold: 0 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoSrc]);
+
   const loadAndPlay = useCallback(async () => {
     if (videoSrc || isLoadingUrl || !message.mediaId) return;
     setIsLoadingUrl(true);
@@ -69,7 +100,7 @@ export function MediaVideo({ message, isMine }: Props) {
     const url = await fetchPlayableUrl(message.mediaId, message.conversationId);
     setIsLoadingUrl(false);
     if (url) { setVideoSrc(url); }
-    else { shouldAutoPlayRef.current = false; toast.error("Không thể tải video"); }
+    else { shouldAutoPlayRef.current = false; toast.error("Could not load the video."); }
   }, [videoSrc, isLoadingUrl, message.mediaId, message.conversationId]);
 
   const showControlsBriefly = useCallback(() => {
@@ -112,7 +143,7 @@ export function MediaVideo({ message, isMine }: Props) {
       const url = (entity as unknown as { url?: string }).url;
       if (url) await blobDownload(url, fileName);
     } catch {
-      toast.error("Không thể tải video");
+      toast.error("Could not download the video.");
     } finally {
       setIsDownloadingVideo(false);
     }
@@ -145,6 +176,15 @@ export function MediaVideo({ message, isMine }: Props) {
   if (!videoSrc) {
     return (
       <div className="relative w-[420px] max-w-full rounded-2xl overflow-hidden bg-black select-none">
+        <button
+          type="button"
+          onClick={handleVideoDownload}
+          disabled={isDownloadingVideo}
+          className="absolute top-2 right-2 z-20 w-8 h-8 shrink-0 rounded-full bg-black/60 hover:bg-black/75 flex items-center justify-center text-white transition-colors cursor-pointer disabled:opacity-50"
+          title="Tải xuống"
+        >
+          {isDownloadingVideo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+        </button>
         <div className="aspect-video cursor-pointer relative" onClick={loadAndPlay} role="button" aria-label="Phát video">
           {thumbPosterUrl && (
             <img src={thumbPosterUrl} alt="" className="absolute inset-0 w-full h-full object-cover" draggable={false} />
@@ -169,10 +209,6 @@ export function MediaVideo({ message, isMine }: Props) {
             <p className="text-white text-[11px] font-medium truncate leading-tight">{fileName}</p>
             {fileSize && <p className="text-white/50 text-[10px]">{formatBytes(fileSize)}</p>}
           </div>
-          <button type="button" onClick={handleVideoDownload} disabled={isDownloadingVideo}
-            className="w-7 h-7 shrink-0 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center text-white transition-colors cursor-pointer disabled:opacity-50" title="Tải xuống">
-            {isDownloadingVideo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-          </button>
         </div>
       </div>
     );
@@ -181,11 +217,22 @@ export function MediaVideo({ message, isMine }: Props) {
   // ── Active player ────────────────────────────────────────────────────────
   return (
     <div
+      ref={containerRef}
       className="relative w-[420px] max-w-full rounded-2xl overflow-hidden bg-black select-none"
       onMouseMove={showControlsBriefly}
       onMouseEnter={() => setShowControls(true)}
       onMouseLeave={() => { if (playing) setShowControls(false); }}
     >
+      <button
+        type="button"
+        onClick={handleVideoDownload}
+        disabled={isDownloadingVideo}
+        className="absolute top-2 right-2 z-20 w-8 h-8 shrink-0 rounded-full bg-black/60 hover:bg-black/75 flex items-center justify-center text-white transition-colors cursor-pointer disabled:opacity-50"
+        title="Tải xuống"
+      >
+        {isDownloadingVideo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+      </button>
+
       <video
         ref={videoRef}
         src={videoSrc ?? undefined}
@@ -242,10 +289,6 @@ export function MediaVideo({ message, isMine }: Props) {
           <p className="text-white text-[11px] font-medium truncate leading-tight">{fileName}</p>
           {fileSize && <p className="text-white/50 text-[10px]">{formatBytes(fileSize)}</p>}
         </div>
-        <button type="button" onClick={handleVideoDownload} disabled={isDownloadingVideo}
-          className="w-7 h-7 shrink-0 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center text-white transition-colors cursor-pointer disabled:opacity-50" title="Tải xuống">
-          {isDownloadingVideo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-        </button>
       </div>
     </div>
   );
