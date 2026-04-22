@@ -13,6 +13,7 @@ import { upsertMessage, prefetchMessages, type MessagesInfiniteData } from "@/ho
 import { getMediaSignedUrl } from "@/lib/api/media";
 import { getFriendsPresence, getMyPresenceStatus } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
+import { normalizeReactionMap } from "@/lib/api/messages";
 
 function isMediaMessageType(type: WsMessage["type"]) {
   return type === "image" || type === "video" || type === "audio" || type === "file" || type === "media";
@@ -76,10 +77,10 @@ export function useSocket() {
       // Some server configurations require an explicit authenticate event
       // after connection in addition to the handshake auth object
       socket.emit("authenticate", { token });
-      // Start heartbeat every 30 s
+      // Start heartbeat every 3 s
       heartbeatRef.current = setInterval(() => {
         socket.emit("heartbeat");
-      }, 30_000);
+      }, 3_000);
       // Seed initial presence state — do this after every (re)connect
       Promise.allSettled([getFriendsPresence(), getMyPresenceStatus()])
         .then(([friendsRes, meRes]) => {
@@ -494,7 +495,8 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:reaction_updated", ({ messageId, conversationId, reactions }: { messageId: string; conversationId: string; reactions: import("@/lib/api/messages").ReactionMap }) => {
+    socket.on("message:reaction_updated", ({ messageId, conversationId, reactions }: { messageId: string; conversationId: string; reactions: unknown }) => {
+      const normalizedReactions = normalizeReactionMap(reactions, myId) ?? {};
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {
@@ -504,7 +506,7 @@ export function useSocket() {
             pages: old.pages.map((page) => ({
               ...page,
               data: page.data.map((m) =>
-                m.messageId === messageId ? { ...m, reactions } : m
+                m.messageId === messageId ? { ...m, reactions: normalizedReactions } : m
               ),
             })),
           };

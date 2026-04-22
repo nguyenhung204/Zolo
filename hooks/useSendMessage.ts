@@ -14,6 +14,9 @@ import type { MessagesInfiniteData } from "./useMessages";
 const _activeUploadIds = new Set<string>();
 export function hasActiveUploads(): boolean { return _activeUploadIds.size > 0; }
 
+// ─── Upload function tracker (for retry logic) ────────────────────────────────
+const _uploadFnMap = new Map<string, (onProgress?: (progress: number) => void) => Promise<string | null>>();
+
 interface SendOptions {
   conversationId: string;
   content?: string;
@@ -266,6 +269,7 @@ export function useSendMessage() {
       if (uploadFile) {
         // 2a. Deferred upload: fire-and-forget, optimistic already visible
         _activeUploadIds.add(clientMessageId);
+        _uploadFnMap.set(clientMessageId, uploadFile); // Store for retry
         (async () => {
           try {
             const uploadedId = await uploadFile((progress) => {
@@ -291,6 +295,7 @@ export function useSendMessage() {
               metadata,
             });
             markAcked(conversationId, clientMessageId, serverMessage);
+            _uploadFnMap.delete(clientMessageId); // Clean up on success
           } catch {
             markFailed(conversationId, clientMessageId);
           } finally {
@@ -341,23 +346,74 @@ export function useSendMessage() {
         ...m,
         _failed: false,
         _pending: true,
+        mediaStatus: m.mediaStatus === "failed" ? "processing" : m.mediaStatus,
       }));
 
-      retrySend({
-        conversationId,
-        content: failedMsg.content ?? "",
-        type: failedMsg.type as MessageType,
-        clientMessageId,
-        replyToMessageId: failedMsg.replyToMessageId ?? undefined,
-        mediaId: failedMsg.mediaId ?? undefined,
-        attachments: failedMsg.attachments ?? undefined,
-        metadata: failedMsg.metadata ?? undefined,
-      })
-        .then((serverMessage) => markAcked(conversationId, clientMessageId, serverMessage))
-        .catch(() => markFailed(conversationId, clientMessageId));
+      const uploadFile = _uploadFnMap.get(clientMessageId);
+      const hasMediaId = failedMsg.mediaId || (failedMsg.attachments && failedMsg.attachments.length > 0);
+
+      // If we have uploadFile and no mediaId yet, retry full upload + send
+      if (uploadFile && !hasMediaId) {
+        _activeUploadIds.add(clientMessageId);
+        (async () => {
+          try {
+            const uploadedId = await uploadFile((progress) => {
+              updateUploadProgress(conversationId, clientMessageId, progress);
+            });
+            if (!uploadedId) {
+              markFailed(conversationId, clientMessageId);
+              return;
+            }
+            // Store uploadedId
+            updateOptimisticMessage(conversationId, clientMessageId, (m) => ({
+              ...m,
+              mediaId: uploadedId,
+            }));
+            const serverMessage = await retrySend({
+              conversationId,
+              content: failedMsg.content ?? "",
+              type: failedMsg.type as MessageType,
+              clientMessageId,
+              replyToMessageId: failedMsg.replyToMessageId ?? undefined,
+              mediaId: uploadedId,
+              attachments: failedMsg.attachments ?? undefined,
+              metadata: failedMsg.metadata ?? undefined,
+            });
+            markAcked(conversationId, clientMessageId, serverMessage);
+            _uploadFnMap.delete(clientMessageId); // Clean up on success
+          } catch {
+            markFailed(conversationId, clientMessageId);
+          } finally {
+            _activeUploadIds.delete(clientMessageId);
+          }
+        })();
+      } else {
+        // Just retry send (mediaId already available)
+        retrySend({
+          conversationId,
+          content: failedMsg.content ?? "",
+          type: failedMsg.type as MessageType,
+          clientMessageId,
+          replyToMessageId: failedMsg.replyToMessageId ?? undefined,
+          mediaId: failedMsg.mediaId ?? undefined,
+          attachments: failedMsg.attachments ?? undefined,
+          metadata: failedMsg.metadata ?? undefined,
+        })
+          .then((serverMessage) => {
+            markAcked(conversationId, clientMessageId, serverMessage);
+            _uploadFnMap.delete(clientMessageId); // Clean up on success
+          })
+          .catch(() => markFailed(conversationId, clientMessageId));
+      }
     },
-    [qc, updateOptimisticMessage, markAcked, markFailed]
+    [qc, updateOptimisticMessage, markAcked, markFailed, updateUploadProgress]
   );
 
-  return { send, retryMessage };
+  const cancelMessage = useCallback((clientMessageId: string) => {
+    _uploadFnMap.delete(clientMessageId);
+    _activeUploadIds.delete(clientMessageId);
+    pendingMap.current.delete(clientMessageId);
+  }, []);
+
+  return { send, retryMessage, cancelMessage };
 }

@@ -74,6 +74,10 @@ export interface ServerEvents {
   "message:notify": (data: {
     conversationId: string;
     latestOffset: number;
+    senderName: string;
+    content: string;
+    type: string;
+    conversationName?: string;
   }) => void;
   "message:saved": (data: {
     clientMessageId: string;

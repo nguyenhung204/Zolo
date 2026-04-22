@@ -155,21 +155,21 @@ export function ImageLightbox({ src, mediaId, conversationId, filename, onClose 
   // ── Generate crop preview ──────────────────────────────────────────────────
   const generatePreview = useCallback(async () => {
     if (!cropRect || !imgElRef.current || !containerRef.current) return;
-    if (!imgElRef.current.complete) { toast.error("Ảnh chưa tải xong"); return; }
+    if (!imgElRef.current.complete) { toast.error("The image is still loading."); return; }
     setIsGeneratingPreview(true);
     try {
       const { img, revoke } = await fetchAsImage(displaySrc);
       try {
         const rotated = buildRotatedCanvas(img, rotation);
         const cropped = buildCropCanvas(rotated, cropRect, imgElRef.current, containerRef.current);
-        if (!cropped) { toast.error("Vùng cắt không hợp lệ"); return; }
+        if (!cropped) { toast.error("Invalid crop area."); return; }
         const blob = await canvasToBlob(cropped);
         setCropPreviewUrl(URL.createObjectURL(blob));
       } finally {
         revoke();
       }
     } catch {
-      toast.error("Không thể tạo xem trước");
+      toast.error("Could not generate the preview.");
     } finally {
       setIsGeneratingPreview(false);
     }
@@ -197,7 +197,7 @@ export function ImageLightbox({ src, mediaId, conversationId, filename, onClose 
         }
       }
     } catch {
-      toast.error("Không thể tải ảnh");
+      toast.error("Could not download the image.");
     } finally {
       setIsDownloading(false);
     }

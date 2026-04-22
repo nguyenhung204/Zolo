@@ -12,12 +12,12 @@ import { getCallSocket } from "@/lib/socket/socket";
 // ─── Duration formatting ──────────────────────────────────────────────────────
 
 function formatDuration(ms: number | undefined): string {
-  if (!ms || ms <= 0) return "Không bắt máy";
+  if (!ms || ms <= 0) return "No answer";
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (minutes === 0) return `${seconds} giây`;
-  return `${minutes} phút ${seconds} giây`;
+  if (minutes === 0) return `${seconds} seconds`;
+  return `${minutes} minutes ${seconds} seconds`;
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -46,10 +46,10 @@ export function CallSummaryBubble({
 
   // Title
   const title = isMissed
-    ? "Cuộc gọi nhỡ"
+    ? "Missed call"
     : isOutgoing
-      ? "Cuộc gọi đi"
-      : "Cuộc gọi đến";
+      ? "Outgoing call"
+      : "Incoming call";
 
   // Icon
   const IconComponent = isMissed
@@ -58,7 +58,7 @@ export function CallSummaryBubble({
       ? PhoneOutgoing
       : PhoneIncoming;
 
-  const durationText = isMissed ? "Không bắt máy" : formatDuration(durationMs);
+  const durationText = isMissed ? "No answer" : formatDuration(durationMs);
 
   // ─── "Gọi lại" handler ──────────────────────────────────────────────────
   const handleRecall = useCallback(async () => {
@@ -72,7 +72,7 @@ export function CallSummaryBubble({
       useCallStore.getState().setOutgoingCall(callDto);
       getCallSocket().emit("call:join_room", { callId: callDto.id });
     } catch {
-      toast.error("Không thể bắt đầu cuộc gọi.");
+      toast.error("Could not start the call.");
     } finally {
       setIsCalling(false);
     }

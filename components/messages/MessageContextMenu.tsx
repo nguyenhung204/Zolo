@@ -42,13 +42,13 @@ export function MessageContextMenu({
         ))}
       </div>
       <div className="py-1">
-        {onReply && <CtxItem icon={<Reply className="w-3.5 h-3.5" />} label="Trả lời" onClick={onReply} />}
-        {onForward && <CtxItem icon={<Share2 className="w-3.5 h-3.5" />} label="Chuyển tiếp" onClick={onForward} />}
-        {onPin && <CtxItem icon={<Pin className="w-3.5 h-3.5" />} label="Ghim tin nhắn" onClick={onPin} />}
-        {onViewDetails && <CtxItem icon={<Info className="w-3.5 h-3.5" />} label="Xem chi tiết" onClick={onViewDetails} />}
-        {canEdit && onEdit && <CtxItem icon={<Pencil className="w-3.5 h-3.5" />} label="Chỉnh sửa" onClick={onEdit} />}
-        {canRevoke && onRevoke && <CtxItem icon={<Ban className="w-3.5 h-3.5" />} label="Thu hồi" onClick={onRevoke} danger />}
-        {canDelete && onDelete && <CtxItem icon={<Trash2 className="w-3.5 h-3.5" />} label="Xóa" onClick={onDelete} danger />}
+        {onReply && <CtxItem icon={<Reply className="w-3.5 h-3.5" />} label="Reply" onClick={onReply} />}
+        {onForward && <CtxItem icon={<Share2 className="w-3.5 h-3.5" />} label="Forward" onClick={onForward} />}
+        {onPin && <CtxItem icon={<Pin className="w-3.5 h-3.5" />} label="Pin message" onClick={onPin} />}
+        {onViewDetails && <CtxItem icon={<Info className="w-3.5 h-3.5" />} label="View details" onClick={onViewDetails} />}
+        {canEdit && onEdit && <CtxItem icon={<Pencil className="w-3.5 h-3.5" />} label="Edit" onClick={onEdit} />}
+        {canRevoke && onRevoke && <CtxItem icon={<Ban className="w-3.5 h-3.5" />} label="Revoke" onClick={onRevoke} danger />}
+        {canDelete && onDelete && <CtxItem icon={<Trash2 className="w-3.5 h-3.5" />} label="Delete" onClick={onDelete} danger />}
       </div>
     </div>
   );

@@ -38,7 +38,7 @@ export function FilePreviewModal({ url, filename, onClose }: Props) {
     try {
       await blobDownload(url, filename);
     } catch {
-      toast.error("Không thể tải file");
+      toast.error("Could not download the file.");
     }
   };
 
@@ -57,7 +57,7 @@ export function FilePreviewModal({ url, filename, onClose }: Props) {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta/10 text-cta text-sm hover:bg-cta/20 transition-colors cursor-pointer"
           >
             <Download className="w-4 h-4" />
-            <span>Tải xuống</span>
+            <span>Download</span>
           </button>
           <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-text hover:bg-border/60 cursor-pointer">
             <XIcon className="w-4 h-4" />

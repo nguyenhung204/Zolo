@@ -87,13 +87,14 @@ export function MessageRow({
     const current = prev[emoji] ?? { count: 0, reactors: [], myReaction: false };
     const isRemoving = current.myReaction;
     const action: "add" | "remove" = isRemoving ? "remove" : "add";
+    const reactors = current.reactors ?? [];
 
     // Optimistic: flip myReaction and adjust count/reactors immediately
     const updated = {
       count: Math.max(0, current.count + (isRemoving ? -1 : 1)),
       reactors: isRemoving
-        ? current.reactors.filter((uid) => uid !== myId)
-        : [...current.reactors, ...(myId ? [myId] : [])],
+        ? reactors.filter((uid) => uid !== myId)
+        : [...reactors, ...(myId ? [myId] : [])],
       myReaction: !isRemoving,
     };
     const next: ReactionMap = { ...prev, [emoji]: updated };
@@ -182,11 +183,11 @@ export function MessageRow({
           ) : isRevoked ? (
             <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-[18px] border border-border/50 text-muted text-xs italic select-none">
               <Ban className="w-3 h-3 shrink-0" />
-              Tin nhắn đã thu hồi
+              Message revoked
             </div>
           ) : isDeleted ? (
             <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-[18px] border border-border/50 text-muted text-xs italic select-none">
-              Đã xóa
+              Deleted
             </div>
           ) : (
             <div className={cn(
@@ -205,7 +206,7 @@ export function MessageRow({
                       isMine ? "bg-white/15 border-white/50" : "bg-border/30 border-cta")}>
                       <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
                       <p className={cn("truncate text-[11px] leading-tight", isMine ? "text-white/60" : "text-muted")}>
-                        Tin nhắn đã thu hồi
+                        Message revoked
                       </p>
                     </div>
                   );
@@ -224,7 +225,7 @@ export function MessageRow({
               })()}
               <MessageContent message={message} isMine={isMine} />
               {isEdited && (
-                <span className={cn("block text-[10px] mt-1 italic select-none", isMine ? "text-white/50" : "text-muted")}>Đã chỉnh sửa</span>
+                <span className={cn("block text-[10px] mt-1 italic select-none", isMine ? "text-white/50" : "text-muted")}>Edited</span>
               )}
             </div>
           )}
@@ -236,7 +237,7 @@ export function MessageRow({
                 <button
                   onClick={() => onReply?.(message)}
                   className="w-7 h-7 rounded-full flex items-center justify-center text-muted hover:text-secondary hover:bg-border/60 transition-colors cursor-pointer"
-                  title="Trả lời"
+                  title="Reply"
                 >
                   <Reply className="w-3.5 h-3.5" />
                 </button>

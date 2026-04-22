@@ -1,5 +1,6 @@
 import { apiClient } from "@/lib/api/client";
 import type { MessageType, MediaStatus } from "@/lib/socket/events";
+import { useAuthStore } from "@/stores/authStore";
 
 // ─── Reaction types ───────────────────────────────────────────────────────────
 
@@ -57,6 +58,7 @@ interface RawMessage {
   isDeleted?: boolean;
   isRevoked?: boolean;
   isEdited?: boolean;
+  reactions?: unknown;
 }
 
 // ─── Public Message type ──────────────────────────────────────────────────────
@@ -145,7 +147,45 @@ function normalizeMediaStatus(status: string | undefined): MediaStatus | undefin
   return undefined;
 }
 
+export function normalizeReactionMap(reactions: unknown, viewerUserId?: string): ReactionMap | undefined {
+  if (!reactions || typeof reactions !== "object") return undefined;
+
+  const normalized: ReactionMap = {};
+  for (const [emoji, value] of Object.entries(reactions as Record<string, unknown>)) {
+    if (Array.isArray(value)) {
+      const reactors = value.filter((reactor): reactor is string => typeof reactor === "string");
+      if (reactors.length === 0) continue;
+      normalized[emoji] = {
+        count: reactors.length,
+        reactors,
+        myReaction: viewerUserId ? reactors.includes(viewerUserId) : false,
+      };
+      continue;
+    }
+
+    if (!value || typeof value !== "object") continue;
+    const rawDetail = value as { count?: number; reactors?: unknown; myReaction?: boolean };
+    const reactors = Array.isArray(rawDetail.reactors)
+      ? rawDetail.reactors.filter((reactor): reactor is string => typeof reactor === "string")
+      : [];
+    const count = typeof rawDetail.count === "number" && Number.isFinite(rawDetail.count)
+      ? rawDetail.count
+      : reactors.length;
+    const myReaction = typeof rawDetail.myReaction === "boolean"
+      ? rawDetail.myReaction
+      : viewerUserId
+        ? reactors.includes(viewerUserId)
+        : false;
+
+    if (count <= 0 && reactors.length === 0) continue;
+    normalized[emoji] = { count, reactors, myReaction };
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeRawMessage(m: RawMessage): Message {
+  const viewerUserId = useAuthStore.getState().user?.id;
   const normalizedType = (m.type ?? "text").toLowerCase() as MessageType;
   const attachments = m.attachments?.map((attachment) => ({
     mediaId: attachment.mediaId,
@@ -166,6 +206,10 @@ function normalizeRawMessage(m: RawMessage): Message {
   const derivedMediaStatus = topLevelStatus ?? attachmentStatus ?? (isMediaMessageType(normalizedType) && derivedMediaId
     ? (Number(m.offset ?? 0) > 0 ? "ready" : "processing")
     : undefined);
+  const reactions = normalizeReactionMap(
+    m.reactions ?? (m.metadata as { reactions?: unknown } | undefined)?.reactions,
+    viewerUserId
+  );
 
   return {
     ...m,
@@ -182,6 +226,7 @@ function normalizeRawMessage(m: RawMessage): Message {
     // Both API and WS use replyToMessageId; keep replyToId as fallback for legacy data
     replyToMessageId: m.replyToMessageId ?? m.replyToId,
     attachments,
+    reactions,
   };
 }
 
@@ -193,7 +238,7 @@ export async function getMessages(params: {
   after?: number;
   limit?: number;
 }): Promise<MessagePage> {
-  const { conversationId, before, after, limit = 50 } = params;
+  const { conversationId, before, after, limit = 20 } = params;
   const query = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) query.set("before", String(before));
   if (after !== undefined) query.set("after", String(after));

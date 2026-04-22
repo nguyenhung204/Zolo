@@ -301,15 +301,19 @@ export function MessageComposer({
   }, [onKeystroke, text]);
 
   // ─── File staging ─────────────────────────────────────────────────────────
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []).slice(0, 30);
-    e.target.value = "";
-    if (files.length === 0) return;
+  
+  /**
+   * Validate and stage files from File[] array.
+   * Reused by both file input change and paste events.
+   */
+  const stageFilesFromList = useCallback((files: File[]) => {
+    const toProcess = files.slice(0, 50);
+    if (toProcess.length === 0) return;
 
     // Validate each file's MIME type
     const allowed: File[] = [];
     const rejected: string[] = [];
-    for (const file of files) {
+    for (const file of toProcess) {
       if (ALL_ALLOWED_TYPES.includes(file.type)) {
         allowed.push(file);
       } else {
@@ -332,7 +336,7 @@ export function MessageComposer({
           : undefined;
       return { id: crypto.randomUUID(), file, previewUrl, mediaType };
     });
-    setStagedFiles((prev) => [...prev, ...newStaged].slice(0, 30));
+    setStagedFiles((prev) => [...prev, ...newStaged].slice(0, 50));
 
     // For video files: capture frame immediately for the chip preview,
     // then upload the blob to MinIO in background so thumbMediaId is ready by send time.
@@ -351,6 +355,29 @@ export function MessageComposer({
         thumbUploadPromises.current.set(sf.id, uploadPromise);
       });
   }, []);
+
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    stageFilesFromList(files);
+  }, [stageFilesFromList]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items);
+    const files: File[] = [];
+    
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    
+    if (files.length > 0) {
+      e.preventDefault();
+      stageFilesFromList(files);
+    }
+  }, [stageFilesFromList]);
 
   const removeStagedFile = useCallback((id: string) => {
     setStagedFiles((prev) => {
@@ -576,7 +603,7 @@ export function MessageComposer({
                 sending={false}
               />
             ))}
-            {stagedFiles.length < 30 && (
+            {stagedFiles.length < 50 && (
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -732,6 +759,7 @@ export function MessageComposer({
           placeholder={stagedFiles.length > 0 ? "Add a caption…" : placeholder}
           onChange={(e) => handleInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           className="flex-1 min-w-0 resize-none bg-transparent text-sm text-text placeholder:text-muted outline-none leading-relaxed max-h-[200px] overflow-y-auto py-1"
           style={{ fontFamily: "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', inherit" }}
         />
@@ -768,7 +796,7 @@ export function MessageComposer({
       )}
 
       <p className="text-[10px] text-muted mt-1 ml-1">
-        <kbd className="font-mono">Enter</kbd> to send · <kbd className="font-mono">Shift+Enter</kbd> for new line
+        <kbd className="font-mono">Enter</kbd> to send · <kbd className="font-mono">Shift+Enter</kbd> for new line · <kbd className="font-mono">Ctrl+V</kbd> to paste files
       </p>
     </div>
   );

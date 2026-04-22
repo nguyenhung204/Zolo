@@ -38,26 +38,26 @@ function rowIcon(type: string) {
 
 function typeLabel(type: string) {
   const map: Record<string, string> = {
-    text: "Văn bản",
-    image: "Hình ảnh",
+    text: "Text",
+    image: "Image",
     video: "Video",
-    audio: "Giọng nói",
-    file: "Tệp đính kèm",
-    sticker: "Nhãn dán",
+    audio: "Voice",
+    file: "Attachment",
+    sticker: "Sticker",
   };
   return map[type] ?? type;
 }
 
-function formatDateVN(iso: string | undefined | null): string {
+function formatDate(iso: string | undefined | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("vi-VN", {
+  return new Date(iso).toLocaleString("en-US", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     day: "2-digit", month: "2-digit", year: "numeric",
   });
 }
 
 function resolveName(member: MemberLike | undefined): string {
-  return member?.displayName ?? member?.username ?? "Người dùng";
+  return member?.displayName ?? member?.username ?? "User";
 }
 
 function Field({ icon, label, value }: { icon: ReactNode; label: string; value: ReactNode }) {
@@ -85,8 +85,8 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
       <div className="w-full max-w-lg rounded-2xl border border-border bg-surface shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <div>
-            <p className="text-[10px] font-semibold text-cta uppercase tracking-wide">Chi tiết</p>
-            <h2 className="text-base font-bold text-text">Xem chi tiết tin nhắn</h2>
+              <p className="text-[10px] font-semibold text-cta uppercase tracking-wide">Details</p>
+              <h2 className="text-base font-bold text-text">Message details</h2>
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-muted hover:text-text hover:bg-border/60 transition-colors cursor-pointer">
             <X className="w-4 h-4" />
@@ -102,28 +102,28 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
               {isEdited && <Pencil className="w-3.5 h-3.5 text-cta" />}
               {repliedToMsg && <Reply className="w-3.5 h-3.5 text-cta" />}
             </div>
-            <p className="mt-2 text-sm text-text whitespace-pre-wrap break-words">{message.content || "(trống)"}</p>
+            <p className="mt-2 text-sm text-text whitespace-pre-wrap break-words">{message.content || "(empty)"}</p>
           </div>
 
-          <Field icon={<User className="w-4 h-4" />} label="Người gửi" value={senderName} />
-          <Field icon={<Clock3 className="w-4 h-4" />} label="Thời gian gửi" value={formatDateVN(message.createdAt)} />
+          <Field icon={<User className="w-4 h-4" />} label="Sender" value={senderName} />
+          <Field icon={<Clock3 className="w-4 h-4" />} label="Sent at" value={formatDate(message.createdAt)} />
           <Field
             icon={<ShieldAlert className="w-4 h-4" />}
-            label="Trạng thái"
-            value={message.isRevoked ? "Đã thu hồi" : message.deletedAt ? "Đã xóa" : message._failed ? "Thất bại" : message._pending ? "Đang gửi" : "Đã gửi"}
+            label="Status"
+            value={message.isRevoked ? "Revoked" : message.deletedAt ? "Deleted" : message._failed ? "Failed" : message._pending ? "Sending" : "Sent"}
           />
           {isEdited && (
-            <Field icon={<Pencil className="w-4 h-4" />} label="Đã chỉnh sửa lúc" value={formatDateVN(message.editedAt)} />
+            <Field icon={<Pencil className="w-4 h-4" />} label="Edited at" value={formatDate(message.editedAt)} />
           )}
           {repliedToMsg && repliedToSenderName && (
             <Field
               icon={<Reply className="w-4 h-4" />}
-              label="Trả lời tin nhắn của"
+              label="Replying to"
               value={
                 <span>
                   <span className="font-medium">{repliedToSenderName}</span>
                   <span className="text-muted"> — </span>
-                  <span className="text-muted">{repliedToMsg.content || "(không có nội dung)"}</span>
+                  <span className="text-muted">{repliedToMsg.content || "(no content)"}</span>
                 </span>
               }
             />
@@ -139,7 +139,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
                   <div className="rounded-xl border border-border/60 bg-bg px-3 py-2">
                     <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted mb-2">
                       <Eye className="w-3.5 h-3.5 text-cta shrink-0" />
-                      <span>Đã xem ({seenMembers.length})</span>
+                      <span>Seen ({seenMembers.length})</span>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       {seenMembers.map((m) => (
@@ -163,7 +163,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
                   <div className="rounded-xl border border-border/60 bg-bg px-3 py-2">
                     <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-muted mb-2">
                       <CheckCheck className="w-3.5 h-3.5 text-muted shrink-0" />
-                      <span>Đã nhận ({deliveredMembers.length})</span>
+                      <span>Delivered ({deliveredMembers.length})</span>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       {deliveredMembers.map((m) => (

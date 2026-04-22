@@ -56,10 +56,10 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
         targetConversationIds: Array.from(selected),
       });
       setDone(true);
-      toast.success("Đã chuyển tiếp thành công");
+      toast.success("Message forwarded successfully");
       setTimeout(onClose, 900);
     } catch {
-      toast.error("Chuyển tiếp thất bại");
+      toast.error("Could not forward the message");
       setLoading(false);
     }
   };
@@ -72,7 +72,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
       <div className="bg-surface rounded-2xl border border-border shadow-2xl w-full max-w-md mx-4 flex flex-col overflow-hidden" style={{ maxHeight: "80vh" }}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-base font-semibold text-text">Chuyển tiếp tin nhắn</h2>
+          <h2 className="text-base font-semibold text-text">Forward message</h2>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-muted hover:bg-border/60 cursor-pointer">
             <X className="w-4 h-4" />
           </button>
@@ -86,7 +86,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm hội thoại…"
+              placeholder="Search conversations…"
               className="flex-1 bg-transparent text-sm text-text placeholder:text-muted outline-none"
             />
           </div>
@@ -115,7 +115,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
         {/* List */}
         <div className="flex-1 overflow-y-auto py-1 min-h-0">
           {filtered.length === 0 ? (
-            <p className="text-center text-sm text-muted py-8">Không tìm thấy</p>
+            <p className="text-center text-sm text-muted py-8">No conversations found</p>
           ) : (
             filtered.map((c) => {
               const isDirect = c.kind === "direct";
@@ -166,7 +166,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
         {/* Footer */}
         <div className="px-4 py-3 border-t border-border shrink-0 flex items-center justify-between gap-3">
           <span className="text-xs text-muted">
-            {selected.size > 0 ? `Đã chọn ${selected.size} hội thoại` : "Chọn người nhận"}
+            {selected.size > 0 ? `${selected.size} conversations selected` : "Choose recipients"}
           </span>
           <button
             onClick={handleSend}
@@ -181,11 +181,11 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
             )}
           >
             {done ? (
-              <><Check className="w-4 h-4" /> Đã gửi</>
+              <><Check className="w-4 h-4" /> Sent</>
             ) : loading ? (
               <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
             ) : (
-              <><Send className="w-4 h-4" /> Gửi</>
+              <><Send className="w-4 h-4" /> Send</>
             )}
           </button>
         </div>

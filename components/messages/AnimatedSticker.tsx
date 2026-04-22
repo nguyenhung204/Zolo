@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { frameCache, probeSticker } from "@/lib/utils/stickerProbe";
 
 export interface AnimatedStickerProps {
@@ -107,10 +107,26 @@ function SpriteSticker({
   playOnHover: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
-  const playing = !playOnHover || hovered;
+  // Optimistic: assume in-viewport on mount to avoid a flash of no animation.
+  const [inViewport, setInViewport] = useState(true);
+  const divRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = divRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setInViewport(entry.isIntersecting),
+      { threshold: 0 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const playing = (!playOnHover || hovered) && inViewport;
 
   return (
     <div
+      ref={divRef}
       role="img"
       aria-label={alt}
       style={{
