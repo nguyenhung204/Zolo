@@ -55,7 +55,7 @@ apiClient.interceptors.response.use(
 
     // 429 – rate limit
     if (error.response?.status === 429) {
-      toast.error("Bạn đang thực hiện quá nhiều yêu cầu. Vui lòng thử lại sau ít phút.", {
+      toast.error("You are making too many requests. Please try again in a few minutes.", {
         id: "rate-limit",
         duration: 6000,
       });
@@ -65,7 +65,7 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 400 && !error.config?._silent400) {
       const raw = (error.response?.data as { message?: string | string[] })?.message;
       const msg = Array.isArray(raw) ? raw[0] : raw;
-      toast.warning(typeof msg === "string" && msg ? msg : "Yêu cầu không hợp lệ. Vui lòng kiểm tra lại thông tin.", {
+      toast.warning(typeof msg === "string" && msg ? msg : "Invalid request. Please check your input.", {
         id: `bad-req-${String(error.config?.url ?? "")}`,
         duration: 4000,
       });

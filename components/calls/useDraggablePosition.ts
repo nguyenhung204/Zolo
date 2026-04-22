@@ -27,7 +27,7 @@ export function useDraggablePosition(modalW: number, modalH: number) {
       // modal stays on-screen, but do NOT reset it to the default corner.
       const clamped = {
         x: Math.min(posRef.current.x, window.innerWidth - modalW),
-        y: Math.min(posRef.current.y, window.innerHeight - 48),
+        y: Math.min(posRef.current.y, window.innerHeight - modalH - 4),
       };
       if (clamped.x !== posRef.current.x || clamped.y !== posRef.current.y) {
         setPos(clamped);

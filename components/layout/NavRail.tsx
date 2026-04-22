@@ -2,6 +2,7 @@
 
 import { MessageSquare, Users, Settings } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
@@ -20,8 +21,8 @@ export function NavRail() {
   return (
     <nav className="flex flex-col items-center gap-1 w-14 h-full bg-[#0F172A] dark:bg-[#0a1120] py-4 shrink-0">
       {/* Brand mark */}
-      <div className="mb-4 w-8 h-8 rounded-lg bg-cta flex items-center justify-center">
-        <span className="text-white text-xs font-bold">Z</span>
+      <div className="mb-4">
+        <Image src="/zolo.png" alt="Zolo" width={32} height={32} style={{ width: 32, height: 32 }} className="rounded-xl object-cover" />
       </div>
 
       <div className="flex-1 flex flex-col items-center gap-1">

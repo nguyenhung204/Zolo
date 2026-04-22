@@ -279,6 +279,7 @@ export function ActiveCallModal() {
         </span>
         <button
           onClick={(e) => { e.stopPropagation(); setIsExpanded((v) => !v); }}
+          onPointerDown={(e) => e.stopPropagation()}
           className="ml-auto p-1.5 rounded-md text-white/40 hover:text-white/80 hover:bg-white/10 transition-all duration-200 cursor-pointer"
           aria-label={isExpanded ? "Collapse" : "Expand"}
         >
@@ -315,7 +316,7 @@ export function ActiveCallModal() {
         </LiveKitRoom>
       ) : (
         <div className="flex-1 flex items-center justify-center">
-          <span className="text-white/50 text-sm animate-pulse">Đang kết nối…</span>
+          <span className="text-white/50 text-sm animate-pulse">Connecting…</span>
         </div>
       )}
     </div>

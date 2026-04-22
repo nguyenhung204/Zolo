@@ -14,6 +14,7 @@ const jakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: "ZoloChat",
   description: "Enterprise communication platform",
+  icons: { icon: "/zolo.png", apple: "/zolo.png" },
 };
 
 export default function RootLayout({
@@ -33,7 +34,7 @@ export default function RootLayout({
       </head>
       <body className="h-full bg-bg font-sans text-text">
         <Providers>{children}</Providers>
-        <Toaster richColors position="top-center" />
+        <Toaster richColors position="top-right" visibleToasts={8} expand />
       </body>
     </html>
   );

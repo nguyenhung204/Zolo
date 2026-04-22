@@ -72,7 +72,7 @@ export function MemberList({ conversationId, open, onClose }: MemberListProps) {
               const safeName =
                 (member as { displayName?: string }).displayName ??
                 (member as { username?: string }).username ??
-                "Người dùng";
+                "User";
 
               return (
                 <div

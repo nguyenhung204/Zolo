@@ -216,7 +216,7 @@ function FriendRow({
 
   const actionDisabled = pendingAction !== null;
 
-  const safeName = displayName ?? user?.username ?? "Người dùng";
+  const safeName = displayName ?? user?.username ?? "User";
 
   return (
     <li className="group flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/30 transition-colors duration-150">
@@ -384,7 +384,7 @@ function RequestRow({ userId, direction }: { userId: string; direction: "incomin
     }
   }
 
-  const safeName = displayName ?? user?.username ?? "Người dùng";
+  const safeName = displayName ?? user?.username ?? "User";
 
   return (
     <li className="flex items-center gap-3 px-3 py-3 rounded-xl border border-border/60 bg-surface hover:border-border transition-colors duration-150">
