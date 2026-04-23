@@ -341,9 +341,9 @@ export function VirtualMessageList({
     // Collect unique sender IDs from messages
     const senderIds = new Set(messages.map((m) => m.senderId));
 
-    // Fetch profiles for senders not in profileMap or memberMap
+    // Fetch profiles for senders not yet in profileMap
     for (const senderId of senderIds) {
-      if (profileMap[senderId] || memberMap.has(senderId)) continue;
+      if (profileMap[senderId]) continue;
 
       getUserById(senderId)
         .then(async (profile) => {

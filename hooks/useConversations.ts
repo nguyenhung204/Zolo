@@ -24,6 +24,7 @@ const TOP_CONVERSATIONS_TO_PREFETCH = 10;
 export function useConversations() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const qc = useQueryClient();
+  const setUserProfile = usePresenceStore((s) => s.setUserProfile);
 
   const query = useQuery({
     queryKey: queryKeys.conversations.list(),
@@ -41,6 +42,24 @@ export function useConversations() {
   // Only run when the conversation list first loads or changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query.dataUpdatedAt]);
+
+  // Seed presenceStore.profileMap for direct conversation peers so UserAvatar
+  // can show avatars immediately without waiting for the conversation detail.
+  useEffect(() => {
+    if (!query.data) return;
+    for (const conv of query.data) {
+      const ou = conv.otherUser;
+      if (!ou?.avatarUrl) continue;
+      const already = usePresenceStore.getState().profileMap[ou.id];
+      if (already?.avatarUrl) continue;
+      setUserProfile(ou.id, {
+        displayName: ou.displayName ?? ou.username ?? null,
+        avatarMediaId: null,
+        avatarUrl: ou.avatarUrl,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.dataUpdatedAt, setUserProfile]);
 
   return query;
 }
@@ -79,6 +98,7 @@ export function useConversation(id: string) {
 export function useConversationMembers(id: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const profileMap = usePresenceStore((s) => s.profileMap);
+  const setUserProfile = usePresenceStore((s) => s.setUserProfile);
   const { data: conversation } = useConversation(id);
 
   const { data: memberRecords = [], isLoading } = useQuery({
@@ -116,6 +136,24 @@ export function useConversationMembers(id: string) {
         null,
     };
   });
+
+  // Seed presenceStore.profileMap for each member that has a resolved avatarUrl
+  // from participant/otherUser data but hasn't been seeded yet. This ensures
+  // UserAvatar reads from profileMap (the authoritative real-time cache) rather
+  // than relying solely on the prop chain. Read profileMap via getState() inside
+  // the effect to avoid a reactive dependency that would create a seeding loop.
+  useEffect(() => {
+    for (const m of members) {
+      if (!m.avatarUrl) continue;
+      const already = usePresenceStore.getState().profileMap[m.userId];
+      if (already?.avatarUrl) continue; // don't overwrite fresher WS data
+      setUserProfile(m.userId, {
+        displayName: m.displayName !== "User" ? m.displayName : null,
+        avatarMediaId: null,
+        avatarUrl: m.avatarUrl,
+      });
+    }
+  }, [members, setUserProfile]);
 
   return { data: members, isLoading };
 }
