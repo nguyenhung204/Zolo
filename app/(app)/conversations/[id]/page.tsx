@@ -9,6 +9,7 @@ import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
 import { MemberList } from "@/components/conversations/MemberList";
 import { useConversationMembers, useConversation } from "@/hooks/useConversations";
+import { useGroupSocketEvents } from "@/hooks/useGroupSocketEvents";
 import { useConversationStore } from "@/stores/conversationStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { useMessages } from "@/hooks/useMessages";
@@ -47,6 +48,9 @@ export default function ConversationPage({ params }: Props) {
 
   const [membersOpen, setMembersOpen] = useState(false);
   const [detailsTarget, setDetailsTarget] = useState<Message | null>(null);
+
+  // Mount all group management socket listeners for this conversation
+  useGroupSocketEvents(id);
 
   // Join the WS room when this conversation is opened
   useEffect(() => {
