@@ -15,6 +15,7 @@ type JoinState = "idle" | "joining" | "joined" | "pending" | "error";
 export default function JoinGroupPage({ params }: Props) {
   const { token } = use(params);
   const router = useRouter();
+  const isInitialized = useAuthStore((s) => s.isInitialized);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const joinMutation = useJoinByInvite();
 
@@ -23,6 +24,8 @@ export default function JoinGroupPage({ params }: Props) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isInitialized) return;
+
     if (!isAuthenticated) {
       // Preserve the join URL so the user is redirected back after login.
       router.replace(`/login?from=/join/${token}`);
@@ -60,9 +63,7 @@ export default function JoinGroupPage({ params }: Props) {
         setState("error");
       },
     });
-    // Intentionally run only once on mount with a valid token+auth combo.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isInitialized, joinMutation, router, state, token]);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-bg px-4">
