@@ -3,13 +3,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getConversations,
   getConversation,
-  getConversationMembers,
   createConversation,
   updateConversationInfo,
   addConversationMembers,
   removeConversationMember,
+  removeConversationMembers,
   setConversationMemberRole,
-  type ConversationMember,
+  getOutboxHealth,
   type MemberRole,
   type CreateConversationPayload,
   type UpdateConversationInfoPayload,
@@ -96,52 +96,43 @@ export function useConversation(id: string) {
 }
 
 export function useConversationMembers(id: string) {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const profileMap = usePresenceStore((s) => s.profileMap);
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);
-  const { data: conversation } = useConversation(id);
+  const { data: conversation, isLoading } = useConversation(id);
 
-  const { data: memberRecords = [], isLoading } = useQuery({
-    queryKey: queryKeys.conversations.members(id),
-    queryFn: () => getConversationMembers(id),
-    enabled: isAuthenticated && !!id,
-    staleTime: 30_000,
-  });
-
-  // Merge cursor data from API with the freshest profile data we have so the
-  // conversation list, member sheet, and message avatars stay in sync.
-  const participantMap = new Map(
-    (conversation?.participants ?? []).map((p) => [p.userId, p])
-  );
+  // The /members endpoint only returns IDs. All profile data (displayName,
+  // username, avatarUrl, role) comes from conv.participants in the detail response.
   const directOtherUser = conversation?.kind === "direct" ? conversation.otherUser : null;
 
-  const members = memberRecords.map((m) => {
-    const participant = participantMap.get(m.userId);
-    const profile = profileMap[m.userId];
-    const otherUser = directOtherUser?.id === m.userId ? directOtherUser : null;
+  const members = (conversation?.participants ?? []).map((p) => {
+    const profile = profileMap[p.userId];
+    const otherUser = directOtherUser?.id === p.userId ? directOtherUser : null;
     return {
-      ...m,
+      id: p.userId,
+      conversationId: id,
+      userId: p.userId,
+      role: p.role as MemberRole,
       displayName:
         profile?.displayName ??
-        participant?.displayName ??
+        p.displayName ??
         otherUser?.displayName ??
-        participant?.username ??
+        p.username ??
         otherUser?.username ??
         "User",
-      username: participant?.username ?? otherUser?.username,
+      username: p.username ?? otherUser?.username,
       avatarUrl:
         profile?.avatarUrl ??
-        (participant as { avatarUrl?: string | null } | undefined)?.avatarUrl ??
+        (p as { avatarUrl?: string | null }).avatarUrl ??
         otherUser?.avatarUrl ??
         null,
+      lastSeenOffset: 0,
+      lastDeliveredOffset: 0,
+      joinedAt: "",
+      leftAt: null as string | null,
     };
   });
 
-  // Seed presenceStore.profileMap for each member that has a resolved avatarUrl
-  // from participant/otherUser data but hasn't been seeded yet. This ensures
-  // UserAvatar reads from profileMap (the authoritative real-time cache) rather
-  // than relying solely on the prop chain. Read profileMap via getState() inside
-  // the effect to avoid a reactive dependency that would create a seeding loop.
+  // Seed presenceStore.profileMap for each member so UserAvatar stays in sync.
   useEffect(() => {
     for (const m of members) {
       if (!m.avatarUrl) continue;
@@ -153,6 +144,7 @@ export function useConversationMembers(id: string) {
         avatarUrl: m.avatarUrl,
       });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members, setUserProfile]);
 
   return { data: members, isLoading };
@@ -174,7 +166,7 @@ export function useMyConversationRole(conversationId: string): MemberRole | null
   if (!conv || !userId) return null;
   const p = conv.participants?.find((part) => part.userId === userId);
   if (!p) return null;
-  return p.role.toUpperCase() as MemberRole;
+  return p.role.toLowerCase() as MemberRole;
 }
 
 export function useUpdateConversationInfo() {
@@ -245,5 +237,28 @@ export function useSetMemberRole() {
     onSuccess: (_data, { conversationId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
     },
+  });
+}
+
+/** Bulk-remove members: DELETE /conversations/:id/members with body { userIds } */
+export function useRemoveConversationMembers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ conversationId, userIds }: { conversationId: string; userIds: string[] }) =>
+      removeConversationMembers(conversationId, userIds),
+    onSuccess: (_data, { conversationId }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+    },
+  });
+}
+
+/** GET /conversations/health/outbox */
+export function useOutboxHealth() {
+  return useQuery({
+    queryKey: ["outbox", "health"],
+    queryFn: getOutboxHealth,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }

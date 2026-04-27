@@ -9,17 +9,13 @@ import { cn } from "@/lib/utils";
 const roleIcon: Record<MemberRole, React.ReactNode> = {
   owner: <Crown className="w-3 h-3 text-warning" />,
   admin: <Shield className="w-3 h-3 text-cta" />,
-  moderator: <Shield className="w-3 h-3 text-success" />,
   member: <User className="w-3 h-3 text-muted" />,
-  guest: <User className="w-3 h-3 text-muted/60" />,
 };
 
 const roleLabel: Record<MemberRole, string> = {
   owner: "Owner",
   admin: "Admin",
-  moderator: "Mod",
   member: "Member",
-  guest: "Guest",
 };
 
 interface MemberListProps {

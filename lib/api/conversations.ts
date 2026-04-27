@@ -3,7 +3,7 @@ import { apiClient } from "@/lib/api/client";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ConversationKind = "direct" | "group" | "community";
-export type MemberRole = "owner" | "admin" | "moderator" | "member" | "guest";
+export type MemberRole = "owner" | "admin" | "member";
 
 /** @deprecated Use ConversationKind */
 export type ConversationType = ConversationKind;
@@ -36,6 +36,11 @@ export interface Conversation {
     type: string;
     createdAt: string;
   };
+  // Group management settings (only present for group conversations)
+  isPublic?: boolean;
+  joinApprovalRequired?: boolean;
+  allowMemberMessage?: boolean;
+  linkVersion?: number;
 }
 
 export interface ConversationMember {
@@ -132,13 +137,27 @@ export async function removeConversationMember(
   await apiClient.delete(`/conversations/${id}/members/${userId}`);
 }
 
+/** Bulk-remove members. Body: `{ userIds }` — DELETE /conversations/:id/members */
+export async function removeConversationMembers(
+  id: string,
+  userIds: string[]
+): Promise<void> {
+  await apiClient.delete(`/conversations/${id}/members`, { data: { userIds } });
+}
+
 export async function setConversationMemberRole(
   conversationId: string,
   userId: string,
   role: MemberRole
 ): Promise<void> {
   await apiClient.patch(
-    `/conversations/${conversationId}/members/${userId}`,
+    `/conversations/${conversationId}/members/${userId}/role`,
     { role }
   );
+}
+
+/** GET /conversations/health/outbox — outbox queue health (public) */
+export async function getOutboxHealth(): Promise<{ status: string; pendingCount?: number }> {
+  const res = await apiClient.get("/conversations/health/outbox");
+  return res.data?.data ?? res.data;
 }

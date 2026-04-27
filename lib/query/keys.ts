@@ -64,4 +64,24 @@ export const queryKeys = {
         ? ([...queryKeys.notifications.all, "preferences", conversationId] as const)
         : ([...queryKeys.notifications.all, "preferences"] as const),
   },
+
+  // Group Management
+  polls: {
+    all: ["polls"] as const,
+    list: (conversationId: string) => ["polls", "list", conversationId] as const,
+    detail: (pollId: string) => ["polls", "detail", pollId] as const,
+  },
+
+  appointments: {
+    all: ["appointments"] as const,
+    list: (conversationId: string) => ["appointments", "list", conversationId] as const,
+  },
+
+  inviteLink: {
+    detail: (conversationId: string) => ["inviteLink", conversationId] as const,
+  },
+
+  joinRequests: {
+    list: (conversationId: string) => ["joinRequests", "list", conversationId] as const,
+  },
 } as const;
