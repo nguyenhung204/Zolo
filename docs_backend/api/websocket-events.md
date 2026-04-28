@@ -285,15 +285,9 @@ socket.on('message:new', (payload: {
   clientMessageId?: string;    // Echo of client's dedup ID
   conversationId: string;
   senderId: string;
-  sender?: {
-    id: string;
-    username: string;
-    displayName: string;
-    avatarUrl: string | null;
-  };
   offset: number;              // Sequential message number within conversation
   type: 'text' | 'image' | 'video' | 'audio' | 'file' | 'sticker' | 'media';
-  content?: string;            // Text content; null for media-only messages
+  content?: string;            // Text content; empty string for media-only messages
   replyToId?: string;          // ID of the message being replied to
   createdAt: string;           // ISO timestamp
   metadata?: Record<string, any>;
@@ -328,6 +322,8 @@ socket.on('message:new', (payload: {
 }) => { ... });
 ```
 
+> The gateway emits `senderId` but does not embed a richer sender profile in `message:new`. Resolve sender display data separately if the UI needs it.
+
 **FE behavior per message type:**
 
 | Type | On `message:new` | On play/view | After `message:media_ready` |
@@ -345,7 +341,7 @@ socket.on('message:new', (payload: {
 
 ### message:saved
 
-**Tier 1 — NOTIFY** · Target: sender's personal room `user:{senderId}`.
+**Tier 1 — NOTIFY** · Target: sender's own sockets only.
 
 Delivery confirmation for the sender. Indicates the message has been persisted to the database.
 
@@ -357,7 +353,7 @@ socket.on('message:saved', (payload: {
 }) => { ... });
 ```
 
-**FE behavior:** update the message's local state from "sending" (⏳) to "sent" (✓✓). Store `offset` for cursor tracking.
+**FE behavior:** update the message's local state from "sending" (⏳) to "sent" (✓✓). Store `offset` for cursor tracking. This event is delivered only to the sender's own sockets, not the shared `user:{senderId}` room.
 
 ---
 
@@ -365,20 +361,20 @@ socket.on('message:saved', (payload: {
 
 **Tier 1 — NOTIFY** · Target: all members' personal rooms `user:{memberId}`.
 
-Lightweight notification — sent to all conversation members including those not currently viewing the conversation. Contains only metadata (no message content).
+Lightweight notification — sent to all conversation members except the sender. Includes preview metadata so the client can update unread badges and list previews without fetching the full thread immediately.
 
 ```typescript
 socket.on('message:notify', (payload: {
   conversationId: string;
-  messageId: string;
-  senderId: string;
-  type: string;
-  offset: number;
-  createdAt: string;
+  latestOffset: number;
+  senderName?: string;
+  content?: string;
+  type?: string;
+  conversationName?: string;
 }) => { ... });
 ```
 
-**FE behavior:** increment unread badge for this conversation if not currently open. The notification contains no content — call `GET /conversations/:id/messages` if needed.
+**FE behavior:** increment unread badge for this conversation if not currently open. Use `senderName` + `content` + `type` for preview text; call `GET /conversations/:id/messages` if the UI needs the full message list or exact attachments.
 
 ---
 
@@ -814,7 +810,7 @@ callSocket.on('call:ended', (payload: {
   callId: string;
   conversationId: string;
   endedBy: string;
-  endReason: 'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'membership_revoked';
+  endReason: 'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'stale_call_cleanup' | 'membership_revoked';
   durationMs: number;
   endedAt: string;
 }) => {
@@ -855,14 +851,14 @@ See the HTTP API Reference [Guide 1](../API_REFERENCE.md#guide-1-fast-ack-messag
 ```
 POST /chat/messages  →  201 { messageId, status: 'accepted' }
                                      │
-               WS message:saved ◄────┘   (sender's user room — persistence confirmed)
+               WS message:saved ◄────┘   (sender's own sockets — persistence confirmed)
                WS message:new  ◄──────── (conversation room — full payload for all viewers)
-               WS message:notify ◄─────  (user rooms — lightweight notification for all members)
+               WS message:notify ◄─────  (user rooms — lightweight notification with preview metadata)
 ```
 
 **WS event timeline for recipient:**
 
-1. **`message:notify`** arrives in personal room — increment unread badge if conversation is in background.
+1. **`message:notify`** arrives in personal room — increment unread badge and optionally show sender/content preview if conversation is in background.
 2. **`message:new`** arrives in conversation room (if joined) — render the message immediately.
 3. **After render** — emit `conversation:update_delivered_cursor` (background) or `conversation:update_seen_cursor` (foreground).
 

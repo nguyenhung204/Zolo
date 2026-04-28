@@ -1139,7 +1139,7 @@ curl -X PATCH http://localhost:3000/conversations/conv-uuid/members/target-user-
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `role` | `string` | ✓ | `OWNER`, `ADMIN`, `MODERATOR`, `MEMBER`, `GUEST` |
+| `role` | `string` | ✓ | `owner`, `admin`, `member` |
 
 ---
 
@@ -1297,7 +1297,7 @@ curl -X DELETE http://localhost:3000/messages/msg-uuid \
 
 ### POST /messages/:id/pin
 
-Pin a message. **Business rule `MSG.PIN`:** `OWNER`, `ADMIN`, or `MODERATOR` only. Max 3 pinned messages per conversation.
+Pin a message. **Business rule `MSG.PIN`:** `OWNER` or `ADMIN` only. Max 3 pinned messages per conversation.
 
 **201 Created**
 

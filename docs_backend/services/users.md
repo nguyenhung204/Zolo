@@ -87,9 +87,10 @@ All endpoints require a valid JWT Bearer token unless noted. Gateway base: `http
 - Payload: `{ id: string } & UpdateUserDto`
 - Response: Updated user entity
 - Business rules:
-  - `firstName`, `lastName`, `email` immutable after registration
+  - `firstName`, `lastName` are editable profile fields
+  - `email` is immutable after registration
   - `phone`, `cccdNumber` set-once (cannot overwrite existing non-null values)
-  - `username` is mutable display name and may be duplicated
+  - `username` is the display name and is auto-synced from `firstName` + `lastName` when either field changes
 
 **Pattern: `USERS_PATTERNS.UPDATE_SETTINGS`** (`update_user_settings`)
 
@@ -130,12 +131,12 @@ All endpoints require a valid JWT Bearer token unless noted. Gateway base: `http
 Published after a user profile change is fully committed. Two distinct event paths:
 
 **Path A — Non-avatar field change** (immediate, on DB update):
-- Triggers: `username`, `phone`, `cccdNumber` updated via `PUT /users/me`
+- Triggers: `firstName`, `lastName`, `username`, `phone`, `cccdNumber` updated via `PUT /users/me`
 - Payload:
   ```json
   {
     "userId": "string",
-    "changedFields": ["firstName", "lastName"],
+    "changedFields": ["firstName", "lastName", "username"],
     "oldAvatarMediaId": null,
     "snapshot": { "displayName": "Nguyen Van A", "avatarMediaId": "uuid-or-null" },
     "timestamp": 1712345678000

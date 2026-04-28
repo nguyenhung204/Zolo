@@ -13,11 +13,17 @@ interface InstantCallState {
   activeCall: CallDto | null;
   /** LiveKit credentials for the active call. */
   liveKitCredentials: CallTokenDto | null;
+  /**
+   * A group call the current user declined but which may still be ringing/active.
+   * Used to show a "Join call" button in the conversation header.
+   */
+  declinedGroupCall: { callId: string; conversationId: string } | null;
 
   setIncomingCall: (call: CallDto | null) => void;
   setOutgoingCall: (call: CallDto | null) => void;
   setActiveCall: (call: CallDto | null) => void;
   setLiveKitCredentials: (creds: CallTokenDto | null) => void;
+  setDeclinedGroupCall: (call: { callId: string; conversationId: string } | null) => void;
   /** Clears all call state - call on terminal events (ended/declined/missed). */
   clearCallState: () => void;
 }
@@ -29,14 +35,16 @@ export const useCallStore = create<InstantCallState>()(
       outgoingCall: null,
       activeCall: null,
       liveKitCredentials: null,
+      declinedGroupCall: null,
 
       setIncomingCall: (call) => set({ incomingCall: call }),
       setOutgoingCall: (call) => set({ outgoingCall: call }),
       setActiveCall: (call) => set({ activeCall: call }),
       setLiveKitCredentials: (creds) => set({ liveKitCredentials: creds }),
+      setDeclinedGroupCall: (call) => set({ declinedGroupCall: call }),
 
       clearCallState: () =>
-        set({ incomingCall: null, outgoingCall: null, activeCall: null, liveKitCredentials: null }),
+        set({ incomingCall: null, outgoingCall: null, activeCall: null, liveKitCredentials: null, declinedGroupCall: null }),
     }),
     {
       name: 'zolo-call-state',

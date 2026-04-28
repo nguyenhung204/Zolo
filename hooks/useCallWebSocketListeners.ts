@@ -47,6 +47,7 @@ export function useCallWebSocketListeners(): void {
     setOutgoingCall,
     setActiveCall,
     setLiveKitCredentials,
+    setDeclinedGroupCall,
     clearCallState,
     outgoingCall,
   } = useCallStore();
@@ -136,6 +137,7 @@ export function useCallWebSocketListeners(): void {
         id: data.callId,
         conversationId: data.conversationId,
         callerId: data.callerId,
+        calleeIds: data.calleeIds ?? [],
         status: "RINGING",
         createdAt: data.startedAt,
         startedAt: data.startedAt,
@@ -214,7 +216,13 @@ export function useCallWebSocketListeners(): void {
 
   // ─── call:declined ───────────────────────────────────────────────────────────
   const handleDeclined = useCallback(
-    (data: { finalStatus: "REJECTED" | "MISSED" }) => {
+    (data: { callId: string; declinedBy: string; finalStatus: "REJECTED" | "RINGING" | "MISSED"; declinedAt: string }) => {
+      // Group call: one callee declined but others can still accept — keep state alive.
+      if (data.finalStatus === "RINGING") {
+        toast.info("A participant declined the call.");
+        return;
+      }
+
       stopAllAudio();
 
       // Guard: if we already cleared state optimistically (i.e. the local user
@@ -223,17 +231,24 @@ export function useCallWebSocketListeners(): void {
       const { incomingCall, outgoingCall } = useCallStore.getState();
       if (!incomingCall && !outgoingCall) return;
 
+      // Clear any pending re-join opportunity since the call is now fully rejected.
+      useCallStore.getState().setDeclinedGroupCall(null);
       clearCallState();
-      const label = data.finalStatus === "REJECTED" ? "Call declined" : "Missed call";
-      toast.info(label);
+      toast.info("Call declined");
     },
     [stopAllAudio, clearCallState]
   );
 
   // ─── call:ended ──────────────────────────────────────────────────────────────
   const handleEnded = useCallback(
-    (data: { callId: string; endReason: string }) => {
+    (data: { callId: string; endReason: string; durationMs?: number }) => {
       stopAllAudio();
+
+      // Always clear a declined group call if this is the same call ending.
+      const { declinedGroupCall } = useCallStore.getState();
+      if (declinedGroupCall?.callId === data.callId) {
+        useCallStore.getState().setDeclinedGroupCall(null);
+      }
 
       // Guard: if we already cleared state optimistically (i.e. the local user
       // clicked End Call), ignore this WS echo to avoid a double-toast.
@@ -263,6 +278,10 @@ export function useCallWebSocketListeners(): void {
     socket.on("call:accepted", handleAccepted);
     socket.on("call:declined", handleDeclined);
     socket.on("call:ended", handleEnded);
+
+    // Also handle missed calls that arrive via call:ended with endReason MISSED
+    // while we have a pending declinedGroupCall (we didn't receive call:ended
+    // through the active-call path, but we still need to clear the join banner).
 
     return () => {
       socket.off("call:ringing", handleRinging);

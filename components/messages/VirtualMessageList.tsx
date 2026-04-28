@@ -28,7 +28,6 @@ import type { MessagesInfiniteData } from "@/hooks/useMessages";
 import { toast } from "sonner";
 import { getUserById } from "@/lib/api/users";
 import { usePresenceStore } from "@/stores/presenceStore";
-import { getMediaSignedUrl } from "@/lib/api/media";
 
 interface VirtualMessageListProps {
   conversationId: string;
@@ -332,43 +331,73 @@ export function VirtualMessageList({
     }));
 
   // ─── Populate profiles for message senders ────────────────────────────────
-  const profileMap = usePresenceStore((s) => s.profileMap);
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);
+  const qcRef = useRef(getQueryClient());
+
+  // Track which sender IDs we've already attempted to resolve so the effect
+  // never fires duplicate fetches regardless of how often it re-runs.
+  const fetchedIdsRef = useRef<Set<string>>(new Set());
+  // Reset on conversation change so entering a new conversation re-seeds profiles.
+  useEffect(() => { fetchedIdsRef.current = new Set(); }, [conversationId]);
+  // Always-current snapshot of memberMap without adding it as an effect dep.
+  const memberMapRef = useRef(memberMap);
+  memberMapRef.current = memberMap;
 
   useEffect(() => {
     if (messages.length === 0) return;
 
-    // Collect unique sender IDs from messages
-    const senderIds = new Set(messages.map((m) => m.senderId));
+    const senderIds = new Set(
+      messages.map((m) => m.senderId).filter((id) => id && id !== "SYSTEM")
+    );
 
-    // Fetch profiles for senders not yet in profileMap
     for (const senderId of senderIds) {
-      if (profileMap[senderId]) continue;
+      if (fetchedIdsRef.current.has(senderId)) continue;
 
-      getUserById(senderId)
-        .then(async (profile) => {
-          let avatarUrl: string | null = null;
-          if (profile.avatarMediaId) {
-            try {
-              avatarUrl = await getMediaSignedUrl(profile.avatarMediaId, "OPTIMIZED");
-            } catch {
-              // Swallow error
-            }
-          }
+      // Honour a profile already populated by the conversations list seed or WS
+      // events — avoid overwriting fresher data.
+      if (usePresenceStore.getState().profileMap[senderId]) {
+        fetchedIdsRef.current.add(senderId);
+        continue;
+      }
+
+      // Prefer member data that already arrived with the conversation detail
+      // (avatarUrl is already a presigned URL — no extra round-trip needed).
+      type RichMember = ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null };
+      const member = memberMapRef.current.get(senderId) as RichMember | undefined;
+      if (member) {
+        fetchedIdsRef.current.add(senderId);
+        setUserProfile(senderId, {
+          displayName: member.displayName ?? member.username ?? null,
+          avatarMediaId: null,
+          avatarUrl: member.avatarUrl ?? null,
+        });
+        continue;
+      }
+
+      // Final fallback: use React Query cache so concurrent requests for the same
+      // userId are deduplicated and the result is shared across all components.
+      fetchedIdsRef.current.add(senderId);
+      qcRef.current
+        .fetchQuery({
+          queryKey: queryKeys.users.detail(senderId),
+          queryFn: () => getUserById(senderId),
+          staleTime: 5 * 60_000,
+        })
+        .then((profile) => {
           const displayName =
             [profile.firstName, profile.lastName].filter(Boolean).join(" ") ||
             profile.username;
           setUserProfile(senderId, {
             displayName,
             avatarMediaId: profile.avatarMediaId ?? null,
-            avatarUrl,
+            avatarUrl: profile.avatarUrl ?? null,
           });
         })
         .catch(() => {
           // Swallow — UI falls back to "User" placeholder
         });
     }
-  }, [messages, profileMap, memberMap, setUserProfile]);
+  }, [messages, setUserProfile]);
 
   // Scroll to the absolute DOM bottom — reliable regardless of virtual row heights.
   // Retries at 80 ms and 220 ms so positions stabilise as ResizeObserver fires.

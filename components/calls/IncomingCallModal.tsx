@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { Phone, PhoneOff } from "lucide-react";
+import { Phone, PhoneOff, Users } from "lucide-react";
 import { toast } from "sonner";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
@@ -11,13 +11,14 @@ import { getCallSocket } from "@/lib/socket/socket";
 import { resolveDisplayName, resolveAvatarUrl, is409, get409Code } from "./call-utils";
 
 export function IncomingCallModal() {
-  const { incomingCall, setActiveCall, setLiveKitCredentials, clearCallState } =
+  const { incomingCall, setActiveCall, setLiveKitCredentials, setDeclinedGroupCall, clearCallState } =
     useCallStore();
   const profileMap = usePresenceStore((s) => s.profileMap);
   const isBusyRef = useRef(false);
 
   if (!incomingCall) return null;
 
+  const isGroup = (incomingCall.calleeIds?.length ?? 0) > 1;
   const callerName = resolveDisplayName(incomingCall.callerId, profileMap);
   const callerAvatar = resolveAvatarUrl(incomingCall.callerId, profileMap);
 
@@ -33,6 +34,8 @@ export function IncomingCallModal() {
 
     try {
       const res = await acceptInstantCall(callId);
+      // If using REST accept, also join the WS room manually (as per integration guide).
+      getCallSocket().emit("call:join_room", { callId });
       setActiveCall(res.call);
       setLiveKitCredentials({
         token: res.token,
@@ -55,8 +58,15 @@ export function IncomingCallModal() {
     if (isBusyRef.current) return;
     isBusyRef.current = true;
 
-    // Optimistic: immediately close the modal — don't wait for the network.
     const callId = incomingCall.id;
+    const conversationId = incomingCall.conversationId;
+
+    // For group calls: track the declined call so the user can re-join later.
+    if (isGroup) {
+      setDeclinedGroupCall({ callId, conversationId });
+    }
+
+    // Optimistic: immediately close the modal.
     getCallSocket().emit("call:leave_room", { callId });
     clearCallState();
 
@@ -92,10 +102,20 @@ export function IncomingCallModal() {
             showPresence={false}
           />
           <span className="absolute inset-0 rounded-full animate-ping bg-white/20" />
+          {isGroup && (
+            <span
+              className="absolute -bottom-1 -right-1 bg-cta rounded-full p-1 ring-2 ring-[#0F172A]"
+              title="Group call"
+            >
+              <Users className="w-3 h-3 text-white" />
+            </span>
+          )}
         </div>
         <div className="text-center">
           <p className="text-lg font-semibold text-white">{callerName}</p>
-          <p className="mt-1 text-sm text-white/50 animate-pulse">Incoming call…</p>
+          <p className="mt-1 text-sm text-white/50 animate-pulse">
+            {isGroup ? "Group call incoming…" : "Incoming call…"}
+          </p>
         </div>
         <div className="flex items-center gap-8 mt-2">
           <button

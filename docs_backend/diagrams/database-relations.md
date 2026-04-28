@@ -247,7 +247,7 @@ erDiagram
     conversation_members {
         UUID conversationId PK
         VARCHAR userId PK "Keycloak ID; composite PK with conversationId"
-        VARCHAR role "owner|admin|moderator|member|guest"
+        VARCHAR role "owner|admin|member"
         BIGINT lastSeenOffset "Last message seen"
         BIGINT lastDeliveredOffset "Last delivered offset"
         TIMESTAMP joinedAt
@@ -266,7 +266,7 @@ erDiagram
   - `idx_conversations_created_by` on `createdBy` (find user's created conversations)
 
 **Fields Explained**:
-- `type`: `direct` (2 members), `group` (manual membership), `community` (OWNER/ADMIN/MODERATOR post, MEMBER/GUEST react)
+- `type`: `direct` (2 members), `group` (manual membership), `community` (OWNER/ADMIN post, MEMBER react)
 - `avatarMediaId`: UUID reference to the media record in Media Service (nullable). Raw URL is never stored — presigned URLs are resolved at the Gateway layer on every list/detail request.
 - `memberCount`: Denormalized counter for performance (no COUNT query)
 - `maxOffset`: Atomic counter for message ordering (incremented per message)
@@ -282,7 +282,7 @@ erDiagram
   - `idx_conversation_members_role` on `(conversation_id, role)` (permission checks)
 
 **Fields Explained**:
-- `role`: CHECK IN (`owner`, `admin`, `moderator`, `member`, `guest`) — lowercase; no `readonly`
+- `role`: CHECK IN (`owner`, `admin`, `member`) — lowercase
 - `lastSeenOffset`: Highest message offset user has seen (for unread count)
 - `lastDeliveredOffset`: Highest message offset delivered to user’s device
 - `joinedAt`: When user joined; no `leftAt` column (members are removed from the table on leave)
@@ -358,8 +358,8 @@ stateDiagram-v2
     end note
 
     note right of COMMUNITY
-        Read-only for MEMBER/GUEST
-        Only OWNER/ADMIN/MODERATOR can post
+        Read-only for MEMBER
+        Only OWNER/ADMIN can post
     end note
 ```
 

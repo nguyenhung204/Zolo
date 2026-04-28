@@ -306,6 +306,7 @@ Fetch the post-call aggregate summary. Available once a call reaches a terminal 
 | `caller_cancelled` | Caller hung up while still RINGING |
 | `ringing_timeout` | Callee didn't respond within 60 s |
 | `ghost_call_cleanup` | System ended an ACTIVE call with no live participants |
+| `stale_call_cleanup` | System ended an ACTIVE call that exceeded the maximum active duration |
 | `membership_revoked` | A participant was removed from the conversation |
 
 ---

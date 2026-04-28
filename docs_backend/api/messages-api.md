@@ -101,15 +101,17 @@ curl -X POST http://localhost:3000/chat/messages \
 |-------|------|----------|-------|
 | `conversationId` | string (UUID) | ✓ | ID của conversation |
 | `type` | `'text'` \| `'sticker'` \| `'media'` \| `'image'` \| `'video'` \| `'audio'` \| `'file'` | ✓ | Loại tin nhắn |
-| `content` | string | Bắt buộc trừ khi `type` = `sticker` hoặc `media` | Nội dung text |
+| `content` | string | Bắt buộc cho `type` = `text`; tùy chọn cho `sticker`, `media`, và các loại media đơn (`image` / `video` / `audio` / `file`) | Nội dung text |
 | `clientMessageId` | string (UUID v4) | ✓ | UUID do client tự sinh — dùng để **dedup** (gửi lại không tạo tin trùng) |
 | `mediaId` | string | ✗ | ID media đính kèm (dùng cho `type: 'image'/'video'/'audio'/'file'/'sticker'`) |
-| `attachments` | `AttachmentRef[]` | ✗ | Danh sách tệp đính kèm (dùng cho `type: 'media'`) |
+| `attachments` | `AttachmentRef[]` | ✗ | Danh sách tệp đính kèm (dùng cho `type: 'media'`; tối thiểu 1, tối đa 30) |
 | `attachments[].mediaId` | string (UUID v4) | ✓ (trong mảng) | ID media đã upload |
 | `attachments[].type` | `'image'` \| `'video'` \| `'audio'` \| `'file'` | ✗ | Loại attachment |
 | `replyToMessageId` | string (UUID) | ✗ | ID tin nhắn đang trả lời |
 | `mentions` | string[] | ✗ | Danh sách userId được mention |
 | `metadata` | object | ✗ | Dữ liệu mở rộng tùy chỉnh |
+
+> Validation hiện tại: `text` bắt buộc `content`; `sticker` cho phép bỏ qua `content`; `media` bắt buộc `attachments`; `image` / `video` / `audio` / `file` cần `mediaId` hoặc `attachments` nhưng không bắt buộc `content`. Với tin media-only, `content` có thể là chuỗi rỗng.
 
 ### Response 201
 
@@ -472,7 +474,7 @@ curl -X POST "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c4
 
 ### Ràng buộc
 
-- Chỉ **ADMIN** hoặc **MODERATOR** mới có quyền ghim tin nhắn.
+- Chỉ **OWNER** hoặc **ADMIN** mới có quyền ghim tin nhắn.
 - Mỗi conversation tối đa **3 tin nhắn** được ghim cùng lúc. Nếu đã đủ 3, phải bỏ ghim trước.
 
 ---
@@ -650,7 +652,7 @@ Xác nhận riêng gửi cho **người gửi** (chỉ gửi đến socket của
 }
 ```
 
-> Dùng để chuyển optimistic UI từ "đang gửi" → "đã gửi" (hiển thị tick đơn).
+> Dùng để chuyển optimistic UI từ "đang gửi" → "đã gửi" (hiển thị tick đơn). Event này chỉ phát tới các socket thuộc sender, không đi qua shared room `user:{senderId}`.
 
 #### `message:edited`
 Tin nhắn đã được sửa — broadcast cho tất cả thành viên conversation.
@@ -724,7 +726,7 @@ Thay đổi generic — thường là trạng thái attachment sau khi Media Wor
 | Event | Ai nhận | Trigger |
 |-------|---------|---------|
 | `message:new` | Tất cả thành viên conversation | Có tin nhắn mới được lưu |
-| `message:saved` | Chỉ người gửi | Server xác nhận tin đã lưu vào DB |
+| `message:saved` | Chỉ socket của người gửi | Server xác nhận tin đã lưu vào DB |
 | `message:edited` | Tất cả thành viên conversation | Tin nhắn được sửa |
 | `message:revoked` | Tất cả thành viên conversation | Tin nhắn bị thu hồi |
 | `message:deleted` | Tất cả thành viên conversation | Tin nhắn bị xóa (ADMIN/chủ sở hữu) |
@@ -776,7 +778,7 @@ socket.on('message:updated', (patch) => {
 | `FORBIDDEN_NOT_OWNER` | 403 | Tin nhắn không thuộc về bạn |
 | `FORBIDDEN_TIME_WINDOW` | 403 | Quá cửa sổ thời gian cho phép (sửa: 1 giờ, xóa: 24 giờ) |
 | `FORBIDDEN_REVOKE_WINDOW_EXPIRED` | 403 | Quá cửa sổ thu hồi (1 giờ kể từ khi gửi) |
-| `FORBIDDEN_ROLE_REQUIRED` | 403 | Cần role ADMIN hoặc MODERATOR để thực hiện (ghim) |
+| `FORBIDDEN_ROLE_REQUIRED` | 403 | Cần role OWNER hoặc ADMIN để thực hiện (ghim) |
 | `FORBIDDEN_MEDIA_NOT_READY` | 403 | File chưa xử lý xong (vẫn đang PROCESSING) |
 | `FORBIDDEN_MEDIA_OWNERSHIP` | 403 | File không thuộc về bạn |
 | `FORBIDDEN_MEDIA_CLASSIFICATION` | 403 | Loại file không được phép trong conversation này |

@@ -17,6 +17,7 @@ import {
 import { useUserSearch } from "@/hooks/useFriends";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
 import { deleteMedia } from "@/lib/api/media";
+import { updateConversationInfo } from "@/lib/api/conversations";
 import type { UserSearchResult } from "@/lib/api/friends";
 import { encodeId } from "@/lib/utils/obfuscateId";
 import type { ConversationKind } from "@/lib/api/conversations";
@@ -134,7 +135,6 @@ export function CreateConversationModal({ open, onClose }: Props) {
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: selectedMembers.map((m) => m.id),
-          avatarMediaId: avatarUpload.mediaId ?? undefined,
         });
       } else {
         // COMMUNITY
@@ -147,10 +147,13 @@ export function CreateConversationModal({ open, onClose }: Props) {
           name: name.trim(),
           description: description.trim() || undefined,
           memberIds: [],
-          avatarMediaId: avatarUpload.mediaId ?? undefined,
         });
       }
 
+      // POST /conversations doesn't accept avatarMediaId — patch it separately
+      if (avatarUpload.mediaId && kind !== "direct") {
+        await updateConversationInfo(conv.id, { avatarMediaId: avatarUpload.mediaId });
+      }
 
       // Clear avatar state so handleClose won't delete the now-saved media
       avatarUpload.reset();

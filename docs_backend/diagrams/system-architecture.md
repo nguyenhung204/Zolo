@@ -456,9 +456,9 @@ sequenceDiagram
 ```
 
 ### Role-Based Access Control (RBAC)
-- Roles defined in Keycloak: `user`, `admin`, `moderator`
-- `@Roles('admin')` decorator in controllers
-- Gateway enforces role checks before forwarding to services
+- Conversation roles (3-tier): `owner`, `admin`, `member`
+- `@RequireGroupRole(MemberRole.ADMIN)` decorator on group endpoints
+- GroupRoleGuard enforces role hierarchy checks (Redis-backed)
 - Services trust Gateway's userId (no double verification)
 
 ## Deployment Architecture

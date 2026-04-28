@@ -2,6 +2,16 @@ import { apiClient } from "@/lib/api/client";
 import type { MessageType, MediaStatus } from "@/lib/socket/events";
 import { useAuthStore } from "@/stores/authStore";
 
+// ─── System message action types ─────────────────────────────────────────────
+
+export type SystemMessageAction =
+  | "MEMBER_ADDED"
+  | "MEMBER_LEFT"
+  | "MEMBER_REMOVED"
+  | "MEMBER_KICKED"
+  | "ROLE_CHANGED"
+  | "GROUP_INFO_UPDATED";
+
 // ─── Reaction types ───────────────────────────────────────────────────────────
 
 /** Per-emoji reaction detail — mirrors the shape sent by WS `message:reaction_updated`. */
@@ -22,6 +32,14 @@ export interface AttachmentRef {
   status?: string;
   prefer?: "ORIGINAL" | "OPTIMIZED";
   variantsReady?: boolean;
+  filename?: string;
+  thumbMediaId?: string; // per-attachment thumbnail for videos in media groups
+}
+
+export interface LocalAttachmentPreview {
+  previewUrl?: string;       // blob URL (image) or video blob URL
+  thumbPreviewUrl?: string;  // captured first-frame blob URL (videos)
+  mediaType: "image" | "video" | "audio" | "file";
   filename?: string;
 }
 
@@ -88,6 +106,12 @@ export interface Message {
     // call_summary fields
     callId?: string;
     status?: string;
+    // system message fields
+    action?: SystemMessageAction;
+    actorId?: string;
+    targetIds?: string[];
+    newRole?: string;
+    changes?: { name?: string; avatarChanged?: boolean };
   };
   createdAt: string;
   updatedAt: string;
@@ -100,6 +124,7 @@ export interface Message {
   _failed?: boolean;
   _localPreviewUrl?: string;
   _uploadProgress?: number;
+  _localAttachments?: LocalAttachmentPreview[]; // for media group optimistic preview
 }
 
 export interface MessagePage {

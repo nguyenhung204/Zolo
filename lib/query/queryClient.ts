@@ -4,8 +4,8 @@ export function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 60 * 1000,       // 1 minute
-        gcTime: 30 * 60 * 1000,     // 30 minutes — keep conversation + message caches warm
+        staleTime: 2 * 60 * 1000,  // 2 minutes default
+        gcTime: 30 * 60 * 1000,    // 30 minutes — keep conversation + message caches warm
         retry: 1,
         refetchOnWindowFocus: false,
       },

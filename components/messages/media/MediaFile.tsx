@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { FileText, FileType2, FileSpreadsheet, Download, Eye, Loader2 } from "lucide-react";
+import { FileText, FileType2, FileSpreadsheet, Download, Eye, Loader2, Play, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Message, AttachmentRef } from "@/lib/api/messages";
+import type { Message, AttachmentRef, LocalAttachmentPreview } from "@/lib/api/messages";
 import { getMediaUrl } from "@/lib/api/media";
 import { blobDownload, fetchDisplayUrl, formatBytes } from "./shared";
 import { FilePreviewModal, canPreviewFile } from "./FilePreviewModal";
 import { UploadProgressBar } from "./UploadProgress";
+import { ImageLightbox } from "./ImageLightbox";
+import { MediaVideo } from "./MediaVideo";
 import { toast } from "sonner";
 
 function fileExtIcon(filename: string): { icon: React.ReactNode; color: string } {
@@ -196,54 +198,151 @@ export function AttachmentGrid({
   attachments,
   isMine,
   conversationId,
+  localAttachments,
+  uploadProgress,
 }: {
   attachments: AttachmentRef[];
   isMine: boolean;
   conversationId?: string;
+  localAttachments?: LocalAttachmentPreview[];
+  uploadProgress?: number;
 }) {
-  const images = attachments.filter((a) => a.type === "image" || a.type == null);
-  const others = attachments.filter((a) => a.type != null && a.type !== "image");
+  const isUploading = typeof uploadProgress === "number" && uploadProgress < 100;
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [videoAttachment, setVideoAttachment] = useState<AttachmentRef | null>(null);
+
+  // During upload: show local previews
+  if (isUploading && localAttachments && localAttachments.length > 0) {
+    const cols =
+      localAttachments.length === 1
+        ? "grid-cols-1"
+        : localAttachments.length === 2
+        ? "grid-cols-2"
+        : localAttachments.length === 4
+        ? "grid-cols-2"
+        : "grid-cols-3";
+    return (
+      <div className={cn("grid gap-0.5", cols)}>
+        {localAttachments.map((item, idx) => (
+          <div key={idx} className="aspect-square relative bg-black/30">
+            {item.mediaType === "image" && item.previewUrl ? (
+              <img src={item.previewUrl} alt="" className="w-full h-full object-cover" />
+            ) : item.mediaType === "video" && (item.thumbPreviewUrl || item.previewUrl) ? (
+              <>
+                <img
+                  src={item.thumbPreviewUrl ?? item.previewUrl}
+                  alt=""
+                  className="w-full h-full object-cover opacity-70"
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-9 h-9 rounded-full bg-black/50 flex items-center justify-center">
+                    <Play className="w-4 h-4 text-white ml-0.5" />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <Loader2 className="w-5 h-5 text-white/60 animate-spin" />
+              </div>
+            )}
+            {/* Upload progress overlay */}
+            <div className="absolute inset-0 bg-black/30 flex items-end">
+              <div className="w-full h-1 bg-white/20">
+                <div
+                  className="h-full bg-white/70 transition-all duration-300"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Real attachments (after upload / received messages)
+  const mediaItems = attachments.filter(
+    (a) => a.type === "image" || a.type === "video" || a.type == null
+  );
+  const fileItems = attachments.filter(
+    (a) => a.type === "file" || a.type === "audio"
+  );
+
+  const colsClass =
+    mediaItems.length === 1
+      ? "grid-cols-1"
+      : mediaItems.length === 2
+      ? "grid-cols-2"
+      : mediaItems.length === 4
+      ? "grid-cols-2"
+      : "grid-cols-3";
+
   return (
-    <div className="space-y-1">
-      {images.length > 0 && (
-        <div
-          className={cn(
-            "grid gap-1",
-            images.length === 1
-              ? "grid-cols-1"
-              : images.length === 2
-              ? "grid-cols-2"
-              : "grid-cols-3"
-          )}
-        >
-          {images.map((a) => (
-            <AttachmentThumb
-              key={a.mediaId}
-              attachment={a}
-              conversationId={conversationId}
-            />
-          ))}
-        </div>
-      )}
-      {others.map((a) => (
-        <MediaFile
-          key={a.mediaId}
-          mediaId={a.mediaId}
-          filename={a.filename}
-          isMine={isMine}
+    <>
+      <div className="space-y-0.5">
+        {mediaItems.length > 0 && (
+          <div className={cn("grid gap-0.5", colsClass)}>
+            {mediaItems.map((a) =>
+              a.type === "video" ? (
+                <AttachmentVideoThumb
+                  key={a.mediaId}
+                  attachment={a}
+                  conversationId={conversationId}
+                  onPlay={() => setVideoAttachment(a)}
+                />
+              ) : (
+                <AttachmentImageThumb
+                  key={a.mediaId}
+                  attachment={a}
+                  conversationId={conversationId}
+                  onOpen={(src) => setLightboxSrc(src)}
+                />
+              )
+            )}
+          </div>
+        )}
+        {fileItems.map((a) => (
+          <MediaFile
+            key={a.mediaId}
+            mediaId={a.mediaId}
+            filename={a.filename}
+            isMine={isMine}
+            conversationId={conversationId}
+          />
+        ))}
+      </div>
+
+      {/* Image lightbox */}
+      {lightboxSrc && (
+        <ImageLightbox
+          src={lightboxSrc}
+          onClose={() => setLightboxSrc(null)}
           conversationId={conversationId}
         />
-      ))}
-    </div>
+      )}
+
+      {/* Video viewer overlay */}
+      {videoAttachment && (
+        <GridVideoViewer
+          attachment={videoAttachment}
+          conversationId={conversationId}
+          onClose={() => setVideoAttachment(null)}
+        />
+      )}
+    </>
   );
 }
 
-function AttachmentThumb({
+// ─── AttachmentImageThumb ─────────────────────────────────────────────────────
+
+function AttachmentImageThumb({
   attachment,
   conversationId,
+  onOpen,
 }: {
   attachment: AttachmentRef;
   conversationId?: string;
+  onOpen: (src: string) => void;
 }) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -255,16 +354,13 @@ function AttachmentThumb({
     if (!node || thumbUrl) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && !thumbUrl && !isLoadingRef.current) {
+        if (entries[0].isIntersecting && !isLoadingRef.current) {
           isLoadingRef.current = true;
           setIsLoading(true);
           fetchDisplayUrl(attachment.mediaId, conversationId)
-            .then((url) => setThumbUrl(url))
+            .then((url) => { if (url) setThumbUrl(url); })
             .catch(() => {})
-            .finally(() => {
-              isLoadingRef.current = false;
-              setIsLoading(false);
-            });
+            .finally(() => { isLoadingRef.current = false; setIsLoading(false); });
         }
       },
       { rootMargin: "50px" }
@@ -275,7 +371,13 @@ function AttachmentThumb({
 
   if (thumbUrl) {
     return (
-      <div className="rounded-lg overflow-hidden aspect-square bg-border/20">
+      <div
+        ref={divRef}
+        className="aspect-square overflow-hidden bg-border/20 cursor-zoom-in"
+        role="button"
+        onClick={() => onOpen(thumbUrl)}
+        aria-label="View image"
+      >
         <img src={thumbUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
       </div>
     );
@@ -283,9 +385,108 @@ function AttachmentThumb({
   return (
     <div
       ref={divRef}
-      className="rounded-lg aspect-square bg-border/20 flex items-center justify-center"
+      className="aspect-square bg-border/20 flex items-center justify-center"
     >
-      <span className="text-[10px] text-muted">{isLoading ? "…" : ""}</span>
+      {isLoading && <Loader2 className="w-4 h-4 animate-spin text-muted/60" />}
+    </div>
+  );
+}
+
+// ─── AttachmentVideoThumb ─────────────────────────────────────────────────────
+
+function AttachmentVideoThumb({
+  attachment,
+  conversationId,
+  onPlay,
+}: {
+  attachment: AttachmentRef;
+  conversationId?: string;
+  onPlay: () => void;
+}) {
+  const [posterUrl, setPosterUrl] = useState<string | null>(null);
+  const divRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!attachment.thumbMediaId) return;
+    getMediaUrl(attachment.thumbMediaId, "ORIGINAL", conversationId)
+      .then((entity) => {
+        const url = (entity as unknown as { url?: string }).url;
+        if (url) setPosterUrl(url);
+      })
+      .catch(() => {});
+  }, [attachment.thumbMediaId, conversationId]);
+
+  return (
+    <div
+      ref={divRef}
+      className="aspect-square relative bg-black overflow-hidden cursor-pointer"
+      role="button"
+      onClick={onPlay}
+      aria-label="Play video"
+    >
+      {posterUrl ? (
+        <img src={posterUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+      ) : (
+        <div className="w-full h-full bg-black/60" />
+      )}
+      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+        <div className="w-10 h-10 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center ring-1 ring-white/20">
+          <Play className="w-5 h-5 text-white ml-0.5" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── GridVideoViewer ──────────────────────────────────────────────────────────
+
+function GridVideoViewer({
+  attachment,
+  conversationId,
+  onClose,
+}: {
+  attachment: AttachmentRef;
+  conversationId?: string;
+  onClose: () => void;
+}) {
+  // Build a synthetic Message so we can reuse MediaVideo
+  const syntheticMsg: Message = {
+    messageId: attachment.mediaId,
+    conversationId: conversationId ?? "",
+    senderId: "",
+    content: "",
+    type: "video",
+    offset: -1,
+    mediaId: attachment.mediaId,
+    metadata: {
+      filename: attachment.filename,
+      thumbMediaId: attachment.thumbMediaId,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Close on backdrop click
+  const handleBackdrop = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] bg-black/85 flex items-center justify-center"
+      onClick={handleBackdrop}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute top-4 right-4 w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center text-white z-10 cursor-pointer"
+        aria-label="Close"
+      >
+        <X className="w-4 h-4" />
+      </button>
+      <div className="max-w-[90vw] max-h-[90vh] w-full" onClick={(e) => e.stopPropagation()}>
+        <MediaVideo message={syntheticMsg} isMine={false} />
+      </div>
     </div>
   );
 }

@@ -85,7 +85,8 @@ Content-Type: application/json
 
 ```json
 {
-  "username": "Nguyễn Hùng",
+  "firstName": "Nguyễn",
+  "lastName": "Hùng",
   "phone": "+84901234567",
   "cccdNumber": "012345678901",
   "avatarMediaId": "media-uuid"
@@ -94,7 +95,9 @@ Content-Type: application/json
 
 | Field | Kiểu | Giới hạn | Mô tả |
 |-------|------|----------|-------|
-| `username` | string | max 50 | Tên hiển thị, cho phép dấu và khoảng trắng |
+| `firstName` | string | max 20 | |
+| `lastName` | string | max 20 | |
+| `username` | string | max 50 | Tên hiển thị, cho phép dấu và khoảng trắng. Nếu đổi `firstName`/`lastName`, hệ thống sẽ tự sync lại `username` theo tên mới |
 | `phone` | string | max 20 | |
 | `cccdNumber` | string | 9 hoặc 12 chữ số | Số CCCD |
 | `avatarMediaId` | string (UUID) | — | ID media đã upload qua Media Service. Ảnh cũ sẽ bị xoá tự động. |
@@ -102,9 +105,10 @@ Content-Type: application/json
 **Response 200**: cùng cấu trúc với `GET /users/me`, có `avatarUrl` được resolve theo `avatarVariant`.
 
 **Lưu ý**:
-- `firstName`, `lastName`, `email` **không thể thay đổi** qua API này.
+- `firstName`, `lastName` có thể thay đổi qua API này.
+- `email` **không thể thay đổi** qua API này.
 - `phone` và `cccdNumber` chỉ được thiết lập khi còn trống. Nếu đã có giá trị thì không thể đổi sang giá trị khác.
-- `username` là tên hiển thị, **được phép thay đổi** và có thể trùng với user khác.
+- `username` là tên hiển thị, **được phép thay đổi** và có thể trùng với user khác. Khi `firstName` hoặc `lastName` đổi, `username` sẽ được cập nhật lại theo tên mới.
 - Khi cập nhật `avatarMediaId`, ảnh cũ sẽ bị soft-delete trên Media Service.
 
 ---

@@ -21,6 +21,7 @@ This service does not perform business validation or data persistence. Instead, 
 - Providing real-time mark-as-read functionality via Message Store Service
 - Validating conversation membership before allowing typing broadcasts or message receipt
 - Emitting connection acknowledgment and error events to clients
+- **Subscribing to Redis Pub/Sub `realtime:call_events` channel for sub-50 ms call signaling fan-out**
 
 ### What This Service IS NOT Responsible For
 
@@ -44,8 +45,10 @@ This service does not perform business validation or data persistence. Instead, 
    - Strategy: 2-tier — personal room `user:{userId}` for lightweight notification, conversation room `conversation:{id}` for full payload
    - Batching: 80ms window to reduce spam
    - Caching: Members list cached in Redis (TTL: 10 min)
-   - **Forward messages**: sender is NOT excluded from `message:notify` for forwarded messages so their conversation list updates immediately
-   - Events emitted: `message:saved` (to sender), `message:notify` (to members), `message:new` (to conversation room)
+   - **Sender exclusion**: sender is ALWAYS excluded from `message:notify` (both regular and forwarded messages)
+   - `message:saved` is emitted only to the sender's own sockets via `notifySelf()` so the shared `user:{id}` room does not leak delivery confirmations to friends
+   - `message:notify` now carries preview metadata (`senderName`, `content`, `type`, optional `conversationName`) for unread badges and list previews
+   - Events emitted: `message:saved` (sender-only sockets), `message:notify` (to members except sender), `message:new` (to conversation room)
 
 2. **`chat.event.message_updated`** (MessageUpdatedConsumer)
    - Purpose: Broadcast message mutation events to all conversation participants
@@ -92,6 +95,35 @@ This service does not perform business validation or data persistence. Instead, 
    - Purpose: Notify sender when their message fails DLQ after all retries
    - Events emitted: `message:failed`
 
+> **Note:** `call.event.ringing`, `call.event.accepted`, `call.event.declined`, and `call.event.ended` are no longer consumed from Kafka by this service. `CallEventConsumer` has been removed. Call signaling is now delivered via the **Redis Pub/Sub fast-track** described below.
+
+### Redis Pub/Sub — Call Signaling Fast-Track
+
+**`CallSignalingSubscriber`** (`apps/realtime-gateway/src/call/call-signaling.subscriber.ts`)
+
+- Channel: `realtime:call_events` (constant `REDIS_KEYS.CHANNELS.CALL_SIGNALING`)
+- Published by: `call-service` (`CallSignalingPublisher`) immediately after each DB transaction commits
+- Latency: < 50 ms (vs 1–3 s via Kafka polling outbox)
+- Uses a **dedicated ioredis subscriber connection** (exclusive to PUB/SUB; not shared with the cache client)
+- Server reference injected by `CallGateway.afterInit()` to avoid circular dependency
+
+| `eventType` in message | WS event emitted | Target room |
+|---|---|---|
+| `call.event.ringing` | `call:ringing` | `user:{calleeId}` (per callee) |
+| `call.event.accepted` | `call:accepted` | `call:{callId}` |
+| `call.event.declined` | `call:declined` | `call:{callId}` |
+| `call.event.ended` | `call:ended` | `call:{callId}` |
+
+Message envelope:
+```json
+{
+  "eventType": "call.event.ringing",
+  "callId": "<uuid>",
+  "conversationId": "<uuid>",
+  "payload": { ... }
+}
+```
+
 ### WebSocket Events
 
 **Incoming Events from Clients:**
@@ -104,8 +136,8 @@ This service does not perform business validation or data persistence. Instead, 
 **Outgoing Events to Clients:**
 
 - `message:new` - New message (full payload to conversation room); includes `attachments[]` for media messages and `forwardedFrom` for forwarded messages
-- `message:notify` - Lightweight notification (to personal user rooms)
-- `message:saved` - Sent to message sender only (confirmation with `messageId`, `offset`)
+- `message:notify` - Lightweight notification with preview metadata (to personal user rooms)
+- `message:saved` - Sent to the sender's own sockets only (confirmation with `messageId`, `offset`)
 - `message:media_ready` - Media processing completed (image/video/file only; audio is not server-processed); FE should update media display (optimized image, poster); payload: `{ messageId, conversationId, attachment: { mediaId, kind, status, meta?, thumbReady?, variantsReady?, error? } }`
 - `message:revoked` - Message tombstoned (all participants); payload: `{ messageId, conversationId, revokedAt, tombstoneTextKey }`
 - `message:deleted` - Message soft-deleted for all; payload: `{ messageId, conversationId, deletedAt }`
@@ -122,6 +154,10 @@ This service does not perform business validation or data persistence. Instead, 
 - `account:status-changed` - Force-disconnect signal: emitted to `user:{userId}` room when account is deactivated or deleted; payload: `{ reason: 'deactivated' | 'deleted' }`; sockets are force-closed immediately after
 - `conversation:updated` - Conversation info changed (name/description/avatar); payload: `{ conversationId, changes, updatedBy?, timestamp? }`; client should refetch `GET /conversations/:id` to get updated `avatarUrl`
 - `user:profile-updated` - User profile changed (name or avatar); payload: `{ userId, changedFields, snapshot: { displayName, avatarMediaId }, timestamp }`; client should invalidate cached avatar URL and refetch presigned URL via `GET /media/avatar/:mediaId` when `changedFields` includes `avatarMediaId`
+- `call:ringing` - Incoming call alert for callee(s); emitted to `user:{calleeId}` room; payload: `{ callId, conversationId, callerId, startedAt }`
+- `call:accepted` - Callee joined the call; emitted to `call:{callId}` room; payload: `{ callId, conversationId, calleeId, acceptedAt }`
+- `call:declined` - Call was declined/missed; emitted to `call:{callId}` room; payload: `{ callId, conversationId, declinedBy, finalStatus, declinedAt }`
+- `call:ended` - Call ended; emitted to `call:{callId}` room; payload: `{ callId, conversationId, endedBy, endReason, durationMs, endedAt }`
 - `error` - Error notification
 - `authenticated` - Authentication success confirmation
 
@@ -178,8 +214,8 @@ None. This service does not publish Kafka events; it only consumes them.
 - Event Type: MESSAGE_SAVED
 - Consumer Group: `realtime-gateway`
 - Purpose: Notify conversation members that a new message has been persisted
-- Payload: messageId, conversationId, senderId, offset, content, type, attachments[], forwardedFrom, timestamp
-- Processing: 80ms batch window; broadcast to personal rooms (lightweight `message:notify`) and conversation room (full `message:new` with attachments); members list fetched from Redis cache (TTL: 10 min)
+- Payload: messageId, conversationId, conversationType, senderId, senderName, conversationName?, latestOffset, content?, type, attachments[], forwardedFrom, timestamp
+- Processing: 80ms batch window; broadcast to personal rooms (lightweight `message:notify` with preview metadata) and conversation room (full `message:new` with attachments); members list fetched from Redis cache (TTL: 10 min)
 
 **Topic: `chat.event.message_updated`**
 
@@ -270,7 +306,7 @@ None. This service does not publish Kafka events; it only consumes them.
 
 None. This service does not persist data to a database.
 
-### Redis Cache Usage
+### Redis Cache and Pub/Sub Usage
 
 **Connection Management:**
 
@@ -282,6 +318,12 @@ None. This service does not persist data to a database.
 
 - Presence data is managed by Presence Service; this service only triggers presence updates
 - No local caching of presence state
+
+**Call Signaling Pub/Sub:**
+
+- Channel: `realtime:call_events` (subscribed via `CallSignalingSubscriber`)
+- Dedicated ioredis subscriber connection per pod (not shared with cache client)
+- Provides < 50 ms call event fan-out, replacing the previous Kafka-based `CallEventConsumer`
 
 ### In-Memory State — ConnectionManager
 
@@ -495,7 +537,7 @@ Redis provides fast, centralized connection state storage, enabling multi-instan
 
 **Why No COMMUNITY Typing Indicators:**
 
-COMMUNITY conversations are broadcast-only channels where only OWNER/ADMIN/MODERATOR can post. Typing indicators would be meaningless for members who cannot post.
+COMMUNITY conversations are broadcast-only channels where only OWNER/ADMIN can post. Typing indicators would be meaningless for members who cannot post.
 
 **Why Separate Consumers for Different Events:**
 

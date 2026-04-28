@@ -139,7 +139,7 @@ This library solves the problem of scattered business logic and inconsistent imp
 **ConversationType Enum**
 - DIRECT - One-to-one conversation (exactly 2 members)
 - GROUP - Group chat (3+ members, role-based permissions)
-- COMMUNITY - Broadcast channel (only OWNER/ADMIN/MODERATOR can post; MEMBER/GUEST can react only)
+- COMMUNITY - Broadcast channel (only OWNER/ADMIN can post; MEMBER can react only)
 
 **FriendshipStatus Enum**
 - FRIEND - Active friendship

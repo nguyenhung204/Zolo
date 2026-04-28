@@ -131,14 +131,20 @@ export interface ServerEvents {
   "user:online": (data: { userId: string }) => void;
   "user:offline": (data: { userId: string; lastSeen: string | null }) => void;
 
-  "member:added": (data: {
+  "conversation:member-added": (data: {
     conversationId: string;
-    addedUserIds: string[];
+    /** Present when the server includes the full list of added users */
+    addedUserIds?: string[];
+    addedBy?: string;
+    conversationType?: string;
+    memberCount?: number;
     timestamp: string;
   }) => void;
-  "member:removed": (data: {
+  "conversation:member-removed": (data: {
     conversationId: string;
-    removedUserIds: string[];
+    removedUserIds?: string[];
+    removedBy?: string;
+    memberCount?: number;
     timestamp: string;
   }) => void;
 
@@ -349,12 +355,15 @@ export interface CallServerEvents {
 
   /**
    * Broadcast to `call:{callId}` room when the callee declines or call times out.
+   * - finalStatus "RINGING" → group call, one callee declined, others still pending
+   * - finalStatus "REJECTED" → all callees declined (direct or last group callee)
+   * - finalStatus "MISSED"   → ringing timeout with no answer
    */
   "call:declined": (data: {
     callId: string;
     conversationId: string;
     declinedBy: string;
-    finalStatus: "REJECTED" | "MISSED";
+    finalStatus: "REJECTED" | "RINGING" | "MISSED";
     declinedAt: string;
   }) => void;
 

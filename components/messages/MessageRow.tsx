@@ -22,6 +22,7 @@ import { VoiceMessage } from "./media/VoiceMessage";
 import { MediaFile, AttachmentGrid } from "./media/MediaFile";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { CallSummaryBubble } from "./CallSummaryBubble";
+import { SystemMessageChip } from "./SystemMessageChip";
 
 interface OtherMember {
   userId: string;
@@ -124,13 +125,7 @@ export function MessageRow({
   }, [menuOpen]);
 
   if (isSystem) {
-    return (
-      <div className="flex justify-center py-1.5 px-4">
-        <span className="text-[11px] text-muted bg-border/40 rounded-full px-3 py-0.5 select-none">
-          {message.content}
-        </span>
-      </div>
-    );
+    return <SystemMessageChip message={message} />;
   }
 
   if (isCallSummary) {
@@ -160,6 +155,7 @@ export function MessageRow({
 
   const hasCaption = message.content.trim().length > 0;
   const isPureMedia = (message.type === "image" || message.type === "video") && !replyMsg && !hasCaption;
+  const isMediaGroup = message.type === "media" && !isRevoked && !isDeleted;
 
   return (
     <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
@@ -176,7 +172,59 @@ export function MessageRow({
 
         <div className={cn("flex items-center gap-1", isMine ? "flex-row-reverse" : "flex-row")}>
           {/* ── Message bubble ── */}
-          {isSticker ? (
+          {isMediaGroup ? (
+            /* ── Media album: no outer bubble border ── */
+            <div className={cn(bubbleShape, "overflow-hidden max-w-[360px] w-full flex flex-col")}>
+              {/* Reply preview strip (with bg so it's readable) */}
+              {replyMsg && (() => {
+                const replyBg = isMine ? "bg-cta/90 px-3 pt-2 pb-1" : "bg-surface px-3 pt-2 pb-1";
+                if (replyMsg.isRevoked) {
+                  return (
+                    <div className={replyBg}>
+                      <div className={cn("flex items-start gap-2 rounded-xl px-2.5 py-1.5 text-xs border-l-[3px]",
+                        isMine ? "bg-white/15 border-white/50" : "bg-border/30 border-cta")}>
+                        <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
+                        <p className={cn("truncate text-[11px] leading-tight", isMine ? "text-white/60" : "text-muted")}>Message revoked</p>
+                      </div>
+                    </div>
+                  );
+                }
+                const { icon, label } = replyLabel(replyMsg.type, replyMsg.content, replyMsg.metadata);
+                return (
+                  <div className={replyBg}>
+                    <div className={cn("flex items-start gap-2 rounded-xl px-2.5 py-1.5 text-xs border-l-[3px] cursor-pointer",
+                      isMine ? "bg-white/15 border-white/50 hover:bg-white/20" : "bg-border/30 border-cta hover:bg-border/50")}>
+                      <CornerUpLeft className={cn("w-3 h-3 shrink-0 mt-0.5", isMine ? "text-white/70" : "text-cta")} />
+                      <p className={cn("truncate text-[11px] leading-tight flex items-center gap-1", isMine ? "text-white/60" : "text-muted")}>
+                        {icon}{label}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* Borderless attachment grid */}
+              <AttachmentGrid
+                attachments={message.attachments ?? []}
+                isMine={isMine}
+                conversationId={message.conversationId}
+                localAttachments={message._localAttachments}
+                uploadProgress={message._uploadProgress}
+              />
+              {/* Caption section */}
+              {hasCaption && (
+                <div className={cn("px-3.5 py-2 text-sm leading-relaxed break-words",
+                  isMine ? "bg-cta text-white" : "bg-surface text-text")}>
+                  <MarkdownMessage content={message.content} isMine={isMine} />
+                </div>
+              )}
+              {isEdited && (
+                <div className={cn("px-3.5 pb-1 text-[10px] italic select-none",
+                  isMine ? "bg-cta text-white/50" : "bg-surface text-muted")}>
+                  Edited
+                </div>
+              )}
+            </div>
+          ) : isSticker ? (
             <div className="p-0.5">
               <AnimatedSticker url={message.metadata?.url ?? ""} size={130} alt="sticker" />
             </div>

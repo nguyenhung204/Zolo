@@ -31,6 +31,7 @@ import {
   useRejectFriendRequest,
   useUnfriend,
   useBlockUser,
+  useUnblockUser,
 } from "@/hooks/useFriends";
 import { useConversations } from "@/hooks/useConversations";
 import { useUserById } from "@/hooks/useUser";
@@ -47,7 +48,8 @@ type ActionKey =
   | "accept"
   | "reject"
   | "unfriend"
-  | "block";
+  | "block"
+  | "unblock";
 
 function formatSeenAgo(iso: string): string {
   const time = Date.parse(iso);
@@ -535,6 +537,7 @@ function SearchResultRow({
   const { mutateAsync: accept } = useAcceptFriendRequest();
   const { mutateAsync: rejectOrCancel } = useRejectFriendRequest();
   const { mutateAsync: unfriend } = useUnfriend();
+  const { mutateAsync: unblockUser } = useUnblockUser();
   const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
 
   async function run(action: ActionKey, fn: () => Promise<unknown>) {
@@ -644,9 +647,20 @@ function SearchResultRow({
       )}
 
       {!isMe && status === "BLOCKED" && (
-        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-medium shrink-0">
-          Blocked
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error/10 text-error text-xs font-medium">
+            <Ban className="w-3.5 h-3.5" />
+            Blocked
+          </span>
+          <button
+            onClick={() => run("unblock", () => unblockUser(user.id))}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-border/60 text-secondary text-xs font-semibold hover:bg-border transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "unblock" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            Unblock
+          </button>
+        </div>
       )}
     </li>
   );
@@ -661,17 +675,56 @@ function UserProfileModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const router = useRouter();
+  const myId = useAuthStore((s) => s.user?.id);
   const { data: user, isLoading } = useUserById(userId ?? undefined);
-  const status = usePresenceStore((s) => (userId ? (s.presenceMap[userId] ?? "offline") : "offline"));
+  const presenceStatus = usePresenceStore((s) => (userId ? (s.presenceMap[userId] ?? "offline") : "offline"));
   const lastSeen = usePresenceStore((s) => (userId ? s.lastSeenMap[userId] : undefined));
+  const { data: conversations = [] } = useConversations();
+
+  const isMe = !!userId && userId === myId;
+
+  const { data: friendshipData, isFetching: statusLoading } = useFriendshipStatus(
+    isMe || !userId ? undefined : userId
+  );
+  const friendStatus: FriendshipStatus = friendshipData?.status ?? "NONE";
+
+  const { mutateAsync: send } = useSendFriendRequest();
+  const { mutateAsync: accept } = useAcceptFriendRequest();
+  const { mutateAsync: rejectOrCancel } = useRejectFriendRequest();
+  const { mutateAsync: unfriend } = useUnfriend();
+  const { mutateAsync: blockUser } = useBlockUser();
+  const { mutateAsync: unblockUser } = useUnblockUser();
+
+  const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
+  const actionDisabled = pendingAction !== null || statusLoading;
+
+  const dmConversation = useMemo(
+    () => userId ? conversations.find((c) => c.kind === "direct" && c.otherUser?.id === userId) : undefined,
+    [conversations, userId]
+  );
+
+  async function run(action: ActionKey, fn: () => Promise<unknown>) {
+    setPendingAction(action);
+    try {
+      await fn();
+    } finally {
+      setPendingAction(null);
+    }
+  }
 
   if (!open) return null;
+
+  const displayName = user
+    ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username
+    : "";
 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="w-full max-w-sm bg-surface rounded-2xl shadow-xl border border-border">
+          {/* Header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
             <h2 className="text-sm font-bold text-primary">User Profile</h2>
             <button
@@ -683,33 +736,42 @@ function UserProfileModal({
             </button>
           </div>
 
-          <div className="px-5 py-5">
+          <div className="px-5 py-5 space-y-4">
             {isLoading && (
               <div className="flex items-center gap-2 text-sm text-muted">
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Loading profile...
+                Loading profile…
               </div>
             )}
 
             {!isLoading && user && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
+              <>
+                {/* Avatar + name */}
+                <div className="flex items-center gap-4">
                   <UserAvatar
                     userId={user.id}
-                    name={[user.firstName, user.lastName].filter(Boolean).join(" ") || user.username}
+                    name={displayName}
                     avatarUrl={user.avatarUrl}
                     size="lg"
-                    showPresence
+                    showPresence={!isMe}
                   />
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-text truncate">
-                      {[user.firstName, user.lastName].filter(Boolean).join(" ") || user.username}
-                    </p>
+                    <p className="text-base font-bold text-text truncate">{displayName}</p>
                     <p className="text-xs text-muted truncate">@{user.username}</p>
+                    {!isMe && (
+                      <p className={cn("text-xs font-medium mt-0.5", presenceStatus === "online" ? "text-online" : "text-muted")}>
+                        {presenceStatus === "online"
+                          ? "Online"
+                          : lastSeen
+                            ? `Offline · seen ${formatSeenAgo(lastSeen)}`
+                            : "Offline"}
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                <div className="space-y-2 text-xs">
+                {/* Info */}
+                <div className="space-y-2 text-xs bg-bg rounded-xl p-3">
                   <div className="flex justify-between gap-3">
                     <span className="text-muted">Email</span>
                     <span className="text-secondary truncate">{user.email}</span>
@@ -720,18 +782,110 @@ function UserProfileModal({
                       <span className="text-secondary">{user.phone}</span>
                     </div>
                   )}
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted">Status</span>
-                    <span className={cn("font-medium", status === "online" ? "text-online" : "text-muted")}>
-                      {status === "online"
-                        ? "Online"
-                        : lastSeen
-                          ? `Offline · seen ${formatSeenAgo(lastSeen)}`
-                          : "Offline"}
-                    </span>
-                  </div>
                 </div>
-              </div>
+
+                {/* Actions */}
+                {!isMe && (
+                  <div className="flex flex-col gap-2">
+                    {/* Message button — always available if DM exists or status is friend */}
+                    {(dmConversation || friendStatus === "FRIEND") && (
+                      <button
+                        onClick={() => {
+                          if (dmConversation) {
+                            router.push(`/conversations/${encodeId(dmConversation.id)}`);
+                            onClose();
+                          }
+                        }}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-cta text-white text-sm font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        Send Message
+                      </button>
+                    )}
+
+                    {/* Friendship status actions */}
+                    {friendStatus === "NONE" && (
+                      <button
+                        onClick={() => run("send", () => send(user.id))}
+                        disabled={actionDisabled}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-cta/10 text-cta text-sm font-semibold hover:bg-cta/20 transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {pendingAction === "send" ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                        Add Friend
+                      </button>
+                    )}
+
+                    {friendStatus === "PENDING_OUT" && (
+                      <div className="flex items-center gap-2">
+                        <span className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-border/50 text-muted text-sm font-medium">
+                          <Clock className="w-4 h-4" />
+                          Request Sent
+                        </span>
+                        <button
+                          onClick={() => run("reject", () => rejectOrCancel(user.id))}
+                          disabled={actionDisabled}
+                          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-error/10 text-error text-sm font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60 shrink-0"
+                        >
+                          {pendingAction === "reject" ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+
+                    {friendStatus === "PENDING_IN" && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => run("accept", () => accept(user.id))}
+                          disabled={actionDisabled}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-success/10 text-success text-sm font-semibold hover:bg-success/20 transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          {pendingAction === "accept" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => run("reject", () => rejectOrCancel(user.id))}
+                          disabled={actionDisabled}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-error/10 text-error text-sm font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          {pendingAction === "reject" ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+                          Decline
+                        </button>
+                      </div>
+                    )}
+
+                    {friendStatus === "FRIEND" && (
+                      <button
+                        onClick={() => run("unfriend", () => unfriend(user.id))}
+                        disabled={actionDisabled}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-error/10 text-error text-sm font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {pendingAction === "unfriend" ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
+                        Unfriend
+                      </button>
+                    )}
+
+                    {friendStatus === "BLOCKED" ? (
+                      <button
+                        onClick={() => run("unblock", () => unblockUser(user.id))}
+                        disabled={actionDisabled}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-error/10 text-error text-sm font-semibold hover:bg-error/20 transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {pendingAction === "unblock" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Ban className="w-4 h-4" />}
+                        Unblock User
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => run("block", () => blockUser(user.id))}
+                        disabled={actionDisabled}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl text-error/70 text-xs hover:bg-error/5 transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {pendingAction === "block" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Ban className="w-3.5 h-3.5" />}
+                        Block User
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

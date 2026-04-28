@@ -87,8 +87,10 @@ Source: `apps/notification-service/src/consumers/message-saved.consumer.ts`
   - `high` for mentioned users
   - `normal` otherwise
 - Push payload:
-  - title: `New message`
-  - body: `You have a new message`
+  - title: sender display name from the event (`payload.senderName`, fallback `Someone`)
+  - body: type-aware copy derived from the event:
+    - media messages: `${senderName} sent you a <image|video|audio|file>`
+    - text messages: short content preview when available, otherwise `You have a new message`
   - data: `{ conversationId, messageId, type: 'message' }`
 
 ### FriendshipConsumer

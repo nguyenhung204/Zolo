@@ -62,7 +62,7 @@ startCall
 - `startedAt`, `endedAt`
 - `durationMs` — 0 for REJECTED/MISSED, elapsed ms for ENDED
 - `endedBy` — userId or `'system'` for cleanup-expired calls
-- `endReason` — `'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'membership_revoked'`
+- `endReason` — `'user_ended' | 'declined' | 'caller_cancelled' | 'ringing_timeout' | 'ghost_call_cleanup' | 'stale_call_cleanup' | 'membership_revoked'`
 - `participantCount`
 - `generatedAt`, `updatedAt`
 
@@ -78,9 +78,7 @@ startCall
 |---|---|---|
 | `OWNER` | ✓ | ✓ |
 | `ADMIN` | ✓ | ✓ |
-| `MODERATOR` | ✓ | ✓ |
 | `MEMBER` | ✓ | ✓ |
-| `GUEST` | ✗ | ✓ |
 
 ### Membership cache keys
 
@@ -103,8 +101,9 @@ startCall
    - Creates `calls` row with status `RINGING`
    - Creates `call_participants` row for CALLER (with `joinedAt = now`)
    - Creates `call_participants` row(s) for CALLEE(s) (with `joinedAt = null`)
-   - Writes `call.event.ringing` to outbox
-5. Returns `CallDto`
+   - ~~Writes `call.event.ringing` to outbox~~ *(removed — see fast-track below)*
+5. **Post-transaction fast-track:** publishes `call.event.ringing` to Redis `realtime:call_events` channel
+6. Returns `CallDto`
 
 The caller receives the call DTO. To connect to LiveKit they call `GET /calls/:callId/token` once the callee accepts (call status = ACTIVE).
 
@@ -118,11 +117,12 @@ The caller receives the call DTO. To connect to LiveKit they call `GET /calls/:c
 4. Within a single DB transaction:
    - Transitions call → `ACTIVE`
    - Sets `joinedAt = now` for the callee participant row
-   - Writes `call.event.accepted` to outbox
-5. **After** the transaction commits, issues a LiveKit JWT for the callee
-6. Returns `CallAcceptResponseDto` — `{ call, token, roomName, livekitUrl }`
+   - ~~Writes `call.event.accepted` to outbox~~ *(removed — see fast-track below)*
+5. **Post-transaction fast-track:** publishes `call.event.accepted` to Redis `realtime:call_events` channel
+6. **After** all of the above, issues a LiveKit JWT for the callee
+7. Returns `CallAcceptResponseDto` — `{ call, token, roomName, livekitUrl }`
 
-The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room. The caller then polls or reacts to the WS event and calls `GET /calls/:callId/token` to get their own token.
+The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room via the Redis subscriber. The caller then reacts to the WS event and calls `GET /calls/:callId/token` to get their own token.
 
 ### Declining a call
 
@@ -130,7 +130,8 @@ The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room. The
 
 1. Lock on callId
 2. Validates call is `RINGING`
-3. Atomically: transitions → `REJECTED`, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.declined`
+3. Atomically: transitions → `REJECTED`, marks all participants left, writes `CallSummaryEntity` *(outbox write **removed**)*
+4. **Post-transaction fast-track:** publishes `call.event.declined` to Redis `realtime:call_events` channel
 
 ### Ending a call
 
@@ -141,8 +142,9 @@ The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room. The
 3. Determines final status:
    - Caller hangs up while `RINGING` → `MISSED`
    - Otherwise → `ENDED`
-4. Atomically: transitions status, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.ended`
-5. Fire-and-forget `liveKit.closeRoom(callId).catch(log)` — LiveKit is best-effort
+4. Atomically: transitions status, marks all participants left, writes `CallSummaryEntity`, **writes `call.event.ended` to Outbox** (required for Kafka delivery to chat-service for Call Summary generation)
+5. **Post-transaction fast-track:** also publishes `call.event.ended` to Redis `realtime:call_events` channel
+6. Fire-and-forget `liveKit.closeRoom(callId).catch(log)` — LiveKit is best-effort
 
 ### Getting a LiveKit token
 
@@ -167,7 +169,7 @@ If the callee is busy, `startCall` returns `409` with `CALL_CALLEE_BUSY`. If the
 
 ### Cleanup sweeps
 
-`CallCleanupService` runs on a configurable interval (`CALL_CLEANUP_INTERVAL_MS`, default 60 s). Distributed leader election via `tryRunCleanupLeader` — only one service replica runs the sweep per interval.
+`CallCleanupService` runs on a configurable interval (`CALL_CLEANUP_INTERVAL_MS`, default 60 s). Distributed leader election via `tryRunCleanupLeader` — only one service replica runs the sweep per interval. It also runs one immediate cleanup pass roughly 5 seconds after startup to sweep stale rows left behind by a restart.
 
 #### RINGING timeout sweep
 
@@ -175,15 +177,19 @@ Finds all RINGING calls older than `CALL_RINGING_TIMEOUT_SECONDS` (default 60 s)
 
 1. Acquires call lock (skips if locked — active transaction in progress)
 2. Re-fetches fresh state inside lock
-3. Atomically: transitions → `MISSED`, marks all participants left, writes `CallSummaryEntity`, enqueues `call.event.ended` with `endReason: 'ringing_timeout'`
+3. Atomically: transitions → `MISSED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path for chat-service)
+4. **Post-transaction fast-track:** publishes `call.event.ended` to Redis `realtime:call_events` channel
 
 #### Ghost ACTIVE call sweep
 
-Finds all ACTIVE calls where every participant has `leftAt != null`. For each:
+Finds all ACTIVE calls where every participant has `leftAt != null`, or where the call age exceeds `CALL_MAX_ACTIVE_DURATION_SECONDS` (default 4 h). For each:
 
 1. Acquires call lock, re-checks fresh state
-2. Atomically: transitions → `ENDED`, writes `CallSummaryEntity`, enqueues `call.event.ended` with `endReason: 'ghost_call_cleanup'`
-3. Fire-and-forget `closeRoom`
+2. Atomically: transitions → `ENDED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path)
+3. **Post-transaction fast-track:** publishes `call.event.ended` to Redis `realtime:call_events` channel
+4. Fire-and-forget `closeRoom`
+
+The summary `endReason` is `ghost_call_cleanup` when the call has no live participants, and `stale_call_cleanup` when cleanup terminates an over-age session after a restart or leaked heartbeat.
 
 ### Health
 
@@ -220,18 +226,58 @@ Finds all ACTIVE calls where every participant has `leftAt != null`. For each:
 
 ---
 
+## Redis Pub/Sub Fast-Track Signaling
+
+Call signaling events bypass the Transactional Outbox → Kafka pipeline for sub-50 ms UI delivery. Immediately after each DB transaction commits, `CallSignalingPublisher` publishes a JSON envelope to the Redis channel `realtime:call_events`.
+
+```
+call-service  ──PUBLISH──►  Redis realtime:call_events  ──SUBSCRIBE──►  realtime-gateway
+   (post-TX)                                                              (CallSignalingSubscriber)
+                                                                                    │
+                                                                            Socket.IO emission
+```
+
+### Envelope format
+
+```json
+{
+  "eventType": "call.event.ringing | call.event.accepted | call.event.declined | call.event.ended",
+  "callId": "<uuid>",
+  "conversationId": "<uuid>",
+  "payload": { ... }
+}
+```
+
+### Event routing table
+
+| eventType | Publish source | WS emission | Target room |
+|---|---|---|---|
+| `call.event.ringing` | `startCall` post-TX | `call:ringing` | `user:{calleeId}` (for each callee) |
+| `call.event.accepted` | `acceptCall` post-TX | `call:accepted` | `call:{callId}` |
+| `call.event.declined` | `declineCall` post-TX | `call:declined` | `call:{callId}` |
+| `call.event.ended` | `endCall` / cleanup post-TX | `call:ended` | `call:{callId}` |
+
+### Dual-path for `call.event.ended`
+
+`call.event.ended` is the only event that travels **both** paths:
+- **Kafka Outbox** (inside the DB transaction): guarantees delivery to `chat-service` to generate the "Call Summary" chat message.
+- **Redis Pub/Sub** (post-transaction): provides sub-50 ms UI teardown for call participants.
+
+Ephemeral events (`ringing`, `accepted`, `declined`) exist **only in Redis** — no Outbox write.
+
+---
+
 ## Kafka and Outbox
 
 Call Service writes events through `OutboxRepository` inside the same DB transaction as each domain mutation. `aggregateType: 'call'`, `aggregateId: callId`.
 
 ### Topics produced
 
-| Topic | Trigger | Payload key fields |
-|---|---|---|
-| `call.event.ringing` | `startCall` | `callId, conversationId, callerId, calleeIds[], startedAt` |
-| `call.event.accepted` | `acceptCall` | `callId, conversationId, calleeId, acceptedAt` |
-| `call.event.declined` | `declineCall` | `callId, conversationId, declinedBy, finalStatus, declinedAt` |
-| `call.event.ended` | `endCall`, cleanup | `callId, conversationId, endedBy, endReason, durationMs, endedAt` |
+| Topic | Trigger | Payload key fields | Notes |
+|---|---|---|---|
+| `call.event.ended` | `endCall`, cleanup | `callId, conversationId, endedBy, endReason, durationMs, endedAt` | Only durable event — triggers chat-service Call Summary |
+
+> `call.event.ringing`, `call.event.accepted`, and `call.event.declined` are **no longer written to the Outbox**. They are delivered exclusively via Redis Pub/Sub fast-track.
 
 ### Topics consumed
 

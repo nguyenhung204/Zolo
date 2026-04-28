@@ -4,11 +4,20 @@ import { useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import { v4 as uuid } from "uuid";
+import { toast } from "sonner";
 import { useAuthStore } from "@/stores/authStore";
 import { queryKeys } from "@/lib/query/keys";
-import { sendMessage, type Message, type AttachmentRef } from "@/lib/api/messages";
+import { sendMessage, type Message, type AttachmentRef, type LocalAttachmentPreview } from "@/lib/api/messages";
 import type { MessageType } from "@/lib/socket/events";
 import type { MessagesInfiniteData } from "./useMessages";
+
+// ─── Error classifiers ────────────────────────────────────────────────────────
+
+function isBlockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const err = error as { status?: number; message?: string };
+  return err.status === 403 && err.message === "FORBIDDEN_BLOCKED_USER";
+}
 
 // ─── Global upload tracker (used by beforeunload guard in AppShell) ───────────
 const _activeUploadIds = new Set<string>();
@@ -16,6 +25,15 @@ export function hasActiveUploads(): boolean { return _activeUploadIds.size > 0; 
 
 // ─── Upload function tracker (for retry logic) ────────────────────────────────
 const _uploadFnMap = new Map<string, (onProgress?: (progress: number) => void) => Promise<string | null>>();
+
+// ─── Upload file item for media group ───────────────────────────────────────
+export interface UploadFileItem {
+  uploadFn: (onProgress?: (p: number) => void) => Promise<string | null>;
+  mediaType: "image" | "video" | "audio" | "file";
+  filename?: string;
+  localPreviewUrl?: string;
+  thumbPreviewUrl?: string;
+}
 
 interface SendOptions {
   conversationId: string;
@@ -39,6 +57,8 @@ interface SendOptions {
   localPreviewUrl?: string;
   // When provided, message appears optimistically then this runs to get the mediaId
   uploadFile?: (onProgress?: (progress: number) => void) => Promise<string | null>;
+  // For media group: upload multiple files, then send as type "media"
+  uploadFileItems?: UploadFileItem[];
 }
 
 export function useSendMessage() {
@@ -165,10 +185,34 @@ export function useSendMessage() {
   );
 
   const shouldRetry = (error: unknown) => {
-    if (!axios.isAxiosError(error)) return false;
-    if (!error.response) return true;
-    return error.code === "ECONNABORTED";
+    // Errors arrive as ApiError (transformed by interceptor), not raw axios errors.
+    if (!(error instanceof Error)) return false;
+    const err = error as { status?: number; code?: string };
+    // Never retry 4xx client errors (blocked, bad request, etc.)
+    if (err.status && err.status >= 400 && err.status < 500) return false;
+    // No response (network down) or request timeout → retry
+    if (!err.status) return true;
+    return err.code === "ECONNABORTED";
   };
+
+  const removeOptimisticMessage = useCallback(
+    (conversationId: string, clientMessageId: string) => {
+      qc.setQueryData<MessagesInfiniteData>(
+        queryKeys.messages.list(conversationId),
+        (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              data: page.data.filter((m) => m.clientMessageId !== clientMessageId),
+            })),
+          };
+        }
+      );
+    },
+    [qc]
+  );
 
   const retrySend = async (
     payload: {
@@ -225,9 +269,24 @@ export function useSendMessage() {
       metadata,
       localPreviewUrl,
       uploadFile,
+      uploadFileItems,
     }: SendOptions) => {
       const clientMessageId = uuid();
       const resolvedContent = content ?? "";
+
+      // Build local attachment previews for media group optimistic display
+      const localAttachments: LocalAttachmentPreview[] | undefined =
+        uploadFileItems && uploadFileItems.length > 0
+          ? uploadFileItems.map((item) => ({
+              previewUrl: item.localPreviewUrl,
+              thumbPreviewUrl: item.thumbPreviewUrl,
+              mediaType: item.mediaType,
+              filename: item.filename,
+            }))
+          : undefined;
+
+      // Resolve effective type: group upload always sends as "media"
+      const resolvedType: MessageType = uploadFileItems && uploadFileItems.length > 0 ? "media" : type;
 
       // 1. Optimistic insert — always immediate
       const optimisticMsg: Message & { _pending: boolean } = {
@@ -235,11 +294,11 @@ export function useSendMessage() {
         conversationId,
         senderId: userId,
         content: resolvedContent,
-        type,
+        type: resolvedType,
         offset: -1,
         replyToMessageId,
         mediaId,
-        mediaStatus: (uploadFile || mediaId) ? "processing" : undefined,
+        mediaStatus: (uploadFile || uploadFileItems || mediaId) ? "processing" : undefined,
         attachments: attachments ?? null,
         metadata,
         clientMessageId,
@@ -247,7 +306,8 @@ export function useSendMessage() {
         updatedAt: new Date().toISOString(),
         _pending: true,
         _localPreviewUrl: localPreviewUrl,
-        _uploadProgress: uploadFile ? 0 : undefined,
+        _uploadProgress: (uploadFile || (uploadFileItems && uploadFileItems.length > 0)) ? 0 : undefined,
+        _localAttachments: localAttachments,
       };
 
       qc.setQueryData<MessagesInfiniteData>(
@@ -266,7 +326,62 @@ export function useSendMessage() {
 
       pendingMap.current.set(clientMessageId, conversationId);
 
-      if (uploadFile) {
+      if (uploadFileItems && uploadFileItems.length > 0) {
+        // 2a-group. Upload all files concurrently → send one "media" message
+        _activeUploadIds.add(clientMessageId);
+        (async () => {
+          try {
+            const perFileProgress = new Array(uploadFileItems.length).fill(0);
+            const uploadResults = await Promise.all(
+              uploadFileItems.map((item, idx) =>
+                item.uploadFn((p) => {
+                  perFileProgress[idx] = p;
+                  const avg = perFileProgress.reduce((a, b) => a + b, 0) / perFileProgress.length;
+                  updateUploadProgress(conversationId, clientMessageId, avg);
+                }).then((mediaId) => ({ mediaId, item }))
+              )
+            );
+
+            if (uploadResults.some(({ mediaId }) => !mediaId)) {
+              markFailed(conversationId, clientMessageId);
+              return;
+            }
+
+            const resolvedAttachments: AttachmentRef[] = uploadResults.map(({ mediaId, item }) => ({
+              mediaId: mediaId!,
+              type: item.mediaType,
+              filename: item.filename,
+            }));
+
+            // Store resolved attachments on optimistic msg so retry can skip re-upload
+            updateOptimisticMessage(conversationId, clientMessageId, (m) => ({
+              ...m,
+              attachments: resolvedAttachments,
+            }));
+
+            const serverMessage = await retrySend({
+              conversationId,
+              content: resolvedContent,
+              type: "media" as MessageType,
+              clientMessageId,
+              replyToMessageId,
+              attachments: resolvedAttachments,
+              metadata,
+            });
+            markAcked(conversationId, clientMessageId, serverMessage);
+          } catch (err) {
+            if (isBlockedError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("You can't send messages here. You may have been blocked.");
+              return;
+            }
+            markFailed(conversationId, clientMessageId);
+          } finally {
+            _activeUploadIds.delete(clientMessageId);
+            pendingMap.current.delete(clientMessageId);
+          }
+        })();
+      } else if (uploadFile) {
         // 2a. Deferred upload: fire-and-forget, optimistic already visible
         _activeUploadIds.add(clientMessageId);
         _uploadFnMap.set(clientMessageId, uploadFile); // Store for retry
@@ -287,7 +402,7 @@ export function useSendMessage() {
             const serverMessage = await retrySend({
               conversationId,
               content: resolvedContent,
-              type,
+              type: resolvedType,
               clientMessageId,
               replyToMessageId,
               mediaId: uploadedId,
@@ -296,7 +411,12 @@ export function useSendMessage() {
             });
             markAcked(conversationId, clientMessageId, serverMessage);
             _uploadFnMap.delete(clientMessageId); // Clean up on success
-          } catch {
+          } catch (err) {
+            if (isBlockedError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("You can't send messages here. You may have been blocked.");
+              return;
+            }
             markFailed(conversationId, clientMessageId);
           } finally {
             _activeUploadIds.delete(clientMessageId);
@@ -308,7 +428,7 @@ export function useSendMessage() {
         retrySend({
           conversationId,
           content: resolvedContent,
-          type,
+          type: resolvedType,
           clientMessageId,
           replyToMessageId,
           mediaId,
@@ -318,7 +438,12 @@ export function useSendMessage() {
           .then((serverMessage) => {
             markAcked(conversationId, clientMessageId, serverMessage);
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            if (isBlockedError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("You can't send messages here. You may have been blocked.");
+              return;
+            }
             markFailed(conversationId, clientMessageId);
           })
           .finally(() => {
@@ -328,7 +453,7 @@ export function useSendMessage() {
 
       return clientMessageId;
     },
-    [markAcked, markFailed, updateUploadProgress, updateOptimisticMessage, qc, userId]
+    [markAcked, markFailed, updateUploadProgress, updateOptimisticMessage, removeOptimisticMessage, qc, userId]
   );
 
   const retryMessage = useCallback(

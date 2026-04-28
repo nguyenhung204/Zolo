@@ -30,7 +30,7 @@ import { getCallSocket } from "@/lib/socket/socket";
 import { MODAL_COMPACT, MODAL_EXPANDED, useDraggablePosition } from "./useDraggablePosition";
 import { is409 } from "./call-utils";
 
-// ─── Video layout ─────────────────────────────────────────────────────────────
+// ─── 1:1 Video layout ─────────────────────────────────────────────────────────
 interface VideoLayoutProps {
   remoteDisplayName: string;
   remoteAvatarUrl: string | null;
@@ -94,6 +94,94 @@ function VideoLayout({ remoteDisplayName, remoteAvatarUrl }: VideoLayoutProps) {
           style={{
             width: 88,
             height: 118,
+            border: "2px solid rgba(255,255,255,0.18)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+          }}
+        >
+          <ParticipantTile
+            trackRef={localTrack}
+            disableSpeakingIndicator
+            style={{ width: "100%", height: "100%", position: "absolute", inset: 0 }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Group video layout (3+ participants) ─────────────────────────────────────
+function GroupVideoLayout() {
+  const tracks = useTracks(
+    [{ source: Track.Source.Camera, withPlaceholder: true }],
+    { onlySubscribed: false }
+  );
+  const { enabled: localCameraEnabled } = useTrackToggle({ source: Track.Source.Camera });
+  const profileMap = usePresenceStore((s) => s.profileMap);
+
+  const remoteTracks = tracks.filter((t) => !t.participant.isLocal);
+  const localTrack = tracks.find((t) => t.participant.isLocal);
+  const localHasLiveCamera =
+    localCameraEnabled && localTrack?.publication != null && !localTrack.publication.isMuted;
+
+  const gridCols =
+    remoteTracks.length === 1 ? "grid-cols-1" :
+    remoteTracks.length <= 4 ? "grid-cols-2" : "grid-cols-3";
+
+  return (
+    <div className="relative w-full h-full bg-[#0a0f1a]">
+      <div className={`w-full h-full grid gap-0.5 ${gridCols}`}>
+        {remoteTracks.map((track) => {
+          const hasLiveCamera = track.publication != null && !track.publication.isMuted;
+          // track.participant.identity is the livekit participant identity (userId)
+          const userId = track.participant.identity;
+          const profile = profileMap[userId];
+          const name = profile?.displayName ?? track.participant.name ?? userId;
+          const initial = name.charAt(0).toUpperCase();
+
+          return (
+            <div
+              key={track.participant.identity}
+              className="relative bg-[#111827] flex items-center justify-center overflow-hidden"
+            >
+              {hasLiveCamera ? (
+                <ParticipantTile
+                  trackRef={track}
+                  disableSpeakingIndicator
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-2 px-2">
+                  <div
+                    className="rounded-full bg-white/10 flex items-center justify-center text-white font-semibold shrink-0"
+                    style={{ width: 48, height: 48, fontSize: 18 }}
+                  >
+                    {profile?.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={profile.avatarUrl}
+                        alt={name}
+                        className="w-full h-full object-cover rounded-full"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                      />
+                    ) : (
+                      initial
+                    )}
+                  </div>
+                  <span className="text-white/70 text-xs text-center truncate w-full">{name}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Local self-view PiP */}
+      {localHasLiveCamera && (
+        <div
+          className="absolute bottom-3 right-3 rounded-xl overflow-hidden z-10"
+          style={{
+            width: 72,
+            height: 96,
             border: "2px solid rgba(255,255,255,0.18)",
             boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
           }}
@@ -177,10 +265,12 @@ function EndCallButton({ callId }: { callId: string }) {
 // ─── Active room inner (needs LiveKit context) ────────────────────────────────
 function ActiveCallRoom({
   callId,
+  isGroup,
   remoteDisplayName,
   remoteAvatarUrl,
 }: {
   callId: string;
+  isGroup: boolean;
   remoteDisplayName: string;
   remoteAvatarUrl: string | null;
 }) {
@@ -202,10 +292,14 @@ function ActiveCallRoom({
       `}</style>
 
       <div className="flex-1 min-h-0 overflow-hidden relative">
-        <VideoLayout
-          remoteDisplayName={remoteDisplayName}
-          remoteAvatarUrl={remoteAvatarUrl}
-        />
+        {isGroup ? (
+          <GroupVideoLayout />
+        ) : (
+          <VideoLayout
+            remoteDisplayName={remoteDisplayName}
+            remoteAvatarUrl={remoteAvatarUrl}
+          />
+        )}
       </div>
 
       <RoomAudioRenderer />
@@ -234,7 +328,11 @@ export function ActiveCallModal() {
 
   if (!activeCall) return null;
 
-  // Resolve the other participant's display info
+  // Group call: more than 2 total participants (caller + multiple callees)
+  const calleeCount = activeCall.participants.filter((p) => p.role === "CALLEE").length;
+  const isGroup = calleeCount > 1 || (activeCall.calleeIds?.length ?? 0) > 1;
+
+  // Resolve the other participant's display info (used for 1:1 only)
   const otherUserId =
     activeCall.participants.find((p) => p.userId !== myId)?.userId ??
     (activeCall.callerId !== myId ? activeCall.callerId : "");
@@ -310,6 +408,7 @@ export function ActiveCallModal() {
         >
           <ActiveCallRoom
             callId={activeCall.id}
+            isGroup={isGroup}
             remoteDisplayName={remoteDisplayName}
             remoteAvatarUrl={remoteAvatarUrl}
           />

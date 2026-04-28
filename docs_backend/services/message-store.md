@@ -113,9 +113,11 @@ The current code publishes a full save event, not a tiny notification-only event
 - `conversationId`
 - `conversationType`
 - `senderId`
+- `senderName`
+- `conversationName` (only for non-DIRECT conversations)
 - `latestOffset`
 - `createdAt`
-- `content`
+- `content` (may be an empty string for media-only messages)
 - `type`
 - `replyToId`
 - `metadata`
@@ -215,7 +217,7 @@ Relevant fields from the audited code path:
 - `id`
 - `conversationId`
 - `senderId`
-- `content`
+- `content` (nullable / empty for media-only messages)
 - `type`
 - `offset`
 - `metadata`

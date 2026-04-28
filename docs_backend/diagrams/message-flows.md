@@ -681,7 +681,7 @@ sequenceDiagram
 ## Pin / Unpin Message Flow
 
 ### Description
-Pin/unpin messages in a conversation. Max 3 pinned messages per conversation, OWNER/ADMIN/MODERATOR only.
+Pin/unpin messages in a conversation. Max 3 pinned messages per conversation, OWNER/ADMIN only.
 
 ### Flow Diagram
 
@@ -704,7 +704,7 @@ sequenceDiagram
     %% Validate membership and role
     ChatCore->>ConvSvc: TCP: GET_MEMBERS_WITH_ROLES {conversationId}
     ConvSvc-->>ChatCore: [{userId, role}]
-    ChatCore->>ChatCore: Verify pinnedBy role is OWNER/ADMIN/MODERATOR
+    ChatCore->>ChatCore: Verify pinnedBy role is OWNER/ADMIN
 
     alt Insufficient role
         ChatCore-->>Gateway: RpcException: FORBIDDEN_ROLE_REQUIRED
@@ -748,7 +748,7 @@ sequenceDiagram
 
     Client->>Gateway: DELETE /chat/conversations/{conversationId}/pin/{messageId}
     Gateway->>ChatCore: TCP: UNPIN_MESSAGE {conversationId, messageId, unpinnedBy}
-    ChatCore->>ChatCore: Validate role (OWNER/ADMIN/MODERATOR)
+    ChatCore->>ChatCore: Validate role (OWNER/ADMIN)
     ChatCore->>Kafka: Publish chat.event.message_unpinned
     ChatCore-->>Gateway: {messageId, pinned: false}
     Gateway-->>Client: 200

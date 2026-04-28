@@ -444,15 +444,15 @@ export function useSocket() {
       qc.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
     });
     // ─── Membership ────────────────────────────────────────────────────────
-    socket.on("member:added", ({ conversationId }) => {
+    socket.on("conversation:member-added", ({ conversationId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       scheduleListInvalidate();
     });
 
-    socket.on("member:removed", ({ conversationId, removedUserIds }) => {
+    socket.on("conversation:member-removed", ({ conversationId, removedUserIds }) => {
       const selfId = useAuthStore.getState().user?.id;
-      if (selfId && removedUserIds.includes(selfId)) {
+      if (selfId && removedUserIds?.includes(selfId)) {
         // Current user was removed — evict conversation from the list cache
         qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
           queryKeys.conversations.list(),

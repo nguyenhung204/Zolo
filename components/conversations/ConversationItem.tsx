@@ -4,9 +4,8 @@ import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatDistanceToNowStrict } from "@/lib/utils/date";
-import { usePinnedMessages } from "@/hooks/useMessages";
 import type { Conversation } from "@/lib/api/conversations";
-import { FileText, Hash, Image, Mic, Megaphone, Pin, Sticker, Video } from "lucide-react";
+import { FileText, Hash, Image, Mic, Megaphone, Sticker, Video } from "lucide-react";
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -22,6 +21,10 @@ const typeIconMap: Record<string, React.ElementType | null> = {
 
 function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
   if (!msg) return null;
+  if (msg.type === "system") {
+    // Don't show empty system message content; use a generic label
+    return { icon: null, label: "Group activity" };
+  }
   const prefix = isMe ? "Bạn: " : "";
   switch (msg.type) {
     case "image":
@@ -52,9 +55,6 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
   const hasUnread = unread > 0 && !isActive;
   const TypeIcon = typeIconMap[conversation.kind] ?? null;
   const isDirect = conversation.kind === "direct";
-
-  const { data: pinned = [] } = usePinnedMessages(conversation.id);
-  const hasPinned = pinned.length > 0;
 
   const displayName =
     isDirect
@@ -128,16 +128,11 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
         </div>
 
         <div className="flex items-center gap-1 mt-0.5">
-          {hasPinned && (
-            <Pin className="w-2.5 h-2.5 text-cta shrink-0 opacity-70" />
-          )}
           {preview ? (
             <div className={cn("flex items-center gap-1 min-w-0 text-xs truncate", hasUnread ? "text-text font-medium" : "text-muted")}>
               {preview.icon ? <preview.icon className="w-3 h-3 shrink-0" /> : null}
               <p className="truncate">{preview.label}</p>
             </div>
-          ) : hasPinned ? (
-            <p className="text-xs text-muted truncate">{pinned.length} tin ghim</p>
           ) : null}
         </div>
       </div>

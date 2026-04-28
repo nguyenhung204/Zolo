@@ -20,7 +20,7 @@ Manages conversation lifecycle and membership for all conversation kinds: DIRECT
 |------|---------|----------|
 | `direct` | Exactly 2 | One-on-one chat, created automatically on friendship acceptance |
 | `group` | Unlimited | Group chat with manual membership; OWNER/ADMIN manage members |
-| `community` | Unlimited | Broadcast channel; only OWNER/ADMIN/MODERATOR can post; MEMBER/GUEST can only react |
+| `community` | Unlimited | Broadcast channel; only OWNER/ADMIN can post; MEMBER can only react |
 
 ---
 
@@ -29,17 +29,21 @@ Manages conversation lifecycle and membership for all conversation kinds: DIRECT
 ### conversation entity
 
 ```
-id                UUID (PK)
-type              ENUM('direct', 'group', 'community')
-name              VARCHAR (NULL for direct)
-description       TEXT
-avatarMediaId     VARCHAR(36) (NULL — UUID of the media record in Media Service)
-memberCount       INT (denormalized)
-maxOffset         BIGINT (monotonic message counter, 0-indexed)
-createdBy         VARCHAR (owner userId, Keycloak ID)
-metadata          JSONB  { settings?: { retentionDays?, allowGuestPost?, allowMemberUpload? } }
-createdAt         TIMESTAMP
-updatedAt         TIMESTAMP
+id                    UUID (PK)
+type                  ENUM('direct', 'group', 'community')
+name                  VARCHAR (NULL for direct)
+description           TEXT
+avatarMediaId         VARCHAR(36) (NULL — UUID of the media record in Media Service)
+memberCount           INT (denormalized)
+maxOffset             BIGINT (monotonic message counter, 0-indexed)
+createdBy             VARCHAR (owner userId, Keycloak ID)
+metadata              JSONB  { settings?: { retentionDays?, allowGuestPost?, allowMemberUpload? } }
+isPublic              BOOLEAN DEFAULT false  — public discovery flag
+joinApprovalRequired  BOOLEAN DEFAULT false  — require OWNER/ADMIN approval for invite-link joins
+allowMemberMessage    BOOLEAN DEFAULT true   — when false, only OWNER/ADMIN may post
+linkVersion           INT DEFAULT 1          — monotonic counter; increment to revoke all invite links
+createdAt             TIMESTAMP
+updatedAt             TIMESTAMP
 ```
 
 > Note: Presigned avatar URLs are resolved at the Gateway layer on every list/detail request — they are never stored in the database.
@@ -49,7 +53,7 @@ updatedAt         TIMESTAMP
 ```
 conversationId        UUID (PK, FK)
 userId                VARCHAR (PK, Keycloak ID)
-role                  VARCHAR(20) CHECK IN ('owner','admin','moderator','member','guest')
+role                  VARCHAR(20) CHECK IN ('owner','admin','member')
 joinedAt              TIMESTAMP
 lastSeenOffset        BIGINT DEFAULT 0
 lastDeliveredOffset   BIGINT DEFAULT 0
@@ -64,6 +68,57 @@ INDEX(conversationId, role)
 ### outbox_events entity (shared, in chat_db)
 
 Used by OutboxProcessor to publish events to Kafka atomically within the same transaction. Columns include `lockedBy` and `lockedAt` for multi-instance atomic claim.
+
+### group_join_requests entity
+
+```
+id              UUID (PK)
+userId          UUID (Keycloak ID of requester)
+conversationId  UUID (FK → conversations.id ON DELETE CASCADE)
+status          ENUM('pending','approved','rejected') DEFAULT 'pending'
+requestMessage  TEXT (nullable — optional message from requester)
+reviewedBy      UUID (nullable — OWNER/ADMIN who reviewed)
+createdAt       TIMESTAMP
+updatedAt       TIMESTAMP
+
+UNIQUE INDEX: (conversationId, userId)
+INDEX: (conversationId, status)
+INDEX: (userId, status)
+```
+
+### polls entity
+
+```
+id             UUID (PK)
+conversationId UUID (FK → conversations.id ON DELETE CASCADE)
+creatorId      UUID
+question       TEXT
+options        JSONB  [ { id, text, voterIds[] } ]  — pessimistic-lock write path
+multipleChoice BOOLEAN DEFAULT false
+deadline       TIMESTAMPTZ (nullable)
+isClosed       BOOLEAN DEFAULT false
+createdAt      TIMESTAMP
+updatedAt      TIMESTAMP
+```
+
+> All writes to `options` MUST go through `PollService.votePoll()` which holds a `SELECT … FOR UPDATE` row lock.
+
+### appointments entity
+
+```
+id             UUID (PK)
+conversationId UUID (FK → conversations.id ON DELETE CASCADE)
+creatorId      UUID
+title          VARCHAR(255)
+description    TEXT (nullable)
+scheduledAt    TIMESTAMPTZ
+location       TEXT (nullable)
+createdAt      TIMESTAMP
+updatedAt      TIMESTAMP
+deletedAt      TIMESTAMPTZ (nullable — soft-delete)
+```
+
+> When created/updated, `AppointmentService` schedules a BullMQ delayed job 15 minutes before `scheduledAt`. Deletion removes the job.
 
 ---
 
@@ -120,7 +175,47 @@ The Gateway (`ConversationManagementGatewayService`) uses `previousAvatarMediaId
 
 `MembershipCacheConsumer` (Kafka) also handles Redis Set invalidation on receipt of these events (idempotent).
 
-### Offset Management (Redis Atomic INCR + OffsetSyncJob)
+### Leave Conversation (self-remove)
+
+1. Verify caller is a member.
+2. Reject if caller is `OWNER` (must disband or transfer ownership first).
+3. Delete `conversation_member` row.
+4. Update `memberCount` from actual DB count.
+5. Write `MEMBER_REMOVED` outbox event (same transaction).
+6. Cache bust: `SREM members-set userId` + `DEL role-key`.
+
+### Self-Join via Invite Token
+
+1. `InviteTokenService.validateInviteToken()` verifies JWT signature and `linkVersion` against DB — immediate rejection on version mismatch (revoked link).
+2. If `joinApprovalRequired = true` → create a `GroupJoinRequest` (status=pending) and return `{ requiresApproval: true, requestId }`.
+3. Otherwise → call `ConversationService.selfJoin()`: insert member with `ON CONFLICT DO NOTHING`, update `memberCount`, write `MEMBER_ADDED` outbox event, write-through Redis cache.
+
+### Group Settings Update
+
+1. `GroupMemberService.updateGroupSettings()` verifies caller has `OWNER` or `ADMIN` role.
+2. Apply allowed fields: `allowMemberMessage`, `isPublic`, `joinApprovalRequired`.
+3. Write `GROUP.SETTINGS_UPDATED` outbox event (Kafka fan-out → Realtime Gateway).
+
+### Disband Group
+
+1. Verify caller is `OWNER`.
+2. Within transaction: delete all `conversation_member` rows, then delete `conversation` record.
+3. Write `GROUP.DISBANDED` outbox event — all members notified via WebSocket `group:disbanded`.
+
+### Kick Member
+
+1. Verify caller has `OWNER` or `ADMIN` role.
+2. `OWNER` may kick anyone except themselves. `ADMIN` may kick `MEMBER`s only (cannot kick another `ADMIN` or the `OWNER`).
+3. Delete `conversation_member` row, update `memberCount`, write `GROUP.MEMBER_KICKED` outbox event.
+4. Cache bust for kicked user's membership keys.
+
+### allowMemberMessage Enforcement (Chat Core)
+
+After loading conversation + members, `MessageSendOrchestrator` checks:
+- If `conversation.allowMemberMessage === false` AND sender role is not `owner`/`admin` → throw `FORBIDDEN_MEMBER_MESSAGE_RESTRICTED`.
+- This is a fast in-process check; no extra TCP round-trip.
+
+---
 
 **Trước**: `INCREMENT_MAX_OFFSET` pattern — TCP call từ message-store → UPDATE conversations SET max_offset + 1 → row lock mỗi message.
 
@@ -151,6 +246,8 @@ Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-me
 
 ## TCP Patterns
 
+### ConversationController patterns
+
 | Pattern | Description |
 |---------|-------------|
 | `CREATE_CONVERSATION` | Create conversation (all kinds) |
@@ -160,7 +257,8 @@ Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-me
 | `UPDATE_INFO` | Update name/description/avatarMediaId — returns `{ conversation, previousAvatarMediaId }` |
 | `ADD_MEMBERS` | Add members (OWNER/ADMIN only) |
 | `REMOVE_MEMBERS` | Remove members (OWNER/ADMIN only) |
-| `IS_MEMBER` | Membership check (boolean) |
+| `IS_MEMBER` | Membership check — returns `{ isMember: boolean }` |
+| `HAVE_SHARED_CONVERSATION` | Check if two users share any conversation — returns `{ hasShared: boolean }` (used by Media Service for avatar authorization) |
 | `GET_MEMBER_IDS` | All member IDs |
 | `GET_MEMBERS_WITH_ROLES` | Members with role info |
 | `SET_MEMBER_ROLE` | Change member role |
@@ -173,6 +271,21 @@ Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-me
 | `GET_OUTBOX_HEALTH` | Pending outbox event count |
 | `GET_USER_CONVERSATION_IDS` | All conversation IDs for a user (used by Realtime GW for fan-out routing) |
 
+### GroupController patterns (cmd prefix: `group_`)
+
+| Pattern | Description |
+|---------|-------------|
+| `group_disband` | Permanently disband group (OWNER only) |
+| `group_update_settings` | Update `allowMemberMessage`, `isPublic`, `joinApprovalRequired` (OWNER/ADMIN) |
+| `group_leave_conversation` | Self-remove from group (any member except OWNER) |
+| `group_kick_member` | Remove another member (OWNER/ADMIN) |
+| `group_generate_invite_link` | Create a signed JWT invite link (OWNER/ADMIN) — 7-day TTL |
+| `group_reset_invite_link` | Increment `linkVersion` to revoke all outstanding links (OWNER/ADMIN) |
+| `group_join_via_token` | Validate invite token; direct join or create pending join request |
+| `group_request_join` | Submit a join request for an approval-required group |
+| `group_get_join_requests` | List pending join requests (OWNER/ADMIN) |
+| `group_review_join_request` | Approve or reject a pending join request (OWNER/ADMIN) |
+
 ---
 
 ## Kafka Events Produced (via Outbox)
@@ -182,7 +295,17 @@ Unread count = `conversation.maxOffset - member.lastSeenOffset` (O(1), no per-me
 | `chat.event.conversation_created` | CONVERSATION_CREATED | Realtime Gateway |
 | `chat.event.conversation_updated` | CONVERSATION_UPDATED | Realtime Gateway |
 | `chat.event.member_added` | MEMBER_ADDED | Realtime Gateway, Conversation Service (cache consumer) |
-| `chat.event.member_removed` | MEMBER_REMOVED | Realtime Gateway, Conversation Service (cache consumer) |
+| `chat.event.member_removed` | MEMBER_REMOVED | Realtime Gateway, Conversation Service (cache consumer), Message Store (system messages) |
+| `group.event.settings_updated` | GROUP settings change | Realtime Gateway → `group:settings_updated` WS event |
+| `group.event.member_role_changed` | Role change | Realtime Gateway → `group:member_role_changed` WS event |
+| `group.event.member_kicked` | Kick | Realtime Gateway → `group:member_kicked` WS event; Message Store → system message |
+| `group.event.disbanded` | Group disbanded | Realtime Gateway → `group:disbanded` WS event to all members |
+| `group.event.invite_link_reset` | Link revocation | Realtime Gateway → `group:settings_updated` WS event |
+| `group.event.join_requested` | New join request | Realtime Gateway → `group:join_requested` WS event to all members |
+| `group.event.join_approved` | Request approved | Realtime Gateway → `group:join_approved` WS event to requester |
+| `group.event.join_rejected` | Request rejected | Realtime Gateway → `group:join_rejected` WS event to requester |
+
+> All `group.event.*` topics use `conversationId` as the Kafka message key for strict FIFO ordering per group.
 
 ---
 
@@ -215,9 +338,10 @@ The membership Redis Set (key: `chat:conversation:{conversationId}:members`) is 
   imports: [
     SharedConfigModule,
     TcpTransport,          // TCP microservice transport
-    DatabasePostgresModule, // TypeORM: conversation, conversation_member, outbox
+    DatabasePostgresModule, // TypeORM: conversation, conversation_member, outbox, poll, appointment, group_join_requests
     KafkaModule,           // Kafka producer (outbox) + consumers
     CacheModule,           // Redis for membership sets
+    GroupModule,           // Group management sub-module (services, controller, guards, producers)
     // Note: Users Service TCP client removed — user-profile enrichment is done
     // at the Gateway layer (ConversationGatewayService) to keep this service
     // free of a Users dependency.
@@ -232,8 +356,31 @@ The membership Redis Set (key: `chat:conversation:{conversationId}:members`) is 
     MembershipCacheConsumer,
     OffsetSyncJob,           // @Cron(*/5 * * * * *) — write-behind Redis→PG
   ],
+  controllers: [
+    ConversationController,
+    GroupController,         // GROUP_PATTERNS handlers (group management)
+    HealthController,
+  ],
 })
 export class ConversationModule {}
+```
+
+### GroupModule (sub-module)
+
+```typescript
+@Module({
+  providers: [
+    GroupMemberService,        // disband, kick, update settings
+    InviteTokenService,        // JWT invite link generation and validation
+    GroupJoinRequestService,   // join request lifecycle
+    PollService,               // poll CRUD with pessimistic-lock vote
+    AppointmentService,        // appointment CRUD + BullMQ reminder scheduling
+    AppointmentWorker,         // BullMQ worker: fires group.event.appointment_reminder
+    GroupEventProducer,        // Kafka producer for group.event.* topics
+    GroupRoleGuard,            // Guard: verifies caller role from Redis membership cache
+  ],
+})
+export class GroupModule {}
 ```
 
 ---
@@ -256,6 +403,10 @@ OUTBOX_INTERVAL_MS=30000
 REDIS_CHAT_HOST=localhost
 REDIS_CHAT_PORT=6380      # redis-chat container (host port)
 REDIS_CHAT_DB=0
+
+# Group management
+INVITE_JWT_SECRET=change-me-in-production   # signs invite-link JWTs
+APP_BASE_URL=https://zolo-smoky.vercel.app  # base URL prepended to invite links
 ```
 
 ---
@@ -263,8 +414,13 @@ REDIS_CHAT_DB=0
 ## Business Rules
 
 - `direct`: always exactly 2 members; type is immutable; created automatically on friendship acceptance
-- `group`: manual member management; `OWNER`/`ADMIN` add/remove
-- `community`: only `OWNER`/`ADMIN`/`MODERATOR` may post; all other members are `MEMBER` (react only) or `GUEST` (react only)
+- `group`: manual member management; `OWNER`/`ADMIN` add/remove; supports invite links, join requests, polls, appointments
+- `community`: only `OWNER`/`ADMIN` may post; all other members are `MEMBER` (react only)
 - `createdBy` always receives `OWNER` role on creation
 - At least one `OWNER` must remain in any conversation (enforced before remove)
-- Valid roles: `owner`, `admin`, `moderator`, `member`, `guest` (lowercase, matches DB constraint)
+- Valid roles: `owner`, `admin`, `member` (lowercase, matches DB constraint)
+- `OWNER` cannot leave a group — must disband or transfer ownership first
+- `allowMemberMessage = false` → only `OWNER`/`ADMIN` may send messages (enforced in Chat Core, not here)
+- `linkVersion` increments on `resetInviteLink()` — all previously issued JWTs immediately invalid
+- Invite JWT payload contains `{ conversationId, linkVersion, iat, exp }` — 7-day TTL
+

@@ -101,16 +101,16 @@ Change a member's role.
 
 | Field  | Value                                         |
 |--------|-----------------------------------------------|
-| **Auth** | Required — OWNER may set any role except OWNER; ADMIN may only set MEMBER/MODERATOR |
+| **Auth** | Required — OWNER may set any role except OWNER; ADMIN cannot change roles |
 
 **Request body:**
 ```json
 {
-  "role": "moderator"
+  "role": "admin"
 }
 ```
 
-Valid `role` values (hierarchy, lowest → highest): `guest` `member` `moderator` `admin` `owner`
+Valid `role` values (hierarchy, lowest → highest): `member` `admin` `owner`
 
 **Responses:**
 
@@ -412,7 +412,7 @@ socket.on('group.settings_updated', (payload) => {
 {
   "conversationId": "uuid",
   "userId": "user-uuid",
-  "newRole": "moderator",
+  "newRole": "admin",
   "timestamp": "2026-04-25T10:02:00.000Z"
 }
 ```
@@ -703,7 +703,7 @@ When the group setting `allowMemberMessage` is `false`, the backend rejects mess
 
 ```ts
 const canInteract =
-  conversation.allowMemberMessage || ['owner', 'admin', 'moderator'].includes(myRole);
+  conversation.allowMemberMessage || ['owner', 'admin'].includes(myRole);
 ```
 
 ---
@@ -736,11 +736,11 @@ if (role) store.setGroupRole(conversationId, role);
 
 Role hierarchy for client-side checks:
 ```
-guest < member < moderator < admin < owner
+member < admin < owner
 ```
 
 ```ts
-const ROLE_INDEX = { guest: 0, member: 1, moderator: 2, admin: 3, owner: 4 };
+const ROLE_INDEX = { member: 0, admin: 1, owner: 2 };
 
 function hasRole(userRole: string, minRole: string): boolean {
   return ROLE_INDEX[userRole] >= ROLE_INDEX[minRole];
@@ -756,7 +756,7 @@ All errors follow a consistent envelope:
 ```jsonc
 {
   "statusCode": 403,
-  "message": "ADMINs can only manage MEMBERs and MODERATORs",
+  "message": "Only the OWNER can change member roles",
   "errorCode": "FORBIDDEN",
   "timestamp": "2026-04-25T10:00:00.000Z"
 }

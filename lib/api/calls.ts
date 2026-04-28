@@ -15,6 +15,8 @@ export interface CallDto {
   id: string;
   conversationId: string;
   callerId: string;
+  /** All callee user IDs — length > 1 means this is a group call. */
+  calleeIds?: string[];
   status: "RINGING" | "ACTIVE" | "REJECTED" | "MISSED" | "ENDED";
   createdAt: string;
   startedAt: string;

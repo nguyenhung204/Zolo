@@ -39,6 +39,13 @@ type GroupEventSocket = {
   on(event: "group.join_requested", handler: (p: GroupJoinRequestedEvent) => void): void;
   on(event: "group.join_approved", handler: (p: GroupJoinApprovedEvent) => void): void;
   on(event: "group.join_rejected", handler: (p: GroupJoinRejectedEvent) => void): void;
+  on(event: "conversation:member-added", handler: (p: {
+    conversationId: string;
+    addedUserIds?: string[];
+    addedBy?: string;
+    memberCount?: number;
+    timestamp: string;
+  }) => void): void;
   on(event: "poll.created", handler: (p: PollCreatedEvent) => void): void;
   on(event: "poll.voted", handler: (p: PollVotedEvent) => void): void;
   on(event: "poll.closed", handler: (p: PollClosedEvent) => void): void;
@@ -87,18 +94,41 @@ export function useGroupSocketEvents(conversationId: string) {
     // ── group.settings_updated ─────────────────────────────────────────────
     // Strategy: merge only the changed fields into the detail cache.
     // Do NOT refetch — the diff payload is already authoritative (§4.4).
+    // Toast when the change affects the current user's permissions.
     const onSettingsUpdated = (payload: GroupSettingsUpdatedEvent) => {
       if (payload.conversationId !== conversationId) return;
+
+      // Read role from cache BEFORE updating (participants don't change here).
+      const conv = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
+      const myRole = conv?.participants?.find((p) => p.userId === myId)?.role?.toLowerCase() ?? "member";
+
       qc.setQueryData<Conversation>(
         queryKeys.conversations.detail(conversationId),
         (old) => (old ? { ...old, ...payload.changes } : old),
       );
+
+      // Notify when settings changes affect messaging or membership permissions.
+      if ("allowMemberMessage" in payload.changes) {
+        if (payload.changes.allowMemberMessage === false && myRole === "member") {
+          toast.info("Admins have disabled messaging for members.");
+        } else if (payload.changes.allowMemberMessage === true && myRole === "member") {
+          toast.info("Members can now send messages in this group.");
+        }
+      } else if (
+        "joinApprovalRequired" in payload.changes ||
+        "isPublic" in payload.changes
+      ) {
+        // Only surface to admins/owner — regular members don't manage access.
+        if (myRole === "owner" || myRole === "admin") {
+          toast.info("Group settings have been updated.");
+        }
+      }
     };
 
     // ── group.member_role_changed ──────────────────────────────────────────
     // Strategy: update the role field on the matching member record in the
-    // members list cache. If it's the current user, the consuming component
-    // re-evaluates UI visibility from the updated cache.
+    // members list cache. If it's the current user, show a toast and the
+    // consuming component re-evaluates UI visibility from the updated cache.
     const onMemberRoleChanged = (payload: GroupMemberRoleChangedEvent) => {
       if (payload.conversationId !== conversationId) return;
       qc.setQueryData<ConversationMember[]>(
@@ -122,6 +152,18 @@ export function useGroupSocketEvents(conversationId: string) {
           };
         },
       );
+      // Notify the affected user that their role has changed.
+      if (payload.userId === myId) {
+        const roleLabel: Record<string, string> = {
+          owner: "Owner",
+          admin: "Admin",
+          moderator: "Moderator",
+          member: "Member",
+        };
+        toast.info(
+          `Your role in this group has been changed to ${roleLabel[payload.newRole] ?? payload.newRole}.`,
+        );
+      }
     };
 
     // ── group.member_kicked ────────────────────────────────────────────────
@@ -254,6 +296,7 @@ export function useGroupSocketEvents(conversationId: string) {
     // ── group.join_requested ───────────────────────────────────────────────
     // Strategy: prepend the incoming request into the pending list cache so
     // admins/owners see the badge update without a refetch.
+    // Toast: only shown to admin/owner (spec §15).
     const onJoinRequested = (payload: GroupJoinRequestedEvent) => {
       if (payload.conversationId !== conversationId) return;
       const newRequest: JoinRequest = {
@@ -271,6 +314,12 @@ export function useGroupSocketEvents(conversationId: string) {
         queryKeys.joinRequests.list(conversationId),
         (old) => (old ? [newRequest, ...old] : [newRequest]),
       );
+      // Show notification badge to admins/owner.
+      const conv = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
+      const myRole = conv?.participants?.find((p) => p.userId === myId)?.role?.toLowerCase();
+      if (myRole === "owner" || myRole === "admin") {
+        toast.info("Someone has requested to join the group.", { duration: 5_000 });
+      }
     };
 
     // ── group.join_approved ────────────────────────────────────────────────
@@ -305,6 +354,22 @@ export function useGroupSocketEvents(conversationId: string) {
       }
     };
 
+    // ── conversation:member-added ──────────────────────────────────────────
+    // Global broadcast when a new member joins. Cache is updated by useSocket;
+    // here we just surface the notification to current group members.
+    const onMemberAdded = (payload: {
+      conversationId: string;
+      addedUserIds?: string[];
+      addedBy?: string;
+      memberCount?: number;
+      timestamp: string;
+    }) => {
+      if (payload.conversationId !== conversationId) return;
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+      toast.info("A new member has been added to this group.", { duration: 4_000 });
+    };
+
     // ── Register all listeners ─────────────────────────────────────────────
     socket.on("group.settings_updated", onSettingsUpdated);
     socket.on("group.member_role_changed", onMemberRoleChanged);
@@ -314,6 +379,7 @@ export function useGroupSocketEvents(conversationId: string) {
     socket.on("group.join_requested", onJoinRequested);
     socket.on("group.join_approved", onJoinApproved);
     socket.on("group.join_rejected", onJoinRejected);
+    socket.on("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
     socket.on("poll.created", onPollCreated);
     socket.on("poll.voted", onPollVoted);
     socket.on("poll.closed", onPollClosed);
@@ -332,6 +398,7 @@ export function useGroupSocketEvents(conversationId: string) {
       socket.off("group.join_requested", onJoinRequested as (...args: unknown[]) => void);
       socket.off("group.join_approved", onJoinApproved as (...args: unknown[]) => void);
       socket.off("group.join_rejected", onJoinRejected as (...args: unknown[]) => void);
+      socket.off("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
       socket.off("poll.created", onPollCreated as (...args: unknown[]) => void);
       socket.off("poll.voted", onPollVoted as (...args: unknown[]) => void);
       socket.off("poll.closed", onPollClosed as (...args: unknown[]) => void);

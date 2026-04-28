@@ -29,7 +29,10 @@ export function useConversations() {
   const query = useQuery({
     queryKey: queryKeys.conversations.list(),
     queryFn: getConversations,
-    staleTime: 30_000,
+    // Presigned URLs expire in 5 min — keep stale time just under that so we
+    // don't refetch more often than necessary. WS events keep all other fields
+    // (lastMessage, maxOffset, unread) up-to-date without polling.
+    staleTime: 4 * 60_000,
     enabled: isAuthenticated,
   });
 
@@ -50,8 +53,9 @@ export function useConversations() {
     for (const conv of query.data) {
       const ou = conv.otherUser;
       if (!ou?.avatarUrl) continue;
-      const already = usePresenceStore.getState().profileMap[ou.id];
-      if (already?.avatarUrl) continue;
+      // Always seed with the freshest presigned URL from the API. WS
+      // profile-updated events call setUserProfile directly and will overwrite
+      // this when the user changes their avatar.
       setUserProfile(ou.id, {
         displayName: ou.displayName ?? ou.username ?? null,
         avatarMediaId: null,

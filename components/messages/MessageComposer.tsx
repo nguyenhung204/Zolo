@@ -41,6 +41,9 @@ const ALLOWED_FILE_TYPES = [
 const ALL_ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES, ...ALLOWED_FILE_TYPES];
 const ACCEPTED_MIME = ALL_ALLOWED_TYPES.join(",");
 
+// Videos under this size are grouped with images into one media message
+const LARGE_VIDEO_THRESHOLD = 20 * 1024 * 1024; // 20 MB
+
 // ─── Staged attachment ────────────────────────────────────────────────────────
 
 type AttachmentMediaType = "image" | "video" | "audio" | "file";
@@ -479,11 +482,51 @@ export function MessageComposer({
       }
 
       try {
-        // Multiple files: each file is its own message.
-        // If there's a caption, send it as a text message first (with reply context),
-        // then send each file individually (no reply context).
-        // If no caption, the first file inherits the reply context.
-        if (caption) {
+        // ── Split files ───────────────────────────────────────────────────
+        // groupable: images + videos under 20 MB  → sent as one "media" album message
+        // separateFiles: large videos + other files → each sent as individual messages
+        const groupableFiles = queuedFiles.filter(
+          (sf) =>
+            sf.mediaType === "image" ||
+            (sf.mediaType === "video" && sf.file.size < LARGE_VIDEO_THRESHOLD)
+        );
+        const separateFiles = queuedFiles.filter(
+          (sf) =>
+            sf.mediaType !== "image" &&
+            !(sf.mediaType === "video" && sf.file.size < LARGE_VIDEO_THRESHOLD)
+        );
+
+        if (groupableFiles.length > 0) {
+          // Resolve any pre-running thumb uploads for group videos
+          const groupUploadItems = await Promise.all(
+            groupableFiles.map(async (sf) => {
+              let thumbMediaId: string | undefined;
+              if (sf.mediaType === "video") {
+                const thumbPromise = thumbUploadPromises.current.get(sf.id);
+                if (thumbPromise) thumbMediaId = (await thumbPromise) ?? undefined;
+                thumbUploadPromises.current.delete(sf.id);
+              }
+              return {
+                uploadFn: (onProgress?: (p: number) => void) =>
+                  uploadFileDirect(sf.file, conversationId, onProgress),
+                mediaType: sf.mediaType as "image" | "video",
+                filename: sf.file.name,
+                localPreviewUrl: sf.previewUrl,
+                thumbPreviewUrl: sf.thumbPreviewUrl,
+                thumbMediaId,
+              };
+            })
+          );
+
+          send({
+            conversationId,
+            content: caption,
+            type: "media",
+            replyToMessageId: replyTarget,
+            uploadFileItems: groupUploadItems,
+          }).catch(() => toast.error("Could not send media."));
+        } else if (caption) {
+          // No groupable files and there is a caption → send caption as text first
           const captionChunks = splitContent(caption);
           captionChunks.forEach((chunk, i) => {
             send({
@@ -495,34 +538,35 @@ export function MessageComposer({
           });
         }
 
-        for (let i = 0; i < queuedFiles.length; i++) {
-          const stagedFile = queuedFiles[i];
-          const fileName = stagedFile.file.name;
-          const type = stagedFile.mediaType;
+        // Send non-groupable files individually
+        for (let i = 0; i < separateFiles.length; i++) {
+          const sf = separateFiles[i];
+          const fileName = sf.file.name;
+          const type = sf.mediaType;
 
           let thumbMediaId: string | undefined;
           if (type === "video") {
-            const thumbPromise = thumbUploadPromises.current.get(stagedFile.id);
-            if (thumbPromise) {
-              thumbMediaId = (await thumbPromise) ?? undefined;
-            }
-            thumbUploadPromises.current.delete(stagedFile.id);
+            const thumbPromise = thumbUploadPromises.current.get(sf.id);
+            if (thumbPromise) thumbMediaId = (await thumbPromise) ?? undefined;
+            thumbUploadPromises.current.delete(sf.id);
           }
 
-          const replyToMessageId = !caption && i === 0 ? replyTarget : undefined;
+          // Only the first separate file gets the reply context when there are no groupable files and no caption
+          const replyToMessageId =
+            groupableFiles.length === 0 && !caption && i === 0 ? replyTarget : undefined;
 
           send({
             conversationId,
             content: "",
             type,
             replyToMessageId,
-            localPreviewUrl: stagedFile.previewUrl,
+            localPreviewUrl: sf.previewUrl,
             metadata: {
               ...(thumbMediaId ? { thumbMediaId } : {}),
-              fileSize: stagedFile.file.size,
+              fileSize: sf.file.size,
               filename: fileName,
             },
-            uploadFile: (onProgress) => uploadFileDirect(stagedFile.file, conversationId, onProgress),
+            uploadFile: (onProgress) => uploadFileDirect(sf.file, conversationId, onProgress),
           }).catch(() => toast.error(`Could not send ${fileName}.`));
         }
       } catch {
