@@ -40,6 +40,7 @@ import {
   type CreateAppointmentPayload,
   type UpdateAppointmentPayload,
   type JoinRequest,
+  type JoinByInvitePayload,
   type JoinByInviteResult,
 } from "@/lib/api/group";
 import type { Conversation } from "@/lib/api/conversations";
@@ -249,8 +250,8 @@ export function useDeleteAppointment(conversationId: string) {
  */
 export function useJoinByInvite() {
   const qc = useQueryClient();
-  return useMutation<JoinByInviteResult, ApiError, string>({
-    mutationFn: (token) => joinByInvite(token),
+  return useMutation<JoinByInviteResult, ApiError, JoinByInvitePayload>({
+    mutationFn: (payload) => joinByInvite(payload),
     onSuccess: (result) => {
       if (!result.requiresApproval) {
         // Joined directly — refresh the conversations list so the new one appears.

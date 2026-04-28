@@ -148,6 +148,12 @@ export interface AppointmentReminderEvent {
   timestamp: string;
 }
 
+export interface JoinRequestUser {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+
 export interface JoinRequest {
   id: string;
   conversationId: string;
@@ -155,6 +161,7 @@ export interface JoinRequest {
   requestMessage: string | null;
   status: "pending" | "approved" | "rejected";
   createdAt: string;
+  user: JoinRequestUser;
 }
 
 export type JoinByInviteResult =
@@ -237,8 +244,13 @@ export async function resetInviteLink(conversationId: string): Promise<void> {
   await apiClient.delete(`/conversations/${conversationId}/invite-link`);
 }
 
-export async function joinByInvite(token: string): Promise<JoinByInviteResult> {
-  const res = await apiClient.post(`/conversations/join`, { token });
+export interface JoinByInvitePayload {
+  token: string;
+  requestMessage?: string;
+}
+
+export async function joinByInvite(payload: JoinByInvitePayload): Promise<JoinByInviteResult> {
+  const res = await apiClient.post(`/conversations/join`, payload);
   return res.data.data ?? res.data;
 }
 

@@ -24,7 +24,8 @@ function RequestRow({
   onReject: () => void;
   isBusy: boolean;
 }) {
-  const initials = request.userId.slice(0, 2).toUpperCase();
+  const displayName = request.user?.displayName ?? request.userId;
+  const initials = displayName.slice(0, 2).toUpperCase();
   const formattedDate = new Date(request.createdAt).toLocaleDateString([], {
     month: "short",
     day: "numeric",
@@ -32,19 +33,27 @@ function RequestRow({
 
   return (
     <div className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-0">
-      {/* Avatar placeholder — userId initials */}
-      <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0 mt-0.5">
-        {initials}
-      </div>
+      {/* Avatar */}
+      {request.user?.avatarUrl ? (
+        <img
+          src={request.user.avatarUrl}
+          alt={displayName}
+          className="w-9 h-9 rounded-full object-cover shrink-0 mt-0.5"
+        />
+      ) : (
+        <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0 mt-0.5">
+          {initials}
+        </div>
+      )}
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <p className="text-sm font-medium text-text truncate">{request.userId}</p>
+          <p className="text-sm font-medium text-text truncate">{displayName}</p>
           <span className="text-xs text-muted shrink-0">{formattedDate}</span>
         </div>
         {request.requestMessage && (
           <p className="text-xs text-muted mt-0.5 line-clamp-2 leading-relaxed">
-            "{request.requestMessage}"
+            &ldquo;{request.requestMessage}&rdquo;
           </p>
         )}
       </div>

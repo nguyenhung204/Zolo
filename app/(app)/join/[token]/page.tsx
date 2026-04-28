@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Users, Clock, CheckCircle2, XCircle } from "lucide-react";
 import { useJoinByInvite } from "@/hooks/useGroup";
@@ -10,7 +10,7 @@ interface Props {
   params: Promise<{ token: string }>;
 }
 
-type JoinState = "idle" | "joining" | "joined" | "pending" | "error";
+type JoinState = "idle" | "confirm" | "joining" | "joined" | "pending" | "error";
 
 export default function JoinGroupPage({ params }: Props) {
   const { token } = use(params);
@@ -20,55 +20,88 @@ export default function JoinGroupPage({ params }: Props) {
   const joinMutation = useJoinByInvite();
 
   const [state, setState] = useState<JoinState>("idle");
+  const [requestMessage, setRequestMessage] = useState("");
   const [joinedConversationId, setJoinedConversationId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const didInit = useRef(false);
 
   useEffect(() => {
     if (!isInitialized) return;
+    if (didInit.current) return;
+    didInit.current = true;
 
     if (!isAuthenticated) {
-      // Preserve the join URL so the user is redirected back after login.
       router.replace(`/login?from=/join/${token}`);
       return;
     }
 
-    if (state !== "idle") return;
+    setState("confirm");
+  }, [isAuthenticated, isInitialized, router, token]);
 
+  function handleJoin() {
     setState("joining");
-    joinMutation.mutate(token, {
-      onSuccess: (result) => {
-        if (!result.requiresApproval) {
-          setJoinedConversationId(result.conversationId);
-          setState("joined");
-          // Navigate to the conversation after a short delay so the user sees the success state.
-          setTimeout(() => {
-            router.push(`/conversations/${result.conversationId}`);
-          }, 1500);
-        } else {
-          setState("pending");
-        }
+    joinMutation.mutate(
+      { token, requestMessage: requestMessage.trim() || undefined },
+      {
+        onSuccess: (result) => {
+          if (!result.requiresApproval) {
+            setJoinedConversationId(result.conversationId);
+            setState("joined");
+            setTimeout(() => {
+              router.push(`/conversations/${result.conversationId}`);
+            }, 1500);
+          } else {
+            setState("pending");
+          }
+        },
+        onError: (err) => {
+          setErrorMessage(
+            err.status === 401
+              ? "This invite link has expired."
+              : err.status === 403
+                ? "This invite link has been revoked."
+                : err.status === 404
+                  ? "This group no longer exists."
+                  : err.status === 400
+                    ? "You are already a member or have a pending request."
+                    : "Failed to join the group. Please try again.",
+          );
+          setState("error");
+        },
       },
-      onError: (err) => {
-        setErrorMessage(
-          err.status === 401
-            ? "This invite link has expired."
-            : err.status === 403
-              ? "This invite link has been revoked."
-              : err.status === 404
-                ? "This group no longer exists."
-                : err.status === 400
-                  ? "You are already a member or have a pending request."
-                  : "Failed to join the group. Please try again.",
-        );
-        setState("error");
-      },
-    });
-  }, [isAuthenticated, isInitialized, joinMutation, router, state, token]);
+    );
+  }
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-bg px-4">
       <div className="w-full max-w-sm bg-surface border border-border rounded-2xl shadow-xl p-8 flex flex-col items-center gap-5 text-center">
-        {state === "idle" || state === "joining" ? (
+        {state === "idle" ? null : state === "confirm" ? (
+          <>
+            <div className="w-14 h-14 rounded-2xl bg-cta/10 flex items-center justify-center">
+              <Users className="w-7 h-7 text-cta" />
+            </div>
+            <div>
+              <p className="text-base font-bold text-text">Join Group</p>
+              <p className="text-sm text-muted mt-1">
+                You&apos;ve been invited to join a group. Add an optional message to your request.
+              </p>
+            </div>
+            <textarea
+              value={requestMessage}
+              onChange={(e) => setRequestMessage(e.target.value)}
+              maxLength={200}
+              rows={3}
+              placeholder="Say something to the admins… (optional)"
+              className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40"
+            />
+            <button
+              onClick={handleJoin}
+              className="w-full py-2.5 text-sm font-semibold text-white bg-cta rounded-xl hover:opacity-90 transition cursor-pointer"
+            >
+              Join Group
+            </button>
+          </>
+        ) : state === "joining" ? (
           <>
             <div className="w-14 h-14 rounded-2xl bg-cta/10 flex items-center justify-center">
               <Loader2 className="w-7 h-7 text-cta animate-spin" />
