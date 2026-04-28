@@ -263,6 +263,9 @@ export function useGroupSocketEvents(conversationId: string) {
         requestMessage: payload.requestMessage,
         status: "pending",
         createdAt: payload.timestamp,
+        // Socket event doesn't carry the full profile — use a stub so the
+        // panel renders immediately; the list query will reconcile on next fetch.
+        user: { id: payload.userId, displayName: payload.userId, avatarUrl: null },
       };
       qc.setQueryData<JoinRequest[]>(
         queryKeys.joinRequests.list(conversationId),
