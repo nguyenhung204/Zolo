@@ -48,6 +48,8 @@ export function useCallWebSocketListeners(): void {
     setActiveCall,
     setLiveKitCredentials,
     setDeclinedGroupCall,
+    setGroupCall,
+    addGroupCallParticipant,
     clearCallState,
     outgoingCall,
   } = useCallStore();
@@ -145,6 +147,18 @@ export function useCallWebSocketListeners(): void {
         participants: [],
       });
 
+      // Always seed group call banner — it's visible inside the conversation so
+      // context determines relevance. Don't gate on calleeIds.length because
+      // some server versions may omit or send an empty array.
+      setGroupCall(data.conversationId, {
+        callId: data.callId,
+        conversationId: data.conversationId,
+        callerId: data.callerId,
+        status: "RINGING",
+        participantIds: [data.callerId],
+        startedAt: data.startedAt,
+      });
+
       // Fetch caller profile so overlay shows name/avatar immediately
       getUserById(data.callerId)
         .then((profile) => {
@@ -160,7 +174,7 @@ export function useCallWebSocketListeners(): void {
         })
         .catch(() => {}); // non-fatal — overlay falls back to initials
     },
-    [myId, setIncomingCall]
+    [myId, setIncomingCall, setGroupCall]
   );
 
   // ─── Reactive audio: play/stop in sync with call state ───────────────────────
@@ -232,6 +246,9 @@ export function useCallWebSocketListeners(): void {
       if (!incomingCall && !outgoingCall) return;
 
       // Clear any pending re-join opportunity since the call is now fully rejected.
+      const { incomingCall: ic, outgoingCall: oc } = useCallStore.getState();
+      const convId = ic?.conversationId ?? oc?.conversationId;
+      if (convId) useCallStore.getState().setGroupCall(convId, null);
       useCallStore.getState().setDeclinedGroupCall(null);
       clearCallState();
       toast.info("Call declined");
@@ -244,11 +261,16 @@ export function useCallWebSocketListeners(): void {
     (data: { callId: string; endReason: string; durationMs?: number }) => {
       stopAllAudio();
 
-      // Always clear a declined group call if this is the same call ending.
-      const { declinedGroupCall } = useCallStore.getState();
-      if (declinedGroupCall?.callId === data.callId) {
-        useCallStore.getState().setDeclinedGroupCall(null);
-      }
+      // Clear the group call banner — the call is over for everyone.
+      const state = useCallStore.getState();
+      const groupEntry = Object.values(state.groupCallsByConversation)
+        .find((e) => e.callId === data.callId);
+      if (groupEntry) state.setGroupCall(groupEntry.conversationId, null);
+
+      // NOTE: do NOT clear declinedGroupCall here. If the user intentionally
+      // left a group call (Leave button), declinedGroupCall is their only
+      // re-join anchor. They will discover the call ended when they try to
+      // join and the API returns a non-active status (which clears it then).
 
       // Guard: if we already cleared state optimistically (i.e. the local user
       // clicked End Call), ignore this WS echo to avoid a double-toast.
@@ -270,20 +292,27 @@ export function useCallWebSocketListeners(): void {
 
     const socket = getCallSocket();
 
-    socket.on("connect", () => {
+    const doAuthenticate = () => {
       socket.emit("authenticate", { token });
-    });
+    };
+
+    // Register for future reconnects
+    socket.on("connect", doAuthenticate);
+
+    // If the socket is already connected (AuthProvider called connectCallSocket
+    // before this hook mounted), emit authenticate immediately — the "connect"
+    // event won't fire again for the current connection.
+    if (socket.connected) {
+      doAuthenticate();
+    }
 
     socket.on("call:ringing", handleRinging);
     socket.on("call:accepted", handleAccepted);
     socket.on("call:declined", handleDeclined);
     socket.on("call:ended", handleEnded);
 
-    // Also handle missed calls that arrive via call:ended with endReason MISSED
-    // while we have a pending declinedGroupCall (we didn't receive call:ended
-    // through the active-call path, but we still need to clear the join banner).
-
     return () => {
+      socket.off("connect", doAuthenticate);
       socket.off("call:ringing", handleRinging);
       socket.off("call:accepted", handleAccepted);
       socket.off("call:declined", handleDeclined);

@@ -11,7 +11,7 @@ import { getCallSocket } from "@/lib/socket/socket";
 import { resolveDisplayName, resolveAvatarUrl, is409 } from "./call-utils";
 
 export function OutgoingCallModal() {
-  const { outgoingCall, clearCallState } = useCallStore();
+  const { outgoingCall, clearCallState, setGroupCall } = useCallStore();
   const profileMap = usePresenceStore((s) => s.profileMap);
   const isBusyRef = useRef(false);
 
@@ -33,7 +33,9 @@ export function OutgoingCallModal() {
 
     // Optimistic: immediately close the modal — don't block on the network.
     const callId = outgoingCall.id;
+    const conversationId = outgoingCall.conversationId;
     getCallSocket().emit("call:leave_room", { callId });
+    setGroupCall(conversationId, null);
     clearCallState();
 
     // Fire-and-forget: inform the server in the background.

@@ -3,7 +3,7 @@
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
-import { startInstantCall, acceptInstantCall, getInstantCallById } from "@/lib/api/calls";
+import { startInstantCall, acceptInstantCall, getInstantCallById, getInstantCallToken } from "@/lib/api/calls";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
@@ -33,16 +33,11 @@ interface ConversationHeaderProps {
 
 export function ConversationHeader({ conversationId, onMembersClick }: ConversationHeaderProps) {
   const { data: conv } = useConversation(conversationId);
-  const { setOutgoingCall, setActiveCall, setLiveKitCredentials, declinedGroupCall, setDeclinedGroupCall } = useCallStore();
+  const { setOutgoingCall, setGroupCall } = useCallStore();
   const { setUserProfile } = usePresenceStore();
   const isBusyRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const currentUserId = useAuthStore((s) => s.user?.id ?? "");
-
-  // Show a "Join call" banner when the current user previously declined a group
-  // call in this conversation but it's still ongoing.
-  const canRejoin =
-    declinedGroupCall != null && declinedGroupCall.conversationId === conversationId;
 
   if (!conv) {
     return (
@@ -87,6 +82,18 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
         calleeIds: otherMemberIds,
       });
       setOutgoingCall(callDto);
+      // Seed the group call banner for all non-direct conversations.
+      // For direct calls the banner is irrelevant since there's only one callee.
+      if (conv.kind !== "direct") {
+        setGroupCall(conversationId, {
+          callId: callDto.id,
+          conversationId,
+          callerId: currentUserId,
+          status: "RINGING",
+          participantIds: [currentUserId],
+          startedAt: callDto.startedAt ?? new Date().toISOString(),
+        });
+      }
       // Sync participant profiles so GlobalCallOverlay can show names/avatars immediately
       (conv.participants ?? []).forEach((p) => {
         if (p.userId !== currentUserId) {
@@ -118,31 +125,6 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
     }
   };
 
-  const handleJoinCall = async () => {
-    if (!declinedGroupCall || isBusyRef.current) return;
-    isBusyRef.current = true;
-    try {
-      const call = await getInstantCallById(declinedGroupCall.callId);
-      if (!call || (call.status !== "ACTIVE" && call.status !== "RINGING")) {
-        toast.info("The call has already ended.");
-        setDeclinedGroupCall(null);
-        return;
-      }
-      const res = await acceptInstantCall(declinedGroupCall.callId);
-      getCallSocket().emit("call:join_room", { callId: declinedGroupCall.callId });
-      setDeclinedGroupCall(null);
-      setActiveCall(res.call);
-      setLiveKitCredentials({
-        token: res.token,
-        roomName: res.roomName,
-        livekitUrl: res.livekitUrl,
-      });
-    } catch {
-      toast.error("Could not join the call.");
-    } finally {
-      isBusyRef.current = false;
-    }
-  };
 
   return (
     <div className="h-14 border-b border-border px-4 flex items-center gap-3 shrink-0 bg-surface">
@@ -186,16 +168,6 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
 
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
-        {canRejoin && (
-          <button
-            onClick={handleJoinCall}
-            title="Join ongoing group call"
-            className="flex items-center gap-1.5 px-3 h-8 rounded-lg text-white bg-cta hover:bg-cta/80 transition-colors cursor-pointer text-xs font-semibold animate-pulse"
-          >
-            <PhoneCall className="w-3.5 h-3.5" />
-            Join call
-          </button>
-        )}
         {!isCommunity && (
           <ActionButton onClick={handleStartCall} title="Start call">
             <Phone className="w-4 h-4" />

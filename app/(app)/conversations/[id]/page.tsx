@@ -7,9 +7,11 @@ import { VirtualMessageList } from "@/components/messages/VirtualMessageList";
 import { MessageComposer } from "@/components/messages/MessageComposer";
 import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
+import { GroupCallBanner } from "@/components/calls/GroupCallBanner";
 import { MemberList } from "@/components/conversations/MemberList";
 import { useConversationMembers, useConversation } from "@/hooks/useConversations";
 import { useGroupSocketEvents } from "@/hooks/useGroupSocketEvents";
+import { useConversationCallStatus } from "@/hooks/useConversationCallStatus";
 import { useConversationStore } from "@/stores/conversationStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { useMessages } from "@/hooks/useMessages";
@@ -51,6 +53,10 @@ export default function ConversationPage({ params }: Props) {
 
   // Mount all group management socket listeners for this conversation
   useGroupSocketEvents(id);
+
+  // Validate any persisted group call state and restore the banner if the call
+  // is still live (survives page reloads and navigate-away scenarios).
+  useConversationCallStatus(id);
 
   // Join the WS room when this conversation is opened
   useEffect(() => {
@@ -129,6 +135,7 @@ export default function ConversationPage({ params }: Props) {
         conversationId={id}
         onViewDetails={setDetailsTarget}
       />
+      <GroupCallBanner conversationId={id} />
 
       {/* Message area */}
       <div className="relative flex-1 flex flex-col min-h-0">

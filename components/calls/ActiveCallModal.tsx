@@ -230,35 +230,59 @@ function CameraButton() {
   );
 }
 
-function EndCallButton({ callId }: { callId: string }) {
-  const { clearCallState } = useCallStore();
+function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }) {
+  const { clearCallState, setDeclinedGroupCall } = useCallStore();
   const room = useRoomContext();
   const isBusyRef = useRef(false);
 
-  const handleEnd = useCallback(() => {
+  const handleAction = useCallback(() => {
     if (isBusyRef.current) return;
     isBusyRef.current = true;
 
-    // Optimistic: disconnect LiveKit room and clear UI immediately.
-    void room.disconnect();
-    getCallSocket().emit("call:leave_room", { callId });
-    clearCallState();
+    if (isGroup) {
+      // Group call: "Leave" — disconnect from LiveKit but keep the call alive
+      // for other participants. Stay in the WS call room so call:ended can
+      // still clear the GroupCallBanner automatically.
+      // Do NOT call endInstantCall — the call continues for everyone else.
 
-    // Fire-and-forget: inform the server in the background.
-    endInstantCall(callId).catch((err) => {
-      if (!is409(err)) toast.error("Failed to end the call.");
-    });
-  }, [callId, clearCallState, room]);
+      // Capture conversationId BEFORE clearing state.
+      const conversationId = useCallStore.getState().activeCall?.conversationId ?? "";
+
+      void room.disconnect();
+      clearCallState(); // sets declinedGroupCall = null
+
+      // Re-set declinedGroupCall so ConversationHeader shows a "Join" button
+      // even if call:ended arrives and wipes groupCallsByConversation.
+      if (conversationId) {
+        setDeclinedGroupCall({ callId, conversationId });
+      }
+      // isBusyRef intentionally left true — component unmounts
+    } else {
+      // Direct call: end the call for both sides.
+      void room.disconnect();
+      getCallSocket().emit("call:leave_room", { callId });
+      clearCallState();
+      endInstantCall(callId).catch((err) => {
+        if (!is409(err)) toast.error("Failed to end the call.");
+      });
+    }
+  }, [callId, isGroup, clearCallState, setDeclinedGroupCall, room]);
 
   return (
-    <button
-      onClick={handleEnd}
-      aria-label="End call"
-      className="w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:brightness-90"
-      style={{ background: "#DC2626" }}
-    >
-      <PhoneOff className="w-6 h-6 text-white" />
-    </button>
+    <div className="flex flex-col items-center gap-1">
+      <button
+        onClick={handleAction}
+        aria-label={isGroup ? "Leave call" : "End call"}
+        title={isGroup ? "Leave call (others stay connected)" : "End call for everyone"}
+        className="w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:brightness-90"
+        style={{ background: "#DC2626" }}
+      >
+        <PhoneOff className="w-6 h-6 text-white" />
+      </button>
+      <span className="text-[10px] text-white/40 select-none">
+        {isGroup ? "Leave" : "End"}
+      </span>
+    </div>
   );
 }
 
@@ -309,7 +333,7 @@ function ActiveCallRoom({
         style={{ background: "rgba(0,0,0,0.5)", borderTop: "1px solid rgba(255,255,255,0.07)" }}
       >
         <CameraButton />
-        <EndCallButton callId={callId} />
+        <EndCallButton callId={callId} isGroup={isGroup} />
         <MicButton />
       </div>
     </>

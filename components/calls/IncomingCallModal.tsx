@@ -62,13 +62,20 @@ export function IncomingCallModal() {
     const conversationId = incomingCall.conversationId;
 
     // For group calls: track the declined call so the user can re-join later.
+    // Crucially: do NOT emit call:leave_room — the user stays subscribed to the
+    // call WS room so they'll receive call:ended when the call finishes and the
+    // GroupCallBanner can auto-clear itself.
     if (isGroup) {
+      // Optimistic: close the modal only (keep WS room subscription).
+      // IMPORTANT: call clearCallState FIRST (it resets declinedGroupCall to null),
+      // then set declinedGroupCall AFTER so it isn't overwritten.
+      clearCallState();
       setDeclinedGroupCall({ callId, conversationId });
+    } else {
+      // Direct call: leave the room immediately — no banner, no re-join.
+      getCallSocket().emit("call:leave_room", { callId });
+      clearCallState();
     }
-
-    // Optimistic: immediately close the modal.
-    getCallSocket().emit("call:leave_room", { callId });
-    clearCallState();
 
     // Fire-and-forget: inform the server in the background.
     declineInstantCall(callId).catch((err) => {
