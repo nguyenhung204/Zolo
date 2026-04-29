@@ -68,10 +68,15 @@ export interface InviteLink {
 export interface GroupSettingsUpdatedEvent {
   conversationId: string;
   updatedBy: string;
+  updatedByName?: string;
   changes: {
     allowMemberMessage?: boolean;
     isPublic?: boolean;
     joinApprovalRequired?: boolean;
+    /** Present when group name is changed */
+    name?: string;
+    /** Present when group avatar is changed */
+    avatarChanged?: boolean;
   };
   timestamp: string;
 }
@@ -79,20 +84,26 @@ export interface GroupSettingsUpdatedEvent {
 export interface GroupMemberRoleChangedEvent {
   conversationId: string;
   userId: string;
+  userName?: string;
   newRole: MemberRole;
+  changedBy?: string;
+  changedByName?: string;
   timestamp: string;
 }
 
 export interface GroupMemberKickedEvent {
   conversationId: string;
   userId: string;
+  userName?: string;
   kickedBy: string;
+  kickedByName?: string;
   timestamp: string;
 }
 
 export interface GroupDisbandedEvent {
   conversationId: string;
   disbandedBy: string;
+  disbandedByName?: string;
   timestamp: string;
 }
 
@@ -171,24 +182,30 @@ export type JoinByInviteResult =
 export interface GroupJoinRequestedEvent {
   conversationId: string;
   userId: string;
+  userName?: string;
   requestId: string;
   requestMessage: string | null;
+  source?: "invite_link" | "request";
   timestamp: string;
 }
 
 export interface GroupJoinApprovedEvent {
   conversationId: string;
-  userId: string;
+  userId?: string;
+  userName?: string;
   requestId: string;
   reviewedBy: string;
+  reviewedByName?: string;
   timestamp: string;
 }
 
 export interface GroupJoinRejectedEvent {
   conversationId: string;
-  userId: string;
+  userId?: string;
+  userName?: string;
   requestId: string;
   reviewedBy: string;
+  reviewedByName?: string;
   timestamp: string;
 }
 

@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/authStore";
 import { useSocketStore } from "@/stores/socketStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useTypingStore } from "@/stores/typingStore";
+import { useMentionStore } from "@/stores/mentionStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
@@ -13,7 +15,10 @@ import { upsertMessage, prefetchMessages, type MessagesInfiniteData } from "@/ho
 import { getMediaSignedUrl } from "@/lib/api/media";
 import { getFriendsPresence, getMyPresenceStatus } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
-import { normalizeReactionMap } from "@/lib/api/messages";
+import { normalizeReactionMap, type Message } from "@/lib/api/messages";
+import type { Friendship, FriendshipStatus, FriendshipStatusResponse, PendingRequestsResponse, UserSearchResult } from "@/lib/api/friends";
+import { decodeId } from "@/lib/utils/obfuscateId";
+import { toast } from "sonner";
 
 function isMediaMessageType(type: WsMessage["type"]) {
   return type === "image" || type === "video" || type === "audio" || type === "file" || type === "media";
@@ -43,12 +48,13 @@ function normalizeMediaStatus(status: string | undefined): WsMessage["mediaStatu
  * Should be mounted once inside the authenticated app shell.
  */
 export function useSocket() {
+  const router = useRouter();
   const token = useAuthStore((s) => s.token);
   const myId = useAuthStore((s) => s.user?.id);
   const setSessionRevoked = useAuthStore((s) => s.setSessionRevoked);
   const { setConnected } = useSocketStore();
   const { setPresence, setUserProfile } = usePresenceStore();
-  const { setTyping, clearTyping } = useTypingStore();
+  const { setTyping, clearTyping, clearConversationTyping } = useTypingStore();
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Per-user typing auto-clear timers
   const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -70,6 +76,163 @@ export function useSocket() {
       }, 300);
     };
     const qc = getQueryClient();
+    const unique = (ids: string[]) => Array.from(new Set(ids.filter(Boolean)));
+    const getOtherUserId = (ids: Array<string | undefined>) =>
+      ids.find((id) => !!id && id !== myId) ?? ids.find(Boolean);
+    const patchFriendRequests = (updater: (old: PendingRequestsResponse) => PendingRequestsResponse) => {
+      qc.setQueryData<PendingRequestsResponse>(
+        queryKeys.friends.requests(),
+        (old) => updater({
+          incoming: old?.incoming ?? [],
+          outgoing: old?.outgoing ?? [],
+        })
+      );
+    };
+    const patchFriendshipStatus = (targetUserId: string | undefined, status: FriendshipStatus) => {
+      if (!targetUserId) return;
+      qc.setQueryData<FriendshipStatusResponse>(
+        queryKeys.friends.status(targetUserId),
+        (old) => ({
+          userId: old?.userId ?? myId ?? "",
+          targetUserId: old?.targetUserId ?? targetUserId,
+          status,
+        })
+      );
+      qc.getQueryCache().findAll({ queryKey: queryKeys.users.all }).forEach((query) => {
+        qc.setQueryData<UserSearchResult[] | unknown>(
+          query.queryKey,
+          (old: unknown) => Array.isArray(old)
+            ? old.map((user) =>
+                user && typeof user === "object" && "id" in user && user.id === targetUserId
+                  ? { ...user, friendship: status }
+                  : user
+              )
+            : old
+        );
+      });
+    };
+    const addFriendToCache = (friendId: string | undefined) => {
+      if (!friendId) return;
+      qc.setQueryData<Friendship[]>(
+        queryKeys.friends.list(),
+        (old) => {
+          const current = old ?? [];
+          if (current.some((friendship) => friendship.friendId === friendId)) return current;
+          return [
+            { id: friendId, userId: myId ?? "", friendId, status: "FRIEND" },
+            ...current,
+          ];
+        }
+      );
+    };
+    const removeFriendFromCache = (friendId: string | undefined) => {
+      if (!friendId) return;
+      qc.setQueryData<Friendship[]>(
+        queryKeys.friends.list(),
+        (old) => old?.filter((friendship) => friendship.friendId !== friendId) ?? old
+      );
+    };
+    const forgetConversation = (conversationId: string) => {
+      qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.polls.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.appointments.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+      clearConversationTyping(conversationId);
+      qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => old?.filter((c) => c.id !== conversationId) ?? old
+      );
+    };
+    const leaveActiveConversationIfNeeded = (conversationId: string) => {
+      const activeId = decodeId(window.location.pathname.split("/").filter(Boolean).at(-1) ?? "");
+      if (activeId === conversationId) router.push("/conversations");
+    };
+    const patchCachedMessages = (
+      updater: (message: Message) => Message
+    ) => {
+      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
+      for (const query of listKeys) {
+        qc.setQueryData(
+          query.queryKey,
+          (old: MessagesInfiniteData | undefined) => {
+            if (!old || !Array.isArray(old.pages)) return old;
+            return {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                data: Array.isArray(page.data) ? page.data.map(updater) : page.data,
+              })),
+            };
+          }
+        );
+      }
+    };
+    const updateMessageDeliveryByCursor = (
+      conversationId: string,
+      userId: string | undefined,
+      upToOffset: number,
+      status: "delivered" | "read"
+    ) => {
+      if (!userId || userId === myId) return;
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old || !Array.isArray(old.pages)) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              data: page.data.map((m) => {
+                if (m.senderId !== myId || Number(m.offset ?? 0) <= 0 || Number(m.offset) > upToOffset) {
+                  return m;
+                }
+                if (status === "delivered" && m.deliveryStatus === "read") return m;
+                return { ...m, deliveryStatus: status };
+              }),
+            })),
+          };
+        }
+      );
+    };
+    const handleMediaMutation = ({ messageId, attachment, mediaStatus: legacyStatus, metadata }: {
+      messageId: string;
+      attachment?: {
+        mediaId: string;
+        kind?: "image" | "video" | "audio" | "file";
+        status?: string;
+        variantsReady?: boolean;
+        thumbReady?: boolean;
+        meta?: { width?: number; height?: number; format?: string };
+        error?: string;
+      };
+      mediaStatus?: string;
+      metadata?: Message["metadata"];
+    }) => {
+      const resolvedStatus = normalizeMediaStatus(attachment?.status ?? legacyStatus);
+      patchCachedMessages((m) => {
+        if (m.messageId !== messageId) return m;
+        const attachments = attachment
+          ? (m.attachments ?? []).map((item) =>
+              item.mediaId === attachment.mediaId
+                ? {
+                    ...item,
+                    type: item.type ?? attachment.kind,
+                    status: attachment.status ?? item.status,
+                    variantsReady: attachment.variantsReady ?? item.variantsReady,
+                  }
+                : item
+            )
+          : m.attachments;
+        return {
+          ...m,
+          mediaStatus: resolvedStatus ?? m.mediaStatus,
+          attachments,
+          metadata: metadata ? { ...m.metadata, ...metadata } : m.metadata,
+        };
+      });
+    };
 
     // ─── Connection lifecycle ───────────────────────────────────────────────
     socket.on("connect", () => {
@@ -101,6 +264,25 @@ export function useSocket() {
           }
         })
         .catch(() => {});
+    });
+
+    socket.on("authenticated", ({ socketId }: { userId: string; socketId: string }) => {
+      setConnected(true, socketId);
+    });
+
+    socket.on("heartbeat:ack", () => {});
+
+    socket.on("conversation:joined", ({ conversationId, success, latestOffset }: { conversationId?: string; success: boolean; latestOffset?: number; error?: string }) => {
+      if (!success || !conversationId || latestOffset === undefined) return;
+      qc.setQueryData(
+        queryKeys.conversations.list(),
+        (old: import("@/lib/api/conversations").Conversation[] | undefined) =>
+          old?.map((c) =>
+            c.id === conversationId
+              ? { ...c, maxOffset: Math.max(Number(c.maxOffset ?? 0), Number(latestOffset ?? 0)) }
+              : c
+          )
+      );
     });
 
     socket.on("connect_error", (err) => {
@@ -160,7 +342,12 @@ export function useSocket() {
         })) ?? null,
         offset: Number(msg.offset ?? 0),
         updatedAt: msg.editedAt ?? msg.createdAt,
-      };
+      } as Message;
+      // Track mentions if the current user is mentioned
+      const mentions = (msg as WsMessage & { mentions?: string[] }).mentions ?? (normalized as { metadata?: { mentions?: string[] } }).metadata?.mentions;
+      if (mentions?.includes(myId ?? "")) {
+        useMentionStore.getState().setMention(msg.conversationId);
+      }
       // If this conversation has no cache yet, prefetch the latest 30 messages
       // so opening the conversation later is instant (no loading spinner).
       // For active conversations (cache exists) upsertMessage does the live update.
@@ -209,7 +396,7 @@ export function useSocket() {
     socket.on("chat:message_received", handleIncomingMessage);
     socket.on("message:new", handleIncomingMessage);
 
-    socket.on("message:notify", ({ conversationId, latestOffset }: { conversationId: string; latestOffset: number }) => {
+    socket.on("message:notify", ({ conversationId, latestOffset, mentions, content, type }: { conversationId: string; latestOffset: number; mentions?: string[]; content?: string; type?: string }) => {
       // Update maxOffset in the conversations list so the unread badge recalculates
       // without fetching the full conversation detail.
       qc.setQueryData(
@@ -218,11 +405,26 @@ export function useSocket() {
           if (!old) return old;
           return old.map((c) =>
             c.id === conversationId
-              ? { ...c, maxOffset: Math.max(Number(c.maxOffset ?? 0), latestOffset) }
+              ? {
+                  ...c,
+                  lastMessage: content !== undefined && type
+                    ? {
+                        content,
+                        senderId: c.lastMessage?.senderId ?? "",
+                        type,
+                        createdAt: new Date().toISOString(),
+                      }
+                    : c.lastMessage,
+                  maxOffset: Math.max(Number(c.maxOffset ?? 0), latestOffset),
+                }
               : c
           );
         }
       );
+      // Check if the current user was mentioned
+      if (mentions?.includes(myId ?? "")) {
+        useMentionStore.getState().setMention(conversationId);
+      }
     });
 
     socket.on("message:queued", ({ clientMessageId, messageId }: { clientMessageId: string; messageId: string }) => {
@@ -260,7 +462,7 @@ export function useSocket() {
               const matchByClientId = clientMessageId && m.clientMessageId === clientMessageId;
               const matchByMessageId = !clientMessageId && m.messageId === messageId;
               if (!matchByClientId && !matchByMessageId) return m;
-              return { ...m, messageId, offset, clientMessageId: undefined, _pending: false };
+              return { ...m, messageId, offset, clientMessageId: undefined, _pending: false, deliveryStatus: "sent" };
             }),
           }));
           return { ...old, pages };
@@ -270,24 +472,31 @@ export function useSocket() {
 
     socket.on("message:rejected", ({ clientMessageId }) => {
       // Mark optimistic message as failed — scan all conversation caches
-      const allKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
-      for (const query of allKeys) {
-        qc.setQueryData(
-          query.queryKey,
-          (old: MessagesInfiniteData | undefined) => {
-            if (!old) return old;
-            const pages = old.pages.map((page) => ({
+      patchCachedMessages((m) =>
+        m.clientMessageId === clientMessageId
+          ? { ...m, _failed: true, _pending: false, deliveryStatus: "failed" }
+          : m
+      );
+    });
+
+    socket.on("message:failed", ({ clientMessageId, conversationId }: { clientMessageId?: string; conversationId: string; errorMessage?: string; failedAt?: string; originalTopic?: string }) => {
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old || !Array.isArray(old.pages)) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
               ...page,
               data: page.data.map((m) =>
-                m.clientMessageId === clientMessageId
-                  ? { ...m, _failed: true, _pending: false }
+                clientMessageId && m.clientMessageId === clientMessageId
+                  ? { ...m, _failed: true, _pending: false, deliveryStatus: "failed" }
                   : m
               ),
-            }));
-            return { ...old, pages };
-          }
-        );
-      }
+            })),
+          };
+        }
+      );
     });
 
     socket.on("message:edited", ({ messageId, conversationId, content, editedAt }) => {
@@ -306,7 +515,7 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:deleted", ({ messageId, conversationId }) => {
+    socket.on("message:deleted", ({ messageId, conversationId, deletedAt }: { messageId: string; conversationId: string; deletedAt?: string }) => {
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {
@@ -315,7 +524,7 @@ export function useSocket() {
             ...page,
             data: page.data.map((m) =>
               m.messageId === messageId
-                ? { ...m, deletedAt: new Date().toISOString() }
+                ? { ...m, deletedAt: deletedAt ?? new Date().toISOString() }
                 : m
             ),
           }));
@@ -324,7 +533,25 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:revoked", ({ messageId, conversationId }: { messageId: string; conversationId: string }) => {
+    socket.on("message:deleted_for_me", ({ messageId, conversationId, deletedAt }: { messageId: string; conversationId: string; deletedAt: string }) => {
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              data: page.data.filter((m) => m.messageId !== messageId).map((m) =>
+                m.messageId === messageId ? { ...m, deletedAt } : m
+              ),
+            })),
+          };
+        }
+      );
+    });
+
+    socket.on("message:revoked", ({ messageId, conversationId, revokedAt }: { messageId: string; conversationId: string; revokedAt?: string; tombstoneTextKey?: string }) => {
       qc.setQueryData(
         queryKeys.messages.list(conversationId),
         (old: MessagesInfiniteData | undefined) => {
@@ -332,7 +559,7 @@ export function useSocket() {
           const pages = old.pages.map((page) => ({
             ...page,
             data: page.data.map((m) =>
-              m.messageId === messageId ? { ...m, isRevoked: true, content: "" } : m
+              m.messageId === messageId ? { ...m, isRevoked: true, deletedAt: revokedAt ?? m.deletedAt, content: "" } : m
             ),
           }));
           return { ...old, pages };
@@ -340,35 +567,8 @@ export function useSocket() {
       );
     });
 
-    socket.on("message:updated", ({ messageId, attachment, mediaStatus: legacyStatus, metadata }) => {
-      // Resolve status from either new `attachment` payload or legacy `mediaStatus` field.
-      const resolvedStatus = normalizeMediaStatus(attachment?.status ?? legacyStatus);
-      // Media processing complete — update mediaStatus and optional waveform metadata.
-      // We don't know which conversation the message belongs to, so scan all cached
-      // message-list queries. Use findAll + setQueryData (instead of setQueriesData)
-      // so we can safely skip pinned-message queries that store a plain Message[].
-      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
-      for (const query of listKeys) {
-        qc.setQueryData(
-          query.queryKey,
-          (old: MessagesInfiniteData | undefined) => {
-            if (!old || !Array.isArray(old.pages)) return old;
-            const pages = old.pages.map((page) => ({
-              ...page,
-              data: Array.isArray(page?.data)
-                ? page.data.map((m) => {
-                    if (m.messageId !== messageId) return m;
-                    const updated = { ...m, mediaStatus: resolvedStatus };
-                    if (metadata) updated.metadata = { ...m.metadata, ...metadata };
-                    return updated;
-                  })
-                : page?.data,
-            }));
-            return { ...old, pages };
-          }
-        );
-      }
-    });
+    socket.on("message:media_ready", handleMediaMutation);
+    socket.on("message:updated", handleMediaMutation);
 
     // ─── Presence ───────────────────────────────────────────────────────────
     socket.on("user:online", ({ userId }) => {
@@ -443,22 +643,112 @@ export function useSocket() {
       );
       qc.invalidateQueries({ queryKey: queryKeys.users.detail(userId) });
     });
+
+    // ─── Friendship lifecycle ────────────────────────────────────────────────
+    socket.on("friendship:request_sent", ({ fromUserId, toUserId }) => {
+      if (fromUserId !== myId) return;
+      patchFriendRequests((old) => ({
+        incoming: old.incoming.filter((id) => id !== toUserId),
+        outgoing: unique([...old.outgoing, toUserId]),
+      }));
+      patchFriendshipStatus(toUserId, "PENDING_OUT");
+    });
+
+    socket.on("friendship:request_received", ({ fromUserId, toUserId, fromUserName }) => {
+      if (toUserId !== myId) return;
+      patchFriendRequests((old) => ({
+        incoming: unique([...old.incoming, fromUserId]),
+        outgoing: old.outgoing.filter((id) => id !== fromUserId),
+      }));
+      patchFriendshipStatus(fromUserId, "PENDING_IN");
+      toast.info(`${fromUserName ?? "Someone"} sent you a friend request.`);
+    });
+
+    socket.on("friendship:request_accepted", ({ acceptedBy, acceptedByName, requesterId, requesterName, userIds }) => {
+      const otherUserId = getOtherUserId([...(userIds ?? []), acceptedBy, requesterId]);
+      if (!otherUserId) return;
+      patchFriendRequests((old) => ({
+        incoming: old.incoming.filter((id) => id !== otherUserId),
+        outgoing: old.outgoing.filter((id) => id !== otherUserId),
+      }));
+      patchFriendshipStatus(otherUserId, "FRIEND");
+      addFriendToCache(otherUserId);
+      if (acceptedBy !== myId) {
+        toast.success(`${acceptedByName ?? requesterName ?? "Your contact"} accepted your friend request.`);
+      }
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+    });
+
+    socket.on("friendship:request_rejected", ({ rejectedBy, rejectedByName, requesterId, userIds }) => {
+      const otherUserId = getOtherUserId([...(userIds ?? []), rejectedBy, requesterId]);
+      if (!otherUserId) return;
+      patchFriendRequests((old) => ({
+        incoming: old.incoming.filter((id) => id !== otherUserId),
+        outgoing: old.outgoing.filter((id) => id !== otherUserId),
+      }));
+      patchFriendshipStatus(otherUserId, "NONE");
+      if (rejectedBy !== myId && requesterId === myId) {
+        toast.info(`${rejectedByName ?? "The user"} declined your friend request.`);
+      }
+    });
+
+    socket.on("friendship:removed", ({ userIds, removedBy, targetUserId }) => {
+      const otherUserId = getOtherUserId([...(userIds ?? []), removedBy, targetUserId]);
+      if (!otherUserId) return;
+      removeFriendFromCache(otherUserId);
+      patchFriendshipStatus(otherUserId, "NONE");
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+    });
+
+    socket.on("friendship:blocked", ({ blocker, blocked }) => {
+      const otherUserId = blocker === myId ? blocked : blocker;
+      removeFriendFromCache(otherUserId);
+      patchFriendRequests((old) => ({
+        incoming: old.incoming.filter((id) => id !== otherUserId),
+        outgoing: old.outgoing.filter((id) => id !== otherUserId),
+      }));
+      patchFriendshipStatus(otherUserId, blocker === myId ? "BLOCKED" : "NONE");
+      qc.invalidateQueries({ queryKey: queryKeys.friends.blocked() });
+    });
+
+    socket.on("friendship:unblocked", ({ unblocker, unblocked }) => {
+      const otherUserId = unblocker === myId ? unblocked : unblocker;
+      patchFriendshipStatus(otherUserId, "NONE");
+      qc.invalidateQueries({ queryKey: queryKeys.friends.blocked() });
+    });
+
     // ─── Membership ────────────────────────────────────────────────────────
-    socket.on("conversation:member-added", ({ conversationId }) => {
+    socket.on("conversation:member-added", ({ conversationId, addedUsers, addedUserIds }) => {
+      const addedIds = [...(addedUsers?.map((user) => user.id) ?? []), ...(addedUserIds ?? [])];
+      if (myId && addedIds.includes(myId)) {
+        getConversation(conversationId)
+          .then((fresh) => {
+            qc.setQueryData(queryKeys.conversations.detail(conversationId), fresh);
+            qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+              queryKeys.conversations.list(),
+              (old) => {
+                if (!old) return [fresh];
+                return old.some((c) => c.id === conversationId)
+                  ? old.map((c) => (c.id === conversationId ? fresh : c))
+                  : [fresh, ...old];
+              }
+            );
+          })
+          .catch(scheduleListInvalidate);
+      }
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       scheduleListInvalidate();
     });
 
-    socket.on("conversation:member-removed", ({ conversationId, removedUserIds }) => {
+    socket.on("conversation:member-removed", ({ conversationId, removedUserIds, removedUsers, removedByName, source }) => {
       const selfId = useAuthStore.getState().user?.id;
-      if (selfId && removedUserIds?.includes(selfId)) {
+      const removedIds = [...(removedUsers?.map((user) => user.id) ?? []), ...(removedUserIds ?? [])];
+      if (selfId && removedIds.includes(selfId)) {
         // Current user was removed — evict conversation from the list cache
-        qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
-          queryKeys.conversations.list(),
-          (old) => old?.filter((c) => c.id !== conversationId) ?? []
-        );
-        qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+        forgetConversation(conversationId);
+        leaveActiveConversationIfNeeded(conversationId);
+        toast.error(source === "member_left" ? "You left this group." : `You were removed${removedByName ? ` by ${removedByName}` : ""}.`);
       } else {
         qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
         qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
@@ -466,32 +756,144 @@ export function useSocket() {
       }
     });
 
+    // ─── Group lifecycle / membership events that can arrive while not viewing the group ──
+    socket.on("group:settings_updated", ({ conversationId, changes }: { conversationId: string; changes: Record<string, unknown> }) => {
+      qc.setQueryData<import("@/lib/api/conversations").Conversation>(
+        queryKeys.conversations.detail(conversationId),
+        (old) => (old ? { ...old, ...changes } : old)
+      );
+      qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => old?.map((c) => (c.id === conversationId ? { ...c, ...changes } : c)) ?? old
+      );
+    });
+
+    socket.on("group:member_role_changed", ({ conversationId, userId, newRole }: { conversationId: string; userId: string; newRole: string }) => {
+      qc.setQueryData<import("@/lib/api/conversations").ConversationMember[]>(
+        queryKeys.conversations.members(conversationId),
+        (old) => old?.map((m) => (m.userId === userId ? { ...m, role: newRole as import("@/lib/api/conversations").MemberRole } : m))
+      );
+      qc.setQueryData<import("@/lib/api/conversations").Conversation>(
+        queryKeys.conversations.detail(conversationId),
+        (old) =>
+          old?.participants
+            ? {
+                ...old,
+                participants: old.participants.map((p) =>
+                  p.userId === userId ? { ...p, role: newRole } : p
+                ),
+              }
+            : old
+      );
+    });
+
+    socket.on("group:member_kicked", ({ conversationId, userId, kickedByName }: { conversationId: string; userId: string; kickedByName?: string }) => {
+      const selfId = useAuthStore.getState().user?.id;
+      if (selfId && userId === selfId) {
+        forgetConversation(conversationId);
+        leaveActiveConversationIfNeeded(conversationId);
+        toast.error(`You have been removed from this group${kickedByName ? ` by ${kickedByName}` : ""}.`);
+      } else {
+        qc.setQueryData<import("@/lib/api/conversations").ConversationMember[]>(
+          queryKeys.conversations.members(conversationId),
+          (old) => old?.filter((m) => m.userId !== userId)
+        );
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      }
+    });
+
+    socket.on("group:disbanded", ({ conversationId, disbandedByName }: { conversationId: string; disbandedBy: string; disbandedByName?: string; timestamp: string }) => {
+      forgetConversation(conversationId);
+      leaveActiveConversationIfNeeded(conversationId);
+      toast.error(`This group has been disbanded${disbandedByName ? ` by ${disbandedByName}` : ""}.`);
+    });
+
+    socket.on("group:join_requested", ({ conversationId }: { conversationId: string; userId: string; userName?: string; requestId: string; requestMessage: string | null; source?: "invite_link" | "request"; timestamp: string }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.joinRequests.list(conversationId) });
+    });
+
+    socket.on("group:join_approved", ({ conversationId, userId, requestId, reviewedByName }: { conversationId: string; userId?: string; userName?: string; requestId: string; reviewedBy: string; reviewedByName?: string; timestamp: string }) => {
+      qc.setQueryData(
+        queryKeys.joinRequests.list(conversationId),
+        (old: Array<{ id: string }> | undefined) => old?.filter((r) => r.id !== requestId)
+      );
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.messages.list(conversationId) });
+      if (!userId || userId === useAuthStore.getState().user?.id) {
+        toast.success(`Your request to join the group has been approved${reviewedByName ? ` by ${reviewedByName}` : ""}!`);
+      }
+    });
+
+    socket.on("group:join_rejected", ({ conversationId, requestId, userId, reviewedByName }: { conversationId: string; userId?: string; userName?: string; requestId: string; reviewedBy: string; reviewedByName?: string; timestamp: string }) => {
+      qc.setQueryData(
+        queryKeys.joinRequests.list(conversationId),
+        (old: Array<{ id: string }> | undefined) => old?.filter((r) => r.id !== requestId)
+      );
+      if (!userId || userId === useAuthStore.getState().user?.id) {
+        toast.error(`Your request to join the group was declined${reviewedByName ? ` by ${reviewedByName}` : ""}.`);
+      }
+    });
+
+    socket.on("conversation:removed", ({ conversationId, message }) => {
+      forgetConversation(conversationId);
+      leaveActiveConversationIfNeeded(conversationId);
+      if (message) toast.error(message);
+    });
+
     // ─── Cursor tracking ──────────────────────────────────────────────────
-    socket.on("cursor:seen_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId: string; upToOffset: number }) => {
+    socket.on("cursor:seen_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId?: string; upToOffset: number }) => {
+      const targetUserId = userId ?? myId;
       qc.setQueryData(
         queryKeys.conversations.members(conversationId),
         (old: import("@/lib/api/conversations").ConversationMember[] | undefined) => {
           if (!old) return old;
           return old.map((m) =>
-            m.userId === userId
+            m.userId === targetUserId
               ? { ...m, lastSeenOffset: Math.max(m.lastSeenOffset, upToOffset) }
               : m
           );
         }
       );
+      updateMessageDeliveryByCursor(conversationId, targetUserId, upToOffset, "read");
     });
 
-    socket.on("cursor:delivered_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId: string; upToOffset: number }) => {
+    socket.on("cursor:delivered_updated", ({ conversationId, userId, upToOffset }: { conversationId: string; userId?: string; upToOffset: number }) => {
+      const targetUserId = userId ?? myId;
       qc.setQueryData(
         queryKeys.conversations.members(conversationId),
         (old: import("@/lib/api/conversations").ConversationMember[] | undefined) => {
           if (!old) return old;
           return old.map((m) =>
-            m.userId === userId
+            m.userId === targetUserId
               ? { ...m, lastDeliveredOffset: Math.max(m.lastDeliveredOffset, upToOffset) }
               : m
           );
         }
+      );
+      updateMessageDeliveryByCursor(conversationId, targetUserId, upToOffset, "delivered");
+    });
+
+    socket.on("message:status", ({ messageId, status, seen, delivered, seenByCount, deliveredToCount, error }: {
+      messageId: string;
+      status?: "sending" | "sent" | "delivered" | "read" | "failed";
+      seen?: { count: number };
+      delivered?: { count: number };
+      seenByCount?: number;
+      deliveredToCount?: number;
+      error?: string;
+    }) => {
+      if (error) return;
+      const resolvedStatus =
+        status ??
+        ((seen?.count ?? seenByCount ?? 0) > 0
+          ? "read"
+          : (delivered?.count ?? deliveredToCount ?? 0) > 0
+            ? "delivered"
+            : "sent");
+      patchCachedMessages((m) =>
+        m.messageId === messageId ? { ...m, deliveryStatus: resolvedStatus } : m
       );
     });
 
@@ -587,5 +989,5 @@ export function useSocket() {
       deliveredThrottleRef.current.clear();
       if (listInvalidateTimerRef.current) clearTimeout(listInvalidateTimerRef.current);
     };
-  }, [myId, setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
+  }, [myId, router, setConnected, setPresence, setSessionRevoked, setTyping, clearTyping, clearConversationTyping, setUserProfile, token]); // Re-bind after token change (reconnect)
 }

@@ -31,20 +31,38 @@ import type {
 type GroupEventSocket = {
   emit(event: "conversation:join", payload: { conversationId: string }): void;
   emit(event: "conversation:leave", payload: { conversationId: string }): void;
-  on(event: "group.settings_updated", handler: (p: GroupSettingsUpdatedEvent) => void): void;
-  on(event: "group.member_role_changed", handler: (p: GroupMemberRoleChangedEvent) => void): void;
-  on(event: "group.member_kicked", handler: (p: GroupMemberKickedEvent) => void): void;
-  on(event: "group.disbanded", handler: (p: GroupDisbandedEvent) => void): void;
+  on(event: "group:settings_updated", handler: (p: GroupSettingsUpdatedEvent) => void): void;
+  on(event: "group:member_role_changed", handler: (p: GroupMemberRoleChangedEvent) => void): void;
+  on(event: "group:member_kicked", handler: (p: GroupMemberKickedEvent) => void): void;
+  on(event: "group:disbanded", handler: (p: GroupDisbandedEvent) => void): void;
   on(event: "group.invite_link_reset", handler: (p: GroupInviteLinkResetEvent) => void): void;
-  on(event: "group.join_requested", handler: (p: GroupJoinRequestedEvent) => void): void;
-  on(event: "group.join_approved", handler: (p: GroupJoinApprovedEvent) => void): void;
-  on(event: "group.join_rejected", handler: (p: GroupJoinRejectedEvent) => void): void;
+  on(event: "group:join_requested", handler: (p: GroupJoinRequestedEvent) => void): void;
+  on(event: "group:join_approved", handler: (p: GroupJoinApprovedEvent) => void): void;
+  on(event: "group:join_rejected", handler: (p: GroupJoinRejectedEvent) => void): void;
   on(event: "conversation:member-added", handler: (p: {
     conversationId: string;
-    addedUserIds?: string[];
     addedBy?: string;
+    addedByName?: string;
+    addedUsers?: Array<{ id: string; displayName: string }>;
+    addedUserIds?: string[];
+    conversationType?: string;
     memberCount?: number;
     timestamp: string;
+  }) => void): void;
+  on(event: "conversation:member-removed", handler: (p: {
+    conversationId: string;
+    removedBy?: string;
+    removedByName?: string;
+    removedUsers?: Array<{ id: string; displayName: string }>;
+    removedUserIds?: string[];
+    conversationType?: string;
+    memberCount?: number;
+    timestamp: string;
+  }) => void): void;
+  on(event: "conversation:removed", handler: (p: {
+    conversationId: string;
+    reason: "removed-from-conversation" | "group-member-kicked" | "group-disbanded" | string;
+    message?: string;
   }) => void): void;
   on(event: "poll.created", handler: (p: PollCreatedEvent) => void): void;
   on(event: "poll.voted", handler: (p: PollVotedEvent) => void): void;
@@ -91,7 +109,7 @@ export function useGroupSocketEvents(conversationId: string) {
     // group events to this client.
     socket.emit("conversation:join", { conversationId });
 
-    // ── group.settings_updated ─────────────────────────────────────────────
+    // ── group:settings_updated ─────────────────────────────────────────────
     // Strategy: merge only the changed fields into the detail cache.
     // Do NOT refetch — the diff payload is already authoritative (§4.4).
     // Toast when the change affects the current user's permissions.
@@ -125,7 +143,7 @@ export function useGroupSocketEvents(conversationId: string) {
       }
     };
 
-    // ── group.member_role_changed ──────────────────────────────────────────
+    // ── group:member_role_changed ──────────────────────────────────────────
     // Strategy: update the role field on the matching member record in the
     // members list cache. If it's the current user, show a toast and the
     // consuming component re-evaluates UI visibility from the updated cache.
@@ -153,7 +171,7 @@ export function useGroupSocketEvents(conversationId: string) {
         },
       );
       // Notify the affected user that their role has changed.
-      if (payload.userId === myId) {
+      if (!payload.userId || payload.userId === myId) {
         const roleLabel: Record<string, string> = {
           owner: "Owner",
           admin: "Admin",
@@ -166,13 +184,13 @@ export function useGroupSocketEvents(conversationId: string) {
       }
     };
 
-    // ── group.member_kicked ────────────────────────────────────────────────
+    // ── group:member_kicked ────────────────────────────────────────────────
     // Strategy (self): evict all caches for this conversation and navigate away.
     // Strategy (other): remove the member from the members list cache (§4.4).
     const onMemberKicked = (payload: GroupMemberKickedEvent) => {
       if (payload.conversationId !== conversationId) return;
 
-      if (payload.userId === myId) {
+      if (!payload.userId || payload.userId === myId) {
         toast.error("You have been removed from this group.");
         // Evict ALL query data related to this conversation.
         qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
@@ -195,7 +213,7 @@ export function useGroupSocketEvents(conversationId: string) {
       }
     };
 
-    // ── group.disbanded ────────────────────────────────────────────────────
+    // ── group:disbanded ────────────────────────────────────────────────────
     // Strategy: show toast, evict all conversation caches, navigate away (§4.4).
     const onDisbanded = (payload: GroupDisbandedEvent) => {
       if (payload.conversationId !== conversationId) return;
@@ -293,7 +311,7 @@ export function useGroupSocketEvents(conversationId: string) {
       });
     };
 
-    // ── group.join_requested ───────────────────────────────────────────────
+    // ── group:join_requested ───────────────────────────────────────────────
     // Strategy: prepend the incoming request into the pending list cache so
     // admins/owners see the badge update without a refetch.
     // Toast: only shown to admin/owner (spec §15).
@@ -306,9 +324,7 @@ export function useGroupSocketEvents(conversationId: string) {
         requestMessage: payload.requestMessage,
         status: "pending",
         createdAt: payload.timestamp,
-        // Socket event doesn't carry the full profile — use a stub so the
-        // panel renders immediately; the list query will reconcile on next fetch.
-        user: { id: payload.userId, displayName: payload.userId, avatarUrl: null },
+        user: { id: payload.userId, displayName: payload.userName ?? payload.userId, avatarUrl: null },
       };
       qc.setQueryData<JoinRequest[]>(
         queryKeys.joinRequests.list(conversationId),
@@ -318,14 +334,19 @@ export function useGroupSocketEvents(conversationId: string) {
       const conv = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
       const myRole = conv?.participants?.find((p) => p.userId === myId)?.role?.toLowerCase();
       if (myRole === "owner" || myRole === "admin") {
-        toast.info("Someone has requested to join the group.", { duration: 5_000 });
+        toast.info(
+          payload.source === "invite_link"
+            ? "Someone requested to join via invite link."
+            : "Someone has requested to join the group.",
+          { duration: 5_000 }
+        );
       }
     };
 
-    // ── group.join_approved ────────────────────────────────────────────────
+    // ── group:join_approved ────────────────────────────────────────────────
     // Strategy:
     //   - Self: invalidate conversations list + show success toast + navigate.
-    //   - Others: invalidate member list so the new member appears.
+    //   - Others: invalidate member list and message history so the approval system message appears.
     const onJoinApproved = (payload: GroupJoinApprovedEvent) => {
       if (payload.conversationId !== conversationId) return;
       // Remove the processed request from the pending list (admin view).
@@ -336,50 +357,125 @@ export function useGroupSocketEvents(conversationId: string) {
       if (payload.userId === myId) {
         // Current user's request was approved — refresh conversations list to include this group.
         qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
-        toast.success("Your request to join the group has been approved!");
+        qc.invalidateQueries({ queryKey: queryKeys.messages.list(payload.conversationId) });
+        toast.success(`Your request to join the group has been approved${payload.reviewedByName ? ` by ${payload.reviewedByName}` : ""}!`);
         router.push(`/conversations/${payload.conversationId}`);
       } else {
-        // Another user was approved — refresh the member list.
+        // Another user was approved — refresh members and message history for the approval system message.
         qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
         qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+        qc.invalidateQueries({ queryKey: queryKeys.messages.list(conversationId) });
       }
     };
 
-    // ── group.join_rejected ────────────────────────────────────────────────
+    // ── group:join_rejected ────────────────────────────────────────────────
     // Strategy: only self receives this event. Show an informative toast.
     const onJoinRejected = (payload: GroupJoinRejectedEvent) => {
       if (payload.conversationId !== conversationId) return;
       if (payload.userId === myId) {
-        toast.error("Your request to join the group was declined.");
+        toast.error(`Your request to join the group was declined${payload.reviewedByName ? ` by ${payload.reviewedByName}` : ""}.`);
       }
     };
 
+    // ── conversation:removed ───────────────────────────────────────────────
+    // Safety net emitted after the gateway forcibly removes this socket from
+    // the conversation room. Domain-specific handlers above may run first.
+    const onConversationRemoved = (payload: {
+      conversationId: string;
+      reason: "removed-from-conversation" | "group-member-kicked" | "group-disbanded" | string;
+      message?: string;
+    }) => {
+      if (payload.conversationId !== conversationId) return;
+      qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.polls.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.appointments.list(conversationId) });
+      qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+      qc.setQueryData<Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => old?.filter((c) => c.id !== conversationId),
+      );
+      if (payload.message) toast.error(payload.message);
+      router.push("/conversations");
+    };
+
     // ── conversation:member-added ──────────────────────────────────────────
-    // Global broadcast when a new member joins. Cache is updated by useSocket;
-    // here we just surface the notification to current group members.
+    // Emitted to each added user's personal room. Invalidate member/detail
+    // caches so the UI reflects the new membership state immediately.
     const onMemberAdded = (payload: {
       conversationId: string;
-      addedUserIds?: string[];
       addedBy?: string;
+      addedByName?: string;
+      addedUsers?: Array<{ id: string; displayName: string }>;
+      addedUserIds?: string[];
+      conversationType?: string;
       memberCount?: number;
       timestamp: string;
     }) => {
       if (payload.conversationId !== conversationId) return;
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-      toast.info("A new member has been added to this group.", { duration: 4_000 });
+    };
+
+    // ── conversation:member-removed ────────────────────────────────────────
+    // Emitted to each removed user's personal room.
+    // If the current user was removed: evict all caches and navigate away.
+    // Otherwise: remove the member entry and update detail.
+    const onMemberRemoved = (payload: {
+      conversationId: string;
+      removedBy?: string;
+      removedByName?: string;
+      removedUsers?: Array<{ id: string; displayName: string }>;
+      removedUserIds?: string[];
+      conversationType?: string;
+      memberCount?: number;
+      timestamp: string;
+    }) => {
+      if (payload.conversationId !== conversationId) return;
+
+      const removedIds = [
+        ...(payload.removedUsers?.map((u) => u.id) ?? []),
+        ...(payload.removedUserIds ?? []),
+      ];
+      const isSelfRemoved = removedIds.includes(myId ?? "");
+
+      if (isSelfRemoved) {
+        toast.error("You have been removed from this group.");
+        qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+        qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+        qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+        qc.removeQueries({ queryKey: queryKeys.polls.list(conversationId) });
+        qc.removeQueries({ queryKey: queryKeys.appointments.list(conversationId) });
+        qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+        qc.setQueryData<Conversation[]>(
+          queryKeys.conversations.list(),
+          (old) => old?.filter((c) => c.id !== conversationId),
+        );
+        router.push("/conversations");
+      } else {
+        if (removedIds.length > 0) {
+          qc.setQueryData<ConversationMember[]>(
+            queryKeys.conversations.members(conversationId),
+            (old) => old?.filter((m) => !removedIds.includes(m.userId)),
+          );
+        }
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      }
     };
 
     // ── Register all listeners ─────────────────────────────────────────────
-    socket.on("group.settings_updated", onSettingsUpdated);
-    socket.on("group.member_role_changed", onMemberRoleChanged);
-    socket.on("group.member_kicked", onMemberKicked);
-    socket.on("group.disbanded", onDisbanded);
+    socket.on("group:settings_updated", onSettingsUpdated);
+    socket.on("group:member_role_changed", onMemberRoleChanged);
+    socket.on("group:member_kicked", onMemberKicked);
+    socket.on("group:disbanded", onDisbanded);
     socket.on("group.invite_link_reset", onInviteLinkReset);
-    socket.on("group.join_requested", onJoinRequested);
-    socket.on("group.join_approved", onJoinApproved);
-    socket.on("group.join_rejected", onJoinRejected);
+    socket.on("group:join_requested", onJoinRequested);
+    socket.on("group:join_approved", onJoinApproved);
+    socket.on("group:join_rejected", onJoinRejected);
     socket.on("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
+    socket.on("conversation:member-removed", onMemberRemoved as (...args: unknown[]) => void);
+    socket.on("conversation:removed", onConversationRemoved as (...args: unknown[]) => void);
     socket.on("poll.created", onPollCreated);
     socket.on("poll.voted", onPollVoted);
     socket.on("poll.closed", onPollClosed);
@@ -390,15 +486,17 @@ export function useGroupSocketEvents(conversationId: string) {
 
     return () => {
       socket.emit("conversation:leave", { conversationId });
-      socket.off("group.settings_updated", onSettingsUpdated as (...args: unknown[]) => void);
-      socket.off("group.member_role_changed", onMemberRoleChanged as (...args: unknown[]) => void);
-      socket.off("group.member_kicked", onMemberKicked as (...args: unknown[]) => void);
-      socket.off("group.disbanded", onDisbanded as (...args: unknown[]) => void);
+      socket.off("group:settings_updated", onSettingsUpdated as (...args: unknown[]) => void);
+      socket.off("group:member_role_changed", onMemberRoleChanged as (...args: unknown[]) => void);
+      socket.off("group:member_kicked", onMemberKicked as (...args: unknown[]) => void);
+      socket.off("group:disbanded", onDisbanded as (...args: unknown[]) => void);
       socket.off("group.invite_link_reset", onInviteLinkReset as (...args: unknown[]) => void);
-      socket.off("group.join_requested", onJoinRequested as (...args: unknown[]) => void);
-      socket.off("group.join_approved", onJoinApproved as (...args: unknown[]) => void);
-      socket.off("group.join_rejected", onJoinRejected as (...args: unknown[]) => void);
+      socket.off("group:join_requested", onJoinRequested as (...args: unknown[]) => void);
+      socket.off("group:join_approved", onJoinApproved as (...args: unknown[]) => void);
+      socket.off("group:join_rejected", onJoinRejected as (...args: unknown[]) => void);
       socket.off("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
+      socket.off("conversation:member-removed", onMemberRemoved as (...args: unknown[]) => void);
+      socket.off("conversation:removed", onConversationRemoved as (...args: unknown[]) => void);
       socket.off("poll.created", onPollCreated as (...args: unknown[]) => void);
       socket.off("poll.voted", onPollVoted as (...args: unknown[]) => void);
       socket.off("poll.closed", onPollClosed as (...args: unknown[]) => void);

@@ -4,6 +4,8 @@ export type MessageType = "text" | "image" | "file" | "audio" | "video" | "syste
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
+export type ConversationMemberAddedSource = "member_add" | "invite_link" | "join_approved";
+export type ConversationMemberRemovedSource = "member_left" | "member_removed";
 
 export interface WsMessage {
   messageId: string;
@@ -21,9 +23,19 @@ export interface WsMessage {
   deletedAt?: string;
   metadata?: {
     mentions?: string[];
+    mentionAll?: boolean;
     tags?: string[];
     attachmentUrls?: string[];
     url?: string;
+    // system message fields (type === "system")
+    action?: string;
+    actorId?: string;
+    actorName?: string;
+    targetIds?: string[];
+    targetNames?: string[];
+    joinSource?: "manual" | "invite_link" | "join_request";
+    newRole?: string;
+    changes?: { name?: string; avatarChanged?: boolean };
   };
 }
 
@@ -34,6 +46,7 @@ export interface ClientEvents {
     token: string;
     deviceId?: string;
     deviceType?: "web" | "mobile" | "desktop";
+    platform?: string;
   }) => void;
 
   "conversation:join": (payload: { conversationId: string }) => void;
@@ -61,6 +74,10 @@ export interface ClientEvents {
     upToOffset: number;
   }) => void;
 
+  "message:get_status": (payload: {
+    messageId: string;
+  }) => void;
+
   heartbeat: () => void;
 }
 
@@ -68,6 +85,13 @@ export interface ClientEvents {
 
 export interface ServerEvents {
   authenticated: (data: { userId: string; socketId: string }) => void;
+  "conversation:joined": (data: {
+    conversationId?: string;
+    success: boolean;
+    latestOffset?: number;
+    error?: string;
+  }) => void;
+  "heartbeat:ack": (data?: { timestamp?: string }) => void;
 
   "chat:message_received": (data: WsMessage) => void;
   "message:new": (data: WsMessage) => void;
@@ -77,10 +101,11 @@ export interface ServerEvents {
     senderName: string;
     content: string;
     type: string;
+    mentions?: string[];
     conversationName?: string;
   }) => void;
   "message:saved": (data: {
-    clientMessageId: string;
+    clientMessageId?: string;
     messageId: string;
     conversationId: string;
     offset: number;
@@ -103,10 +128,31 @@ export interface ServerEvents {
   "message:deleted": (data: {
     messageId: string;
     conversationId: string;
+    deletedAt?: string;
+  }) => void;
+  "message:deleted_for_me": (data: {
+    messageId: string;
+    conversationId: string;
+    deletedAt: string;
   }) => void;
   "message:revoked": (data: {
     messageId: string;
     conversationId: string;
+    revokedAt?: string;
+    tombstoneTextKey?: string;
+  }) => void;
+  "message:media_ready": (data: {
+    messageId: string;
+    conversationId: string;
+    attachment: {
+      mediaId: string;
+      kind: "image" | "video" | "audio" | "file";
+      status: string;
+      variantsReady?: boolean;
+      thumbReady?: boolean;
+      meta?: { width?: number; height?: number; format?: string };
+      error?: string;
+    };
   }) => void;
   "message:updated": (data: {
     messageId: string;
@@ -119,10 +165,29 @@ export interface ServerEvents {
       variantsReady?: boolean;
       thumbReady?: boolean;
       meta?: { width?: number; height?: number; format?: string };
+      error?: string;
     };
     /** Legacy field — kept for backward compat */
     mediaStatus?: MediaStatus;
     metadata?: { waveform?: number[] };
+  }) => void;
+  "message:status": (data: {
+    messageId: string;
+    offset?: number;
+    sent?: boolean;
+    delivered?: { count: number; total: number; percentage: number };
+    seen?: { count: number; total: number; percentage: number };
+    status?: "sending" | "sent" | "delivered" | "read" | "failed";
+    seenByCount?: number;
+    deliveredToCount?: number;
+    error?: string;
+  }) => void;
+  "message:failed": (data: {
+    clientMessageId?: string;
+    conversationId: string;
+    errorMessage: string;
+    failedAt: string;
+    originalTopic?: string;
   }) => void;
 
   "typing:started": (data: { conversationId: string; userId: string }) => void;
@@ -131,21 +196,76 @@ export interface ServerEvents {
   "user:online": (data: { userId: string }) => void;
   "user:offline": (data: { userId: string; lastSeen: string | null }) => void;
 
+  "friendship:request_sent": (data: {
+    fromUserId: string;
+    fromUserName?: string;
+    toUserId: string;
+    toUserName?: string;
+    timestamp: string;
+  }) => void;
+  "friendship:request_received": (data: {
+    fromUserId: string;
+    fromUserName?: string;
+    toUserId: string;
+    toUserName?: string;
+    timestamp: string;
+  }) => void;
+  "friendship:request_accepted": (data: {
+    acceptedBy: string;
+    acceptedByName?: string;
+    requesterId: string;
+    requesterName?: string;
+    userIds: string[];
+    timestamp: string;
+  }) => void;
+  "friendship:request_rejected": (data: {
+    rejectedBy: string;
+    rejectedByName?: string;
+    requesterId: string;
+    requesterName?: string;
+    userIds: string[];
+    timestamp: string;
+  }) => void;
+  "friendship:removed": (data: {
+    userIds: string[];
+    removedBy: string;
+    targetUserId: string;
+    timestamp: string;
+  }) => void;
+  "friendship:blocked": (data: {
+    blocker: string;
+    blocked: string;
+    timestamp: string;
+  }) => void;
+  "friendship:unblocked": (data: {
+    unblocker: string;
+    unblocked: string;
+    timestamp: string;
+  }) => void;
+
   "conversation:member-added": (data: {
     conversationId: string;
-    /** Present when the server includes the full list of added users */
-    addedUserIds?: string[];
     addedBy?: string;
+    addedByName?: string;
+    addedUsers?: Array<{ id: string; displayName: string }>;
+    /** Legacy flat list */
+    addedUserIds?: string[];
     conversationType?: string;
     memberCount?: number;
     timestamp: string;
+    source?: ConversationMemberAddedSource;
   }) => void;
   "conversation:member-removed": (data: {
     conversationId: string;
-    removedUserIds?: string[];
     removedBy?: string;
+    removedByName?: string;
+    removedUsers?: Array<{ id: string; displayName: string }>;
+    /** Legacy flat list */
+    removedUserIds?: string[];
+    conversationType?: string;
     memberCount?: number;
     timestamp: string;
+    source?: ConversationMemberRemovedSource;
   }) => void;
 
   "conversation:updated": (data: {
@@ -157,12 +277,15 @@ export interface ServerEvents {
 
   error: (data: { message: string; code: string }) => void;
 
-  "cursor:seen_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
-  "cursor:delivered_updated": (data: { conversationId: string; userId: string; upToOffset: number }) => void;
+  "cursor:seen_updated": (data: { conversationId: string; userId?: string; upToOffset: number; status?: "processing"; timestamp?: string }) => void;
+  "cursor:delivered_updated": (data: { conversationId: string; userId?: string; upToOffset: number; status?: "processing"; timestamp?: string }) => void;
   "message:reaction_updated": (data: {
     messageId: string;
     conversationId: string;
     reactions: Record<string, { count: number; reactors: string[]; myReaction: boolean }>;
+    action?: "add" | "remove";
+    reactorId?: string;
+    emoji?: string;
   }) => void;
 
   session_revoked: (data: {
@@ -182,7 +305,7 @@ export interface ServerEvents {
   /** Emitted by ConversationCreatedConsumer — friend request accepted → DIRECT auto-created */
   "conversation:new": (data: {
     conversationId: string;
-    type: string;
+    type: "direct" | "group" | "announcement" | string;
     createdBy: string;
     timestamp: string;
   }) => void;
@@ -205,6 +328,83 @@ export interface ServerEvents {
 
   // NOTE: call / meeting events are NOT on this namespace.
   // They are emitted on the /call namespace — see CallServerEvents below.
+
+  // ─── Dedicated group action events (emitted immediately when action is committed) ───
+  "group:settings_updated": (data: {
+    conversationId: string;
+    changes: {
+      name?: string;
+      avatarChanged?: boolean;
+      allowMemberMessage?: boolean;
+      isPublic?: boolean;
+      joinApprovalRequired?: boolean;
+    };
+    updatedBy: string;
+    updatedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "group:member_role_changed": (data: {
+    conversationId: string;
+    userId: string;
+    userName?: string;
+    newRole: string;
+    changedBy: string;
+    changedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "group:member_kicked": (data: {
+    conversationId: string;
+    userId: string;
+    userName?: string;
+    kickedBy: string;
+    kickedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "group:disbanded": (data: {
+    conversationId: string;
+    disbandedBy: string;
+    disbandedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "group:join_requested": (data: {
+    conversationId: string;
+    userId: string;
+    userName?: string;
+    requestId: string;
+    requestMessage: string | null;
+    source?: "invite_link" | "request";
+    timestamp: string;
+  }) => void;
+
+  "group:join_approved": (data: {
+    conversationId: string;
+    userId?: string;
+    userName?: string;
+    requestId: string;
+    reviewedBy: string;
+    reviewedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "group:join_rejected": (data: {
+    conversationId: string;
+    userId?: string;
+    userName?: string;
+    requestId: string;
+    reviewedBy: string;
+    reviewedByName?: string;
+    timestamp: string;
+  }) => void;
+
+  "conversation:removed": (data: {
+    conversationId: string;
+    reason: "removed-from-conversation" | "group-member-kicked" | "group-disbanded" | string;
+    message?: string;
+  }) => void;
 }
 
 // ─── /call namespace — Client → Server ───────────────────────────────────────
