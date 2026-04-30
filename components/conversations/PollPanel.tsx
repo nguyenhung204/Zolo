@@ -22,7 +22,8 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   const { data: conversation } = useConversation(conversationId);
   const myRole = useMyConversationRole(conversationId);
   const allowMemberMessage = conversation?.allowMemberMessage ?? true;
-  const polls = usePolls(conversationId);
+  const supportsPolls = conversation?.kind === "group";
+  const polls = usePolls(conversationId, open && supportsPolls);
   const createPoll = useCreatePoll(conversationId);
 
   if (!open) return null;
@@ -41,6 +42,10 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   };
 
   const handleCreate = () => {
+    if (!supportsPolls) {
+      toast.error("Polls are only available in groups.");
+      return;
+    }
     if (cleanOptions.length !== uniqueOptions.length) {
       toast.error("Poll options must be unique.");
       return;
@@ -79,7 +84,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <div>
             <h2 className="text-sm font-bold text-primary">Polls</h2>
-            <p className="text-xs text-muted mt-0.5">Create and vote inside this group</p>
+            <p className="text-xs text-muted mt-0.5">Create and vote inside group conversations</p>
           </div>
           <button
             onClick={onClose}
@@ -90,6 +95,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
+          {supportsPolls ? (
           <div className="rounded-2xl border border-border bg-bg p-4 space-y-3">
             <p className="text-xs font-bold text-secondary uppercase tracking-wider">New Poll</p>
             <input
@@ -161,7 +167,13 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
               {createPoll.isPending ? "Creating…" : "Create Poll"}
             </button>
           </div>
+          ) : (
+            <div className="rounded-2xl border border-border bg-bg p-4 text-sm text-muted">
+              Polls are only available in group conversations.
+            </div>
+          )}
 
+          {supportsPolls && (
           <div className="space-y-3">
             <p className="text-xs font-bold text-secondary uppercase tracking-wider">Active Polls</p>
             {polls.isLoading ? (
@@ -172,7 +184,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
               polls.data.map((poll, index) =>
                 poll.id ? (
                   <PollUI
-                    key={poll.id}
+                    key={`${poll.id}-${index}`}
                     pollId={poll.id}
                     myRole={myRole}
                     allowMemberMessage={allowMemberMessage}
@@ -191,6 +203,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     </>

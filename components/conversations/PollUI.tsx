@@ -236,7 +236,7 @@ export function PollUI({
 
           return (
             <button
-              key={option.id || `${option.text}-${index}`}
+              key={`${option.id || option.text}-${index}`}
               onClick={() => handleOptionClick(option.id)}
               disabled={!isInteractive}
               className={cn(

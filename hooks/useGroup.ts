@@ -51,12 +51,12 @@ import type { ApiError } from "@/lib/api/errors";
 // ─── Polls ────────────────────────────────────────────────────────────────────
 
 /** List all polls for a conversation. Cache is kept live by useGroupSocketEvents. */
-export function usePolls(conversationId: string) {
+export function usePolls(conversationId: string, enabled = true) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   return useQuery<Poll[]>({
     queryKey: queryKeys.polls.list(conversationId),
     queryFn: () => getPolls(conversationId),
-    enabled: isAuthenticated && !!conversationId,
+    enabled: enabled && isAuthenticated && !!conversationId,
     staleTime: Infinity, // socket poll.created / poll.voted / poll.closed drive updates
   });
 }
