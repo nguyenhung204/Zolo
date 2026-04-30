@@ -13,11 +13,16 @@ import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
 import type { MessagesInfiniteData } from "@/hooks/useMessages";
 import { useRef, useState, useCallback, useEffect, type KeyboardEvent } from "react";
-import { Send, Paperclip, X, Smile, Loader2, Pencil, Mic, FileText, Film } from "lucide-react";
+import { Send, Paperclip, X, Smile, Loader2, Pencil, Mic, FileText, Film, Contact, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Sticker } from "@/lib/api/stickers";
 import { toast } from "sonner";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import { useConversation, useConversationMembers } from "@/hooks/useConversations";
+import { useAuthStore } from "@/stores/authStore";
+import { MentionPicker, type MentionMember } from "./MentionPicker";
+import { useUserSearch } from "@/hooks/useFriends";
+import type { UserSearchResult } from "@/lib/api/friends";
 
 const ALLOWED_IMAGE_TYPES = [
   "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/tiff",
@@ -96,6 +101,8 @@ export function MessageComposer({
   const [text, setText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
+  const [showContactPicker, setShowContactPicker] = useState(false);
+  const [contactQuery, setContactQuery] = useState("");
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const { send } = useSendMessage();
   const { onKeystroke, stopTyping } = useTyping(conversationId);
@@ -104,6 +111,34 @@ export function MessageComposer({
   const editingMessage = useConversationStore((s) => s.editingMessage);
   const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ─── Mention state ────────────────────────────────────────────────────────
+  const myId = useAuthStore((s) => s.user?.id ?? "");
+  const { data: conversation } = useConversation(conversationId);
+  const { data: rawMembers = [] } = useConversationMembers(conversationId);
+  const isMentionSupported =
+    conversation?.kind === "group" || conversation?.kind === "community";
+  // My role in this conversation
+  const myRole = rawMembers.find((m) => m.userId === myId)?.role;
+  const canMentionAll = myRole === "owner" || myRole === "admin";
+  // Members eligible for explicit mention (exclude self)
+  const mentionableMembers: MentionMember[] = rawMembers
+    .filter((m) => m.userId !== myId)
+    .map((m) => ({
+      userId: m.userId,
+      displayName: m.displayName,
+      username: m.username,
+      avatarUrl: m.avatarUrl,
+      role: m.role,
+    }));
+  // Accumulated explicit mentions array
+  const [mentions, setMentions] = useState<string[]>([]);
+  const [mentionAll, setMentionAll] = useState(false);
+  // null = picker hidden; string = current query after '@'
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  // Caret position where the '@' was typed (start of @-token)
+  const mentionStartRef = useRef<number>(-1);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Prevents double-send when macOS IME/autocomplete fires multiple keydown events
   const isSendingRef = useRef(false);
@@ -112,6 +147,9 @@ export function MessageComposer({
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
   const stickerPickerRef = useRef<HTMLDivElement>(null);
   const stickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const contactPickerRef = useRef<HTMLDivElement>(null);
+  const contactTriggerRef = useRef<HTMLButtonElement>(null);
+  const { data: contactResults = [] } = useUserSearch(contactQuery);
 
   // Tracks ongoing thumbnail upload promises keyed by staged-file id.
   const thumbUploadPromises = useRef<Map<string, Promise<string | null>>>(new Map());
@@ -165,6 +203,20 @@ export function MessageComposer({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showStickers]);
+
+  useEffect(() => {
+    if (!showContactPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        !contactPickerRef.current?.contains(e.target as Node) &&
+        !contactTriggerRef.current?.contains(e.target as Node)
+      ) {
+        setShowContactPicker(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showContactPicker]);
 
   const canSend =
     (text.trim().length > 0 || stagedFiles.length > 0) && !disabled;
@@ -279,10 +331,73 @@ export function MessageComposer({
       el.style.height = "auto";
       el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     }
+
+    // ── @ mention detection ──────────────────────────────────────────────
+    if (!isMentionSupported) return;
+    const cursor = el?.selectionStart ?? value.length;
+    // Walk left from the cursor to find the last '@' on this line
+    const before = value.slice(0, cursor);
+    const atIdx = before.lastIndexOf("@");
+    if (atIdx !== -1) {
+      const between = before.slice(atIdx + 1);
+      // Only show picker if there's no whitespace between '@' and cursor
+      if (!/\s/.test(between)) {
+        mentionStartRef.current = atIdx;
+        setMentionQuery(between);
+        return;
+      }
+    }
+    setMentionQuery(null);
   };
 
-  const handleEmojiInsert = useCallback((emojiData: { emoji: string }) => {
-    const emoji = emojiData.emoji;
+  /** Called when user selects a member or "all" from the MentionPicker. */
+  const handleMentionSelect = useCallback(
+    (selected: MentionMember | "all") => {
+      const el = textareaRef.current;
+      const start = mentionStartRef.current;
+      if (start === -1) return;
+
+      if (selected === "all") {
+        const label = "@All ";
+        const next = text.slice(0, start) + label + text.slice(el?.selectionStart ?? text.length);
+        setText(next);
+        setMentionAll(true);
+        setMentionQuery(null);
+        mentionStartRef.current = -1;
+        requestAnimationFrame(() => {
+          if (!el) return;
+          const pos = start + label.length;
+          el.focus();
+          el.selectionStart = pos;
+          el.selectionEnd = pos;
+          el.style.height = "auto";
+          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+        });
+        return;
+      }
+
+      const label = `@${selected.displayName || selected.username || selected.userId} `;
+      const next = text.slice(0, start) + label + text.slice(el?.selectionStart ?? text.length);
+      setText(next);
+      setMentions((prev) =>
+        prev.includes(selected.userId) ? prev : [...prev, selected.userId]
+      );
+      setMentionQuery(null);
+      mentionStartRef.current = -1;
+      requestAnimationFrame(() => {
+        if (!el) return;
+        const pos = start + label.length;
+        el.focus();
+        el.selectionStart = pos;
+        el.selectionEnd = pos;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      });
+    },
+    [text]
+  );
+
+  const handleEmojiInsert = useCallback((emojiData: { emoji: string }) => {    const emoji = emojiData.emoji;
     const el = textareaRef.current;
     const selectionStart = el?.selectionStart ?? text.length;
     const selectionEnd = el?.selectionEnd ?? text.length;
@@ -578,9 +693,15 @@ export function MessageComposer({
 
     // Text only — split into MAX_CONTENT_LENGTH chunks if needed
     const trimmed = text.trim();
+    const pendingMentions = mentions.slice();
+    const pendingMentionAll = mentionAll;
     setText("");
     stopTyping();
     setReplyTo(null);
+    setMentions([]);
+    setMentionAll(false);
+    setMentionQuery(null);
+    mentionStartRef.current = -1;
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     isSendingRef.current = false;
     const chunks = splitContent(trimmed);
@@ -590,6 +711,9 @@ export function MessageComposer({
         content: chunk,
         type: "text",
         replyToMessageId: i === 0 ? replyTo?.messageId : undefined,
+        // Only attach mentions to the first chunk
+        ...(i === 0 && pendingMentions.length > 0 ? { mentions: pendingMentions } : {}),
+        ...(i === 0 && pendingMentionAll ? { mentionAll: true } : {}),
       });
     });
     return;
@@ -601,7 +725,31 @@ export function MessageComposer({
     setShowEmojiPicker(false);
   };
 
+  const handleSendContact = (user: UserSearchResult) => {
+    const caption = text.trim();
+    send({
+      conversationId,
+      type: "contact_card",
+      content: caption,
+      replyToMessageId: replyTo?.messageId,
+      metadata: { contactUserId: user.id },
+    }).catch(() => toast.error("Could not send contact card."));
+    setText("");
+    setReplyTo(null);
+    setShowContactPicker(false);
+    setContactQuery("");
+    stopTyping();
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  };
+
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Close mention picker on Escape without sending
+    if (e.key === "Escape" && mentionQuery !== null) {
+      e.preventDefault();
+      setMentionQuery(null);
+      mentionStartRef.current = -1;
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       // keyCode 229 is the legacy indicator for IME composition on some browsers.
       // e.nativeEvent.isComposing covers macOS autocomplete / CJK input methods.
@@ -612,7 +760,7 @@ export function MessageComposer({
   };
 
   return (
-    <div className="relative shrink-0 border-t border-border bg-surface px-4 py-3">
+    <div ref={composerWrapRef} className="relative shrink-0 border-t border-border bg-surface px-4 py-3">
       {/* Edit mode banner */}
       {editingMessage && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-lg bg-border/30">
@@ -679,6 +827,70 @@ export function MessageComposer({
         <div ref={stickerPickerRef} className="absolute bottom-[72px] left-16 z-50">
           <StickerPicker onSelect={handleSendSticker} />
         </div>
+      )}
+
+      {showContactPicker && (
+        <div
+          ref={contactPickerRef}
+          className="absolute bottom-[72px] left-28 z-50 w-72 rounded-2xl border border-border bg-surface shadow-2xl p-3"
+        >
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
+            <input
+              value={contactQuery}
+              onChange={(e) => setContactQuery(e.target.value)}
+              placeholder="Search friends to share…"
+              autoFocus
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10"
+            />
+          </div>
+          <div className="mt-2 max-h-60 overflow-y-auto">
+            {contactQuery.trim().length < 2 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted">Type at least 2 characters.</p>
+            ) : contactResults.filter((u) => u.friendship === "FRIEND" && u.id !== myId).length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted">No friends found.</p>
+            ) : (
+              contactResults
+                .filter((u) => u.friendship === "FRIEND" && u.id !== myId)
+                .slice(0, 8)
+                .map((user) => {
+                  const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username;
+                  return (
+                    <button
+                      key={user.id}
+                      type="button"
+                      onClick={() => handleSendContact(user)}
+                      className="w-full flex items-center gap-3 px-2 py-2 rounded-xl text-left hover:bg-border/40 transition cursor-pointer"
+                    >
+                      {user.avatarUrl ? (
+                        <img src={user.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-cta/10 text-cta flex items-center justify-center shrink-0">
+                          <Contact className="w-4 h-4" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-text truncate">{displayName}</p>
+                        <p className="text-xs text-muted truncate">@{user.username}</p>
+                      </div>
+                    </button>
+                  );
+                })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mention picker — shown above the input row when user types @ */}
+      {isMentionSupported && mentionQuery !== null && (
+        <MentionPicker
+          members={mentionableMembers}
+          query={mentionQuery}
+          showMentionAll={canMentionAll}
+          onSelect={handleMentionSelect}
+          onDismiss={() => { setMentionQuery(null); mentionStartRef.current = -1; }}
+          anchorRef={composerWrapRef}
+        />
       )}
 
       {/* ── Recording mode ──────────────────────────────────────────────── */}
@@ -762,6 +974,7 @@ export function MessageComposer({
           onClick={() => {
             setShowEmojiPicker((v) => !v);
             setShowStickers(false);
+            setShowContactPicker(false);
           }}
           className={cn(
             "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5",
@@ -782,6 +995,7 @@ export function MessageComposer({
           onClick={() => {
             setShowStickers((v) => !v);
             setShowEmojiPicker(false);
+            setShowContactPicker(false);
           }}
           className={cn(
             "h-8 px-2 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5 text-[11px] font-semibold tracking-[0.08em]",
@@ -792,6 +1006,28 @@ export function MessageComposer({
           title="Stickers"
         >
           ST
+        </button>
+
+        {/* Contact card */}
+        <button
+          ref={contactTriggerRef}
+          type="button"
+          disabled={disabled || !!editingMessage || stagedFiles.length > 0}
+          onClick={() => {
+            setShowContactPicker((v) => !v);
+            setShowEmojiPicker(false);
+            setShowStickers(false);
+          }}
+          className={cn(
+            "w-8 h-8 shrink-0 flex items-center justify-center rounded-lg transition-colors cursor-pointer mb-0.5",
+            showContactPicker
+              ? "text-primary bg-primary/10"
+              : "text-muted hover:text-secondary hover:bg-border/50",
+            (editingMessage || stagedFiles.length > 0) && "opacity-50 cursor-not-allowed",
+          )}
+          title="Send contact card"
+        >
+          <Contact className="w-4 h-4" />
         </button>
 
         {/* Textarea */}

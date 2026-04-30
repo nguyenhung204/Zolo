@@ -42,8 +42,13 @@ interface SendOptions {
   replyToMessageId?: string;
   mediaId?: string;
   attachments?: AttachmentRef[];
+  /** Explicit user-ID mentions (top-level, not in metadata) */
+  mentions?: string[];
+  /** @all / @here / @channel — only owner/admin may send */
+  mentionAll?: boolean;
   metadata?: {
     mentions?: string[];
+    mentionAll?: boolean;
     tags?: string[];
     attachmentUrls?: string[];
     url?: string;
@@ -52,6 +57,7 @@ interface SendOptions {
     thumbMediaId?: string;
     fileSize?: number;
     filename?: string;
+    contactUserId?: string;
   };
   // Client-only: shown while upload is in progress
   localPreviewUrl?: string;
@@ -153,6 +159,7 @@ export function useSendMessage() {
                 ...nextMessage,
                 _pending: false,
                 _failed: false,
+                deliveryStatus: nextMessage.deliveryStatus ?? "sent",
                 _uploadProgress: 100,
               };
             });
@@ -223,8 +230,10 @@ export function useSendMessage() {
       replyToMessageId?: string;
       mediaId?: string;
       attachments?: AttachmentRef[];
+      mentions?: string[];
       metadata?: {
         mentions?: string[];
+        mentionAll?: boolean;
         tags?: string[];
         attachmentUrls?: string[];
         url?: string;
@@ -233,6 +242,7 @@ export function useSendMessage() {
         thumbMediaId?: string;
         fileSize?: number;
         filename?: string;
+        contactUserId?: string;
       };
     },
     maxAttempts = 5
@@ -266,6 +276,8 @@ export function useSendMessage() {
       replyToMessageId,
       mediaId,
       attachments,
+      mentions,
+      mentionAll,
       metadata,
       localPreviewUrl,
       uploadFile,
@@ -273,6 +285,15 @@ export function useSendMessage() {
     }: SendOptions) => {
       const clientMessageId = uuid();
       const resolvedContent = content ?? "";
+
+      // Merge mentions/mentionAll into metadata so they appear on the optimistic bubble
+      const resolvedMetadata = mentions?.length || mentionAll
+        ? {
+            ...metadata,
+            ...(mentions?.length ? { mentions } : {}),
+            ...(mentionAll ? { mentionAll } : {}),
+          }
+        : metadata;
 
       // Build local attachment previews for media group optimistic display
       const localAttachments: LocalAttachmentPreview[] | undefined =
@@ -300,7 +321,7 @@ export function useSendMessage() {
         mediaId,
         mediaStatus: (uploadFile || uploadFileItems || mediaId) ? "processing" : undefined,
         attachments: attachments ?? null,
-        metadata,
+        metadata: resolvedMetadata,
         clientMessageId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -366,7 +387,8 @@ export function useSendMessage() {
               clientMessageId,
               replyToMessageId,
               attachments: resolvedAttachments,
-              metadata,
+              mentions,
+              metadata: resolvedMetadata,
             });
             markAcked(conversationId, clientMessageId, serverMessage);
           } catch (err) {
@@ -407,7 +429,8 @@ export function useSendMessage() {
               replyToMessageId,
               mediaId: uploadedId,
               attachments,
-              metadata,
+              mentions,
+              metadata: resolvedMetadata,
             });
             markAcked(conversationId, clientMessageId, serverMessage);
             _uploadFnMap.delete(clientMessageId); // Clean up on success
@@ -433,7 +456,8 @@ export function useSendMessage() {
           replyToMessageId,
           mediaId,
           attachments,
-          metadata,
+          mentions,
+          metadata: resolvedMetadata,
         })
           .then((serverMessage) => {
             markAcked(conversationId, clientMessageId, serverMessage);

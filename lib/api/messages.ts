@@ -2,6 +2,8 @@ import { apiClient } from "@/lib/api/client";
 import type { MessageType, MediaStatus } from "@/lib/socket/events";
 import { useAuthStore } from "@/stores/authStore";
 
+export type MessageDeliveryStatus = "sending" | "sent" | "delivered" | "read" | "failed";
+
 // ─── System message action types ─────────────────────────────────────────────
 
 export type SystemMessageAction =
@@ -68,6 +70,18 @@ interface RawMessage {
     thumbMediaId?: string;
     fileSize?: number;
     filename?: string;
+    // system message fields (present when type === "system")
+    action?: SystemMessageAction;
+    actorId?: string;
+    actorName?: string;
+    targetIds?: string[];
+    targetNames?: string[];
+    joinSource?: "manual" | "invite_link" | "join_request";
+    newRole?: string;
+    changes?: { name?: string; avatarChanged?: boolean };
+    ownershipTransferredTo?: string;
+    visibility?: "all" | "admins";
+    contactUserId?: string;
   };
   createdAt: string;
   updatedAt?: string;
@@ -77,6 +91,7 @@ interface RawMessage {
   isRevoked?: boolean;
   isEdited?: boolean;
   reactions?: unknown;
+  status?: string;
 }
 
 // ─── Public Message type ──────────────────────────────────────────────────────
@@ -95,6 +110,7 @@ export interface Message {
   clientMessageId?: string;
   metadata?: {
     mentions?: string[];
+    mentionAll?: boolean;
     tags?: string[];
     attachmentUrls?: string[];
     url?: string;
@@ -109,9 +125,15 @@ export interface Message {
     // system message fields
     action?: SystemMessageAction;
     actorId?: string;
+    actorName?: string;       // pre-populated by message-store, no lookup needed
     targetIds?: string[];
+    targetNames?: string[];   // parallel array — same order as targetIds
+    joinSource?: "manual" | "invite_link" | "join_request";
     newRole?: string;
     changes?: { name?: string; avatarChanged?: boolean };
+    ownershipTransferredTo?: string;
+    visibility?: "all" | "admins";
+    contactUserId?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -119,6 +141,7 @@ export interface Message {
   deletedAt?: string;
   isRevoked?: boolean;
   reactions?: ReactionMap;
+  deliveryStatus?: MessageDeliveryStatus;
   // local-only optimistic fields
   _pending?: boolean;
   _failed?: boolean;
@@ -144,8 +167,11 @@ export interface SendMessagePayload {
   replyToMessageId?: string;
   mediaId?: string;
   attachments?: AttachmentRef[];
+  /** Explicit user-ID mentions (max 50, group/announcement only) */
+  mentions?: string[];
   metadata?: {
     mentions?: string[];
+    mentionAll?: boolean;
     tags?: string[];
     attachmentUrls?: string[];
     url?: string;
@@ -154,6 +180,7 @@ export interface SendMessagePayload {
     thumbMediaId?: string;
     fileSize?: number;
     filename?: string;
+    contactUserId?: string;
   };
 }
 
@@ -169,6 +196,16 @@ function normalizeMediaStatus(status: string | undefined): MediaStatus | undefin
   if (s === "created" || s === "uploaded" || s === "processing" || s === "ready" || s === "failed") {
     return s;
   }
+  return undefined;
+}
+
+function normalizeDeliveryStatus(status: string | undefined): MessageDeliveryStatus | undefined {
+  if (!status) return undefined;
+  const s = status.toLowerCase();
+  if (s === "sending" || s === "sent" || s === "delivered" || s === "read" || s === "failed") {
+    return s;
+  }
+  if (s === "accepted" || s === "saved") return "sent";
   return undefined;
 }
 
@@ -252,6 +289,7 @@ function normalizeRawMessage(m: RawMessage): Message {
     replyToMessageId: m.replyToMessageId ?? m.replyToId,
     attachments,
     reactions,
+    deliveryStatus: normalizeDeliveryStatus(m.status),
   };
 }
 
@@ -292,12 +330,14 @@ export async function getMessages(params: {
 // ─── POST /chat/messages ──────────────────────────────────────────────────────
 
 export async function sendMessage(payload: SendMessagePayload): Promise<Message | null> {
-  const { replyToMessageId, mediaId, content, type, ...rest } = payload;
+  const { replyToMessageId, mediaId, content, type, mentions, ...rest } = payload;
   // Build a clean body — omit undefined/empty fields
   const body: Record<string, unknown> = { ...rest, type };
+  // Top-level mentions array (explicit user-ID mentions)
+  if (mentions && mentions.length > 0) body.mentions = mentions;
   if (replyToMessageId) body.replyToMessageId = replyToMessageId;
-  // Audio and sticker messages are allowed to send an empty string; other message types omit empty content.
-  if (content !== undefined && (content.length > 0 || type === "audio" || type === "sticker")) {
+  // Audio, sticker and contact cards are allowed to send an empty string; other message types omit empty content.
+  if (content !== undefined && (content.length > 0 || type === "audio" || type === "sticker" || type === "contact_card")) {
     body.content = content;
   }
   // API rejects top-level mediaId for image/video/audio/file — use attachments array

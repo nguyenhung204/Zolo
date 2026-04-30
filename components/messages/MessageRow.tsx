@@ -6,6 +6,7 @@ import { formatTime } from "@/lib/utils/date";
 import type { Message } from "@/lib/api/messages";
 import {
   CheckCheck, Check, Clock, AlertCircle, Reply, MoreHorizontal, CornerUpLeft, Ban, RotateCcw,
+  Contact,
 } from "lucide-react";
 import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -23,6 +24,10 @@ import { MediaFile, AttachmentGrid } from "./media/MediaFile";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { CallSummaryBubble } from "./CallSummaryBubble";
 import { SystemMessageChip } from "./SystemMessageChip";
+import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
+import { useQuery } from "@tanstack/react-query";
+import { getUserById } from "@/lib/api/users";
+import { queryKeys } from "@/lib/query/keys";
 
 interface OtherMember {
   userId: string;
@@ -42,6 +47,7 @@ interface MessageRowProps {
   senderName?: string;
   senderAvatarUrl?: string;
   otherMembers?: OtherMember[];
+  mentionLabels?: string[];
   onReply?: (msg: Message) => void;
   onEdit?: (msg: Message) => void;
   onDelete?: (msg: Message) => void;
@@ -56,7 +62,7 @@ export function MessageRow({
   message, isMine, isGroupStart, isGroupEnd,
   replyMsg,
   senderName = "", senderAvatarUrl,
-  otherMembers = [],
+  otherMembers = [], mentionLabels = [],
   onReply, onEdit, onDelete, onRevoke, onForward, onPin, onViewDetails, onRetry,
 }: MessageRowProps) {
   const isDeleted = !!message.deletedAt;
@@ -214,7 +220,13 @@ export function MessageRow({
               {hasCaption && (
                 <div className={cn("px-3.5 py-2 text-sm leading-relaxed break-words",
                   isMine ? "bg-cta text-white" : "bg-surface text-text")}>
-                  <MarkdownMessage content={message.content} isMine={isMine} />
+                  <MarkdownMessage
+                    content={message.content}
+                    isMine={isMine}
+                    mentions={message.metadata?.mentions}
+                    mentionLabels={mentionLabels}
+                    mentionAll={message.metadata?.mentionAll}
+                  />
                 </div>
               )}
               {isEdited && (
@@ -271,7 +283,7 @@ export function MessageRow({
                   </div>
                 );
               })()}
-              <MessageContent message={message} isMine={isMine} />
+              <MessageContent message={message} isMine={isMine} mentionLabels={mentionLabels} />
               {isEdited && (
                 <span className={cn("block text-[10px] mt-1 italic select-none", isMine ? "text-white/50" : "text-muted")}>Edited</span>
               )}
@@ -340,7 +352,15 @@ export function MessageRow({
 
 // ─── MessageContent ───────────────────────────────────────────────────────────
 
-function MessageContent({ message, isMine }: { message: Message; isMine: boolean }) {
+function MessageContent({
+  message,
+  isMine,
+  mentionLabels,
+}: {
+  message: Message;
+  isMine: boolean;
+  mentionLabels: string[];
+}) {
   const caption = message.content.trim();
   const renderCaptioned = (body: React.ReactNode) => {
     if (!caption) return body;
@@ -358,7 +378,15 @@ function MessageContent({ message, isMine }: { message: Message; isMine: boolean
         ? <AnimatedSticker url={message.metadata.url} size={130} alt="sticker" />
         : null;
     case "text":
-      return <MarkdownMessage content={message.content} isMine={isMine} />;
+      return (
+        <MarkdownMessage
+          content={message.content}
+          isMine={isMine}
+          mentions={message.metadata?.mentions}
+          mentionLabels={mentionLabels}
+          mentionAll={message.metadata?.mentionAll}
+        />
+      );
     case "image":
     case "video": {
       const fname = message.metadata?.filename;
@@ -376,7 +404,13 @@ function MessageContent({ message, isMine }: { message: Message; isMine: boolean
       return mediaCaption ? (
         <div className="space-y-1.5">
           {mediaNode}
-          <MarkdownMessage content={mediaCaption} isMine={isMine} />
+          <MarkdownMessage
+            content={mediaCaption}
+            isMine={isMine}
+            mentions={message.metadata?.mentions}
+            mentionLabels={mentionLabels}
+            mentionAll={message.metadata?.mentionAll}
+          />
         </div>
       ) : mediaNode;
     }
@@ -388,17 +422,33 @@ function MessageContent({ message, isMine }: { message: Message; isMine: boolean
         : null;
       return fileCaption ? (
         <div className="space-y-2">
-          <p className="whitespace-pre-wrap break-words">{fileCaption}</p>
+          <MarkdownMessage
+            content={fileCaption}
+            isMine={isMine}
+            mentions={message.metadata?.mentions}
+            mentionLabels={mentionLabels}
+            mentionAll={message.metadata?.mentionAll}
+          />
           <MediaFile message={message} isMine={isMine} />
         </div>
       ) : (
         <MediaFile message={message} isMine={isMine} />
       );
     }
+    case "contact_card":
+      return <ContactCardContent message={message} isMine={isMine} />;
     case "media":
       return (
         <div className="space-y-1.5">
-          {caption && <p className="whitespace-pre-wrap text-sm">{caption}</p>}
+          {caption && (
+            <MarkdownMessage
+              content={caption}
+              isMine={isMine}
+              mentions={message.metadata?.mentions}
+              mentionLabels={mentionLabels}
+              mentionAll={message.metadata?.mentionAll}
+            />
+          )}
           <AttachmentGrid
             attachments={message.attachments ?? []}
             isMine={isMine}
@@ -407,8 +457,56 @@ function MessageContent({ message, isMine }: { message: Message; isMine: boolean
         </div>
       );
     default:
-      return <MarkdownMessage content={message.content} isMine={isMine} />;
+      return (
+        <MarkdownMessage
+          content={message.content}
+          isMine={isMine}
+          mentions={message.metadata?.mentions}
+          mentionLabels={mentionLabels}
+          mentionAll={message.metadata?.mentionAll}
+        />
+      );
   }
+}
+
+function ContactCardContent({ message, isMine }: { message: Message; isMine: boolean }) {
+  const contactUserId = message.metadata?.contactUserId;
+  const { data: user } = useQuery({
+    queryKey: queryKeys.users.detail(contactUserId ?? ""),
+    queryFn: () => getUserById(contactUserId!),
+    enabled: !!contactUserId,
+    staleTime: 5 * 60_000,
+  });
+  const name = user
+    ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username
+    : "Contact";
+
+  return (
+    <div className="space-y-2 min-w-56">
+      {message.content.trim() && <p className="whitespace-pre-wrap break-words">{message.content.trim()}</p>}
+      <div className={cn(
+        "flex items-center gap-3 rounded-2xl p-3 border",
+        isMine ? "bg-white/10 border-white/20" : "bg-bg border-border/70",
+      )}>
+        {user?.avatarUrl ? (
+          <img src={user.avatarUrl} alt={name} className="w-11 h-11 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className={cn(
+            "w-11 h-11 rounded-full flex items-center justify-center shrink-0",
+            isMine ? "bg-white/20 text-white" : "bg-cta/10 text-cta",
+          )}>
+            <Contact className="w-5 h-5" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold truncate">{name}</p>
+          <p className={cn("text-xs truncate", isMine ? "text-white/70" : "text-muted")}>
+            @{user?.username ?? contactUserId ?? "unknown"}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── MessageStatusIcon ────────────────────────────────────────────────────────
@@ -422,8 +520,11 @@ function MessageStatusIcon({
   otherMembers: OtherMember[];
   onRetry?: () => void;
 }) {
+  const status = resolveMessageDeliveryStatus(message, otherMembers);
+  const label = messageDeliveryLabel(status);
+
   if (message._failed) return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1" title={label}>
       <AlertCircle className="w-3 h-3 text-error shrink-0" />
       {onRetry && (
         <button
@@ -438,14 +539,17 @@ function MessageStatusIcon({
     </div>
   );
   if (message._pending || message.offset == null || message.offset < 0)
-    return <Clock className="w-3 h-3 text-muted shrink-0" />;
+    return (
+      <span title={messageDeliveryLabel("sending")} aria-label={messageDeliveryLabel("sending")}>
+        <Clock className="w-3 h-3 text-muted shrink-0" />
+      </span>
+    );
 
   const offset = message.offset;
   const seenBy = otherMembers.filter((m) => offset > 0 && m.lastSeenOffset >= offset);
-
   if (seenBy.length > 0) {
     return (
-      <div className="flex items-center -space-x-0.5 shrink-0">
+      <div className="flex items-center -space-x-0.5 shrink-0" title={label} aria-label={label}>
         {seenBy.slice(0, 3).map((m) => (
           <div key={m.userId} className="w-3.5 h-3.5 rounded-full overflow-hidden ring-1 ring-surface shrink-0">
             {m.avatarUrl ? (
@@ -466,7 +570,16 @@ function MessageStatusIcon({
     );
   }
 
-  const deliveredTo = otherMembers.filter((m) => offset > 0 && m.lastDeliveredOffset >= offset);
-  if (deliveredTo.length > 0) return <CheckCheck className="w-3 h-3 text-cta shrink-0" />;
-  return <Check className="w-3 h-3 text-muted shrink-0" />;
+  if (status === "read" || status === "delivered") {
+    return (
+      <span title={label} aria-label={label}>
+        <CheckCheck className="w-3 h-3 text-cta shrink-0" />
+      </span>
+    );
+  }
+  return (
+    <span title={label} aria-label={label}>
+      <Check className="w-3 h-3 text-muted shrink-0" />
+    </span>
+  );
 }

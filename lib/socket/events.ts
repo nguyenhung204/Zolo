@@ -1,6 +1,6 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
-export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media" | "call_summary";
+export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media" | "call_summary" | "contact_card";
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
@@ -36,6 +36,9 @@ export interface WsMessage {
     joinSource?: "manual" | "invite_link" | "join_request";
     newRole?: string;
     changes?: { name?: string; avatarChanged?: boolean };
+    ownershipTransferredTo?: string;
+    visibility?: "all" | "admins";
+    contactUserId?: string;
   };
 }
 

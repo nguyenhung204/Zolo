@@ -8,8 +8,10 @@ import {
   unregisterDevice,
   getNotificationPreferences,
   putNotificationPreferences,
+  muteConversation,
   type PutPreferencesDto,
   type NotificationPreferences,
+  type ConversationMuteDuration,
 } from "@/lib/api/notifications";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
@@ -66,6 +68,18 @@ export function useUpdateNotificationPreferences(conversationId?: string) {
     mutationFn: (dto: PutPreferencesDto) => putNotificationPreferences(dto),
     onSuccess: () => {
       // Invalidate both the targeted and global preference caches
+      qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences() });
+    },
+  });
+}
+
+/** Toggle a conversation mute using the simple duration tokens from the API. */
+export function useMuteConversation(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (duration: ConversationMuteDuration) => muteConversation(conversationId, duration),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences() });
     },

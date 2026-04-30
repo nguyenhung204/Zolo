@@ -37,6 +37,17 @@ export interface PutPreferencesDto {
   timezone?: string;
 }
 
+export type ConversationMuteDuration = "1h" | "4h" | "8h" | "24h" | "forever" | "off";
+
+export interface ConversationMutePreference {
+  userId: string;
+  conversationId: string;
+  muteUntil: string | null;
+  notifyOnMessage: boolean;
+  notifyOnMention: boolean;
+  updatedAt: string;
+}
+
 // ─── API functions ────────────────────────────────────────────────────────────
 
 /** Public — returns the VAPID public key for Web Push subscription. */
@@ -78,4 +89,15 @@ export async function getNotificationPreferences(
     params: conversationId ? { conversationId } : undefined,
   });
   return res.data.data as NotificationPreferences;
+}
+
+/** Toggle per-conversation mute using backend duration tokens. */
+export async function muteConversation(
+  conversationId: string,
+  duration: ConversationMuteDuration,
+): Promise<ConversationMutePreference> {
+  const res = await apiClient.put(`/notifications/conversations/${conversationId}/mute`, {
+    duration,
+  });
+  return res.data.data ?? res.data;
 }

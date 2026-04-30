@@ -1,7 +1,5 @@
 "use client";
 
-import { usePresenceStore } from "@/stores/presenceStore";
-import { useAuthStore } from "@/stores/authStore";
 import type { Message, SystemMessageAction } from "@/lib/api/messages";
 import { formatTime } from "@/lib/utils/date";
 
@@ -12,25 +10,42 @@ interface Props {
 function buildSystemText(
   action: SystemMessageAction | undefined,
   metadata: Message["metadata"],
-  getName: (id: string) => string
 ): string | null {
   if (!action) return null;
 
-  const actor = metadata?.actorId ? getName(metadata.actorId) : "Someone";
-  const targets = (metadata?.targetIds ?? []).map(getName);
+  // Names are pre-populated by message-store — no store lookup needed.
+  const actor = metadata?.actorName ?? "Someone";
+  const actorId = metadata?.actorId;
+  const targetIds = metadata?.targetIds ?? [];
+  const targetNames = metadata?.targetNames ?? [];
+  const joinSource = metadata?.joinSource;
+  const isSelfMemberAdd = targetIds.length === 1 && actorId === targetIds[0];
   const targetList =
-    targets.length === 0
-      ? "someone"
-      : targets.length === 1
-        ? targets[0]
-        : targets.slice(0, -1).join(", ") + " and " + targets[targets.length - 1];
+    targetNames.length === 0
+      ? isSelfMemberAdd
+        ? actor
+        : "someone"
+      : targetNames.length === 1
+        ? targetNames[0]
+        : targetNames.slice(0, -1).join(", ") + " and " + targetNames[targetNames.length - 1];
 
   switch (action) {
     case "MEMBER_ADDED":
+      if (joinSource === "invite_link") {
+        return `${targetList} joined the group via invite link`;
+      }
+      if (joinSource === "join_request") {
+        return `${actor} approved ${targetList} to join the group`;
+      }
+      if (isSelfMemberAdd) {
+        return `${targetList} joined the group via invite link`;
+      }
       return `${actor} added ${targetList} to the group`;
 
     case "MEMBER_LEFT":
-      return `${actor} left the group`;
+      return metadata?.ownershipTransferredTo
+        ? `${actor} transferred ownership and left the group`
+        : `${actor} left the group`;
 
     case "MEMBER_REMOVED":
       return `${actor} removed ${targetList} from the group`;
@@ -60,16 +75,8 @@ function buildSystemText(
 }
 
 export function SystemMessageChip({ message }: Props) {
-  const myId = useAuthStore((s) => s.user?.id);
-  const profileMap = usePresenceStore((s) => s.profileMap);
-
-  const getName = (userId: string): string => {
-    if (userId === myId) return "You";
-    return profileMap[userId]?.displayName ?? "Someone";
-  };
-
   const action = message.metadata?.action;
-  const text = buildSystemText(action, message.metadata, getName);
+  const text = buildSystemText(action, message.metadata);
 
   if (!text) return null;
 

@@ -8,10 +8,12 @@ import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
-import { Hash, Megaphone, MoreHorizontal, Phone, PhoneCall, Search, Users } from "lucide-react";
+import { BarChart3, Hash, Megaphone, MoreHorizontal, Phone, PhoneForwarded, Search, Users } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
+import { PollPanel } from "./PollPanel";
+import { CallHistoryPanel } from "@/components/calls/CallHistoryPanel";
 import { getCallSocket } from "@/lib/socket/socket";
 
 const kindLabel: Record<ConversationKind, string> = {
@@ -37,6 +39,8 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
   const { setUserProfile } = usePresenceStore();
   const isBusyRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pollsOpen, setPollsOpen] = useState(false);
   const currentUserId = useAuthStore((s) => s.user?.id ?? "");
 
   if (!conv) {
@@ -173,10 +177,20 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
             <Phone className="w-4 h-4" />
           </ActionButton>
         )}
+        {!isCommunity && (
+          <ActionButton onClick={() => setHistoryOpen(true)} title="Call history">
+            <PhoneForwarded className="w-4 h-4" />
+          </ActionButton>
+        )}
         <ActionButton onClick={onMembersClick} title="Members">
           <Users className="w-4 h-4" />
           <span className="text-xs font-medium">{conv.memberCount}</span>
         </ActionButton>
+        {!isDirect && (
+          <ActionButton onClick={() => setPollsOpen(true)} title="Polls">
+            <BarChart3 className="w-4 h-4" />
+          </ActionButton>
+        )}
         <ActionButton onClick={() => {}} title="Search in conversation">
           <Search className="w-4 h-4" />
         </ActionButton>
@@ -189,6 +203,16 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
         conversationId={conversationId}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+      <CallHistoryPanel
+        conversationId={conversationId}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
+      <PollPanel
+        conversationId={conversationId}
+        open={pollsOpen}
+        onClose={() => setPollsOpen(false)}
       />
     </div>
   );

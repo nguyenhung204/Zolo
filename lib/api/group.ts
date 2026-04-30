@@ -250,6 +250,15 @@ export async function disbandGroup(conversationId: string): Promise<void> {
   await apiClient.delete(`/conversations/${conversationId}`);
 }
 
+export interface LeaveGroupPayload {
+  transferOwnershipTo?: string;
+  silent?: boolean;
+}
+
+export interface DeleteConversationForMeResult {
+  deletedUntil: number;
+}
+
 // ─── Invite Links ─────────────────────────────────────────────────────────────
 
 export async function generateInviteLink(conversationId: string): Promise<InviteLink> {
@@ -334,8 +343,18 @@ export async function deleteAppointment(appointmentId: string): Promise<void> {
 
 // ─── Leave Group ─────────────────────────────────────────────────────────────
 
-export async function leaveGroup(conversationId: string): Promise<void> {
-  await apiClient.post(`/conversations/${conversationId}/leave`);
+export async function leaveGroup(
+  conversationId: string,
+  payload: LeaveGroupPayload = {},
+): Promise<void> {
+  await apiClient.post(`/conversations/${conversationId}/leave`, payload);
+}
+
+export async function deleteConversationForMe(
+  conversationId: string,
+): Promise<DeleteConversationForMeResult> {
+  const res = await apiClient.delete(`/conversations/${conversationId}/for-me`);
+  return res.data.data ?? res.data;
 }
 
 // ─── Join Requests ────────────────────────────────────────────────────────────

@@ -32,8 +32,10 @@ import {
   deleteAppointment,
   joinByInvite,
   leaveGroup,
+  deleteConversationForMe,
   getJoinRequests,
   reviewJoinRequest,
+  type LeaveGroupPayload,
   type Poll,
   type CreatePollPayload,
   type Appointment,
@@ -275,30 +277,55 @@ export function useJoinByInvite() {
   });
 }
 
-/** Leave a group (POST /conversations/:id/leave). OWNER cannot call this. */
+function evictConversationCaches(qc: ReturnType<typeof useQueryClient>, conversationId: string) {
+  qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+  qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+  qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+  qc.removeQueries({ queryKey: queryKeys.polls.list(conversationId) });
+  qc.removeQueries({ queryKey: queryKeys.appointments.list(conversationId) });
+  qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+  qc.setQueryData<Conversation[]>(
+    queryKeys.conversations.list(),
+    (old) => old?.filter((c) => c.id !== conversationId),
+  );
+}
+
+/** Leave a group (POST /conversations/:id/leave). Owner must transfer ownership. */
 export function useLeaveGroup() {
   const qc = useQueryClient();
   const router = useRouter();
-  return useMutation<void, ApiError, string>({
-    mutationFn: (conversationId) => leaveGroup(conversationId),
-    onSuccess: (_data, conversationId) => {
-      qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
-      qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-      qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
-      qc.removeQueries({ queryKey: queryKeys.polls.list(conversationId) });
-      qc.removeQueries({ queryKey: queryKeys.appointments.list(conversationId) });
-      qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
-      qc.setQueryData<Conversation[]>(
-        queryKeys.conversations.list(),
-        (old) => old?.filter((c) => c.id !== conversationId),
-      );
+  return useMutation<void, ApiError, { conversationId: string } & LeaveGroupPayload>({
+    mutationFn: ({ conversationId, ...payload }) => leaveGroup(conversationId, payload),
+    onSuccess: (_data, { conversationId }) => {
+      evictConversationCaches(qc, conversationId);
       router.push("/conversations");
     },
     onError: (err) => {
-      if (err.status === 400) {
-        toast.error("The group owner cannot leave — disband the group instead.");
+      if (err.status === 403) {
+        toast.error("Owner must transfer ownership before leaving.");
       } else {
         toast.error("Failed to leave the group.");
+      }
+    },
+  });
+}
+
+/** Delete/hide a conversation for the current user only. */
+export function useDeleteConversationForMe() {
+  const qc = useQueryClient();
+  const router = useRouter();
+  return useMutation<{ deletedUntil: number }, ApiError, string>({
+    mutationFn: deleteConversationForMe,
+    onSuccess: (_data, conversationId) => {
+      evictConversationCaches(qc, conversationId);
+      toast.success("Conversation deleted for you.");
+      router.push("/conversations");
+    },
+    onError: (err) => {
+      if (err.status === 403) {
+        toast.error("You are not a member of this conversation.");
+      } else {
+        toast.error("Failed to delete the conversation.");
       }
     },
   });

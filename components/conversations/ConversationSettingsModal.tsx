@@ -14,6 +14,8 @@ import {
   UserPlus,
   Check,
   Users,
+  BellOff,
+  Trash2,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -39,7 +41,9 @@ import {
 } from "@/lib/api/group";
 import { GroupInviteConfig } from "./GroupInviteConfig";
 import { JoinRequestsPanel } from "./JoinRequestsPanel";
-import { useJoinRequests, useLeaveGroup } from "@/hooks/useGroup";
+import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
+import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
+import type { ConversationMuteDuration } from "@/lib/api/notifications";
 import type { MemberRole, Conversation } from "@/lib/api/conversations";
 import type { UserSearchResult } from "@/lib/api/friends";
 
@@ -140,6 +144,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [confirmDisband, setConfirmDisband] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [leaveSilent, setLeaveSilent] = useState(false);
+  const [transferOwnershipTo, setTransferOwnershipTo] = useState("");
+  const [confirmDeleteForMe, setConfirmDeleteForMe] = useState(false);
   const [isBlockingDirect, setIsBlockingDirect] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -162,12 +169,28 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const { mutateAsync: blockUser } = useBlockUser();
   const avatarUpload = useAvatarUpload();
   const leaveGroupMutation = useLeaveGroup();
+  const deleteForMeMutation = useDeleteConversationForMe();
+  const muteConversation = useMuteConversation(conversationId);
+  const { data: notificationPreferences } = useNotificationPreferences(conversationId);
 
   const { data: searchResults = [] } = useUserSearch(addQuery);
 
   const isDirect = conv?.kind === "direct";
   const isAnnouncement = conv?.kind === "community";
   const ownerCount = members.filter((m) => m.role === "owner").length;
+  const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
+  const muteOptions: Array<{ value: ConversationMuteDuration; label: string }> = [
+    { value: "1h", label: "Mute 1 hour" },
+    { value: "4h", label: "Mute 4 hours" },
+    { value: "8h", label: "Mute 8 hours" },
+    { value: "24h", label: "Mute 24 hours" },
+    { value: "forever", label: "Mute until I turn it back on" },
+    { value: "off", label: "Turn notifications back on" },
+  ];
+  const convNotification = notificationPreferences?.conversation;
+  const isConversationMuted =
+    convNotification?.notifyOnMessage === false ||
+    (!!convNotification?.muteUntil && new Date(convNotification.muteUntil).getTime() > Date.now());
   const isUploading =
     avatarUpload.status === "uploading" || avatarUpload.status === "finalizing";
 
@@ -182,6 +205,15 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const updateSettingsMutation = useMutation({
     mutationFn: (payload: GroupSettingsPayload) =>
       updateGroupSettings(conversationId, payload),
+    onMutate: async (payload) => {
+      await qc.cancelQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      const prev = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
+      qc.setQueryData<Conversation>(
+        queryKeys.conversations.detail(conversationId),
+        (old) => (old ? { ...old, ...payload } : old),
+      );
+      return { prev };
+    },
     onSuccess: (updated) => {
       qc.setQueryData<Conversation>(
         queryKeys.conversations.detail(conversationId),
@@ -193,7 +225,12 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
       );
       toast.success("Settings saved.");
     },
-    onError: () => toast.error("Failed to save settings."),
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) {
+        qc.setQueryData(queryKeys.conversations.detail(conversationId), ctx.prev);
+      }
+      toast.error("Failed to save settings.");
+    },
   });
 
   // ── Disband group mutation ─────────────────────────────────────────────────
@@ -220,10 +257,19 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
     if (!open) {
       setConfirmDisband(false);
       setConfirmLeave(false);
+      setLeaveSilent(false);
+      setTransferOwnershipTo("");
+      setConfirmDeleteForMe(false);
       setAddQuery("");
       setPendingAdd([]);
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!transferOwnershipTo && ownershipTransferCandidates.length > 0) {
+      setTransferOwnershipTo(ownershipTransferCandidates[0].userId);
+    }
+  }, [ownershipTransferCandidates, transferOwnershipTo]);
 
   const handleClose = () => {
     if (previewUrl) {
@@ -310,6 +356,27 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
     updateSettingsMutation.mutate({ [key]: value });
   };
 
+  const handleLeaveGroup = () => {
+    if (isOwner && !transferOwnershipTo) {
+      toast.error("Choose a member to receive ownership first.");
+      return;
+    }
+    leaveGroupMutation.mutate({
+      conversationId,
+      silent: leaveSilent,
+      ...(isOwner ? { transferOwnershipTo } : {}),
+    });
+  };
+
+  const handleMuteChange = (value: ConversationMuteDuration) => {
+    muteConversation.mutate(value, {
+      onSuccess: () => {
+        toast.success(value === "off" ? "Notifications turned on." : "Conversation muted.");
+      },
+      onError: () => toast.error("Failed to update notification setting."),
+    });
+  };
+
   if (!open || !conv) return null;
 
   const displayAvatarUrl = previewUrl ?? conv.avatarUrl;
@@ -318,18 +385,22 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const tabs: { id: Tab; label: string }[] = [
     { id: "info", label: "Info" },
     { id: "members", label: `Members (${membersLoading ? "…" : members.length})` },
-    ...(!isDirect && canManageAdmin
+    ...(!isDirect
       ? [
           { id: "settings" as Tab, label: "Settings" },
-          { id: "invite" as Tab, label: "Invite" },
-          ...(joinApprovalRequired
+          ...(canManageAdmin
             ? [
-                {
-                  id: "requests" as Tab,
-                  label: pendingRequests.length > 0
-                    ? `Requests (${pendingRequests.length})`
-                    : "Requests",
-                },
+                { id: "invite" as Tab, label: "Invite" },
+                ...(joinApprovalRequired
+                  ? [
+                      {
+                        id: "requests" as Tab,
+                        label: pendingRequests.length > 0
+                          ? `Requests (${pendingRequests.length})`
+                          : "Requests",
+                      },
+                    ]
+                  : []),
               ]
             : []),
         ]
@@ -486,6 +557,64 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                   >
                     {isBlockingDirect ? "Blocking…" : "Block User"}
                   </button>
+                </div>
+              )}
+
+              {isDirect && (
+                <div className="pt-2 space-y-4">
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-secondary uppercase tracking-wider">
+                      Notifications
+                    </p>
+                    <select
+                      value=""
+                      disabled={muteConversation.isPending}
+                      onChange={(e) => handleMuteChange(e.target.value as ConversationMuteDuration)}
+                      className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer disabled:opacity-50"
+                    >
+                      <option value="" disabled>
+                        {isConversationMuted ? "Muted — choose a new option…" : "Choose mute duration…"}
+                      </option>
+                      {muteOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    {!confirmDeleteForMe ? (
+                      <button
+                        onClick={() => setConfirmDeleteForMe(true)}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Delete Conversation For Me
+                      </button>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs text-error/80">
+                          This hides the conversation and clears your current message history only for you.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => deleteForMeMutation.mutate(conversationId)}
+                            disabled={deleteForMeMutation.isPending}
+                            className="flex-1 py-2 text-xs font-bold text-white bg-error rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                          >
+                            {deleteForMeMutation.isPending ? "Deleting…" : "Delete"}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteForMe(false)}
+                            className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -751,78 +880,138 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
             </div>
           )}
 
-          {/* ══ SETTINGS TAB ══ (groups, admin+) */}
-          {activeTab === "settings" && !isDirect && canManageAdmin && (
+          {/* ══ SETTINGS TAB ══ (groups) */}
+          {activeTab === "settings" && !isDirect && (
             <div className="p-5 space-y-5">
-              <div className="space-y-4">
-                <p className="text-xs font-bold text-secondary uppercase tracking-wider">
-                  Permissions
-                </p>
-
-                <SettingRow
-                  label="Allow member messages"
-                  description="Members below moderator can send messages"
-                  checked={conv.allowMemberMessage ?? true}
-                  onChange={(v) => handleSettingChange("allowMemberMessage", v)}
-                  disabled={updateSettingsMutation.isPending}
-                />
-                <div className="h-px bg-border" />
-
-                <SettingRow
-                  label="Public group"
-                  description="Anyone with the invite link can discover and join"
-                  checked={conv.isPublic ?? false}
-                  onChange={(v) => handleSettingChange("isPublic", v)}
-                  disabled={updateSettingsMutation.isPending}
-                />
-                <div className="h-px bg-border" />
-
-                <SettingRow
-                  label="Require join approval"
-                  description="New members need admin approval before joining"
-                  checked={conv.joinApprovalRequired ?? false}
-                  onChange={(v) => handleSettingChange("joinApprovalRequired", v)}
-                  disabled={updateSettingsMutation.isPending}
-                />
-              </div>
-
-              {/* Leave group — non-owner members */}
-              {!isOwner && (
-                <div className="pt-4 border-t border-border space-y-3">
+              {canManageAdmin && (
+                <div className="space-y-4">
                   <p className="text-xs font-bold text-secondary uppercase tracking-wider">
-                    Membership
+                    Permissions
                   </p>
-                  {!confirmLeave ? (
-                    <button
-                      onClick={() => setConfirmLeave(true)}
-                      className="w-full py-2.5 text-sm font-semibold text-warning border border-warning/40 rounded-xl hover:bg-warning/10 transition cursor-pointer"
-                    >
-                      Leave Group
-                    </button>
-                  ) : (
-                    <div className="space-y-2">
-                      <p className="text-xs text-warning/80">
-                        You will no longer have access to this group&apos;s messages.
-                      </p>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => leaveGroupMutation.mutate(conversationId)}
-                          disabled={leaveGroupMutation.isPending}
-                          className="flex-1 py-2 text-xs font-bold text-white bg-warning rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                        >
-                          {leaveGroupMutation.isPending ? "Leaving\u2026" : "Yes, Leave"}
-                        </button>
-                        <button
-                          onClick={() => setConfirmLeave(false)}
-                          className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
+
+                  <SettingRow
+                    label="Allow member messages"
+                    description="Members below moderator can send messages"
+                    checked={conv.allowMemberMessage ?? true}
+                    onChange={(v) => handleSettingChange("allowMemberMessage", v)}
+                    disabled={updateSettingsMutation.isPending}
+                  />
+                  <div className="h-px bg-border" />
+
+                  <SettingRow
+                    label="Public group"
+                    description="Anyone with the invite link can discover and join"
+                    checked={conv.isPublic ?? false}
+                    onChange={(v) => handleSettingChange("isPublic", v)}
+                    disabled={updateSettingsMutation.isPending}
+                  />
+                  <div className="h-px bg-border" />
+
+                  <SettingRow
+                    label="Require join approval"
+                    description="New members need admin approval before joining"
+                    checked={conv.joinApprovalRequired ?? false}
+                    onChange={(v) => handleSettingChange("joinApprovalRequired", v)}
+                    disabled={updateSettingsMutation.isPending}
+                  />
                 </div>
               )}
+
+              {/* Notifications */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <p className="text-xs font-bold text-secondary uppercase tracking-wider">
+                  Notifications
+                </p>
+                <div className="flex items-center gap-2 text-xs text-muted">
+                  <BellOff className="w-3.5 h-3.5" />
+                  <span>
+                    {isConversationMuted
+                      ? convNotification?.muteUntil
+                        ? `Muted until ${new Date(convNotification.muteUntil).toLocaleString()}`
+                        : "Muted until you turn notifications back on"
+                      : "Notifications are on"}
+                  </span>
+                </div>
+                <select
+                  value=""
+                  disabled={muteConversation.isPending}
+                  onChange={(e) => handleMuteChange(e.target.value as ConversationMuteDuration)}
+                  className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer disabled:opacity-50"
+                >
+                  <option value="" disabled>
+                    Choose mute duration…
+                  </option>
+                  {muteOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Leave group */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <p className="text-xs font-bold text-secondary uppercase tracking-wider">
+                  Membership
+                </p>
+                {!confirmLeave ? (
+                  <button
+                    onClick={() => setConfirmLeave(true)}
+                    className="w-full py-2.5 text-sm font-semibold text-warning border border-warning/40 rounded-xl hover:bg-warning/10 transition cursor-pointer"
+                  >
+                    Leave Group
+                  </button>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-xs text-warning/80">
+                      You will no longer have access to this group&apos;s messages.
+                      {isOwner && " Transfer ownership to another member before leaving."}
+                    </p>
+                    {isOwner && (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs font-semibold text-secondary">
+                          Transfer ownership to
+                        </span>
+                        <select
+                          value={transferOwnershipTo}
+                          onChange={(e) => setTransferOwnershipTo(e.target.value)}
+                          className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer"
+                        >
+                          {ownershipTransferCandidates.map((member) => (
+                            <option key={member.userId} value={member.userId}>
+                              {member.displayName ?? member.username ?? member.userId}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label className="flex items-start gap-2 text-xs text-muted cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={leaveSilent}
+                        onChange={(e) => setLeaveSilent(e.target.checked)}
+                        className="mt-0.5 accent-[var(--color-cta)]"
+                      />
+                      <span>Leave silently — only admins see the system message.</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleLeaveGroup}
+                        disabled={leaveGroupMutation.isPending || (isOwner && !transferOwnershipTo)}
+                        className="flex-1 py-2 text-xs font-bold text-white bg-warning rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                      >
+                        {leaveGroupMutation.isPending ? "Leaving…" : "Yes, Leave"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmLeave(false)}
+                        className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Danger zone — owner only */}
               {isOwner && (
@@ -861,6 +1050,44 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                   )}
                 </div>
               )}
+
+              {/* Delete for me */}
+              <div className="pt-4 border-t border-border space-y-3">
+                <p className="text-xs font-bold text-error uppercase tracking-wider">
+                  Delete for me
+                </p>
+                {!confirmDeleteForMe ? (
+                  <button
+                    onClick={() => setConfirmDeleteForMe(true)}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Conversation For Me
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs text-error/80">
+                      This hides the conversation and clears your current message history only for you.
+                      New messages will make it appear again.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => deleteForMeMutation.mutate(conversationId)}
+                        disabled={deleteForMeMutation.isPending}
+                        className="flex-1 py-2 text-xs font-bold text-white bg-error rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                      >
+                        {deleteForMeMutation.isPending ? "Deleting…" : "Delete"}
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteForMe(false)}
+                        className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
