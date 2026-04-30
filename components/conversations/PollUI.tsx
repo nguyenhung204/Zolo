@@ -2,7 +2,7 @@
 
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Lock, Clock, CheckCircle2, Loader2 } from "lucide-react";
+import { BarChart3, Lock, Clock, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
@@ -144,9 +144,12 @@ export function PollUI({
       }
     },
 
-    onSettled: (_, __, { pollId: id }) => {
-      // Always reconcile with the server after mutation to stay authoritative (§4.2).
-      qc.invalidateQueries({ queryKey: queryKeys.polls.detail(id) });
+    onSuccess: (updated) => {
+      qc.setQueryData<Poll>(queryKeys.polls.detail(updated.id), updated);
+      qc.setQueryData<Poll[]>(
+        queryKeys.polls.list(updated.conversationId),
+        (old) => old?.map((poll) => (poll.id === updated.id ? updated : poll)),
+      );
     },
   });
 
@@ -193,13 +196,21 @@ export function PollUI({
   if (!poll) return null;
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-4 space-y-3 max-w-sm w-full">
+    <div className="rounded-2xl border border-border bg-surface p-4 space-y-3 w-full max-w-[420px] shadow-sm">
       {/* Header */}
-      <div className="space-y-1">
-        <p className="text-sm font-semibold text-foreground leading-snug">
-          {poll.question}
-        </p>
-        <div className="flex items-center gap-2 text-xs text-muted flex-wrap">
+      <div className="space-y-2">
+        <div className="flex items-start gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-cta/10 text-cta flex items-center justify-center shrink-0">
+            <BarChart3 className="w-4 h-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-cta uppercase tracking-wide">Poll</p>
+            <p className="text-sm font-semibold text-foreground leading-snug mt-0.5">
+              {poll.question}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted flex-wrap pl-10">
           {poll.multipleChoice && (
             <span className="px-1.5 py-0.5 rounded bg-muted/20 text-muted-foreground">
               Multiple choice
@@ -240,7 +251,7 @@ export function PollUI({
               onClick={() => handleOptionClick(option.id)}
               disabled={!isInteractive}
               className={cn(
-                "relative w-full text-left rounded-lg border overflow-hidden transition-colors",
+                "relative w-full text-left rounded-xl border overflow-hidden transition-colors",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 isInteractive
                   ? "cursor-pointer hover:border-cta/60"
@@ -261,7 +272,7 @@ export function PollUI({
               />
 
               {/* Content row */}
-              <div className="relative flex items-center justify-between px-3 py-2 gap-2">
+              <div className="relative flex items-center justify-between px-3 py-2.5 gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   {isSelected && (
                     <CheckCircle2 className="w-4 h-4 text-cta flex-shrink-0" />
@@ -284,7 +295,7 @@ export function PollUI({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between pt-1">
+      <div className="flex items-center justify-between pt-1 border-t border-border/60">
         <p className="text-xs text-muted">
           {total} {total === 1 ? "vote" : "votes"}
         </p>

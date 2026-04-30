@@ -82,7 +82,11 @@ export function useCreatePoll(conversationId: string) {
       // Prepend into the list cache (server broadcasts poll.created to other clients)
       qc.setQueryData<Poll[]>(
         queryKeys.polls.list(conversationId),
-        (old) => (old ? [newPoll, ...old] : [newPoll]),
+        (old) => {
+          const list = old ?? [];
+          if (list.some((poll) => poll.id === newPoll.id)) return list;
+          return [newPoll, ...list];
+        },
       );
       qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);
     },
@@ -146,9 +150,12 @@ export function useVotePoll() {
       }
     },
 
-    onSettled: (_data, _err, { pollId }) => {
-      // Always reconcile with server state after optimistic update (§4.2)
-      qc.invalidateQueries({ queryKey: queryKeys.polls.detail(pollId) });
+    onSuccess: (updated) => {
+      qc.setQueryData<Poll>(queryKeys.polls.detail(updated.id), updated);
+      qc.setQueryData<Poll[]>(
+        queryKeys.polls.list(updated.conversationId),
+        (old) => old?.map((poll) => (poll.id === updated.id ? updated : poll)),
+      );
     },
   });
 }

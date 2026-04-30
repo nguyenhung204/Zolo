@@ -258,8 +258,13 @@ export function useGroupSocketEvents(conversationId: string) {
       });
       qc.setQueryData<Poll[]>(
         queryKeys.polls.list(conversationId),
-        (old) => (old ? [newPoll, ...old] : [newPoll]),
+        (old) => {
+          const list = old ?? [];
+          if (list.some((poll) => poll.id === newPoll.id)) return list;
+          return [newPoll, ...list];
+        },
       );
+      qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);
     };
 
     // ── poll.voted ─────────────────────────────────────────────────────────
@@ -271,9 +276,21 @@ export function useGroupSocketEvents(conversationId: string) {
       // optimistic update in useMutation is not overwritten prematurely.
       if (payload.userId === myId) return;
 
+      const normalizedOptions = normalizePoll({
+        id: payload.pollId,
+        conversationId: payload.conversationId,
+        options: payload.updatedOptions,
+      }).options;
+
       qc.setQueryData<Poll>(
         queryKeys.polls.detail(payload.pollId),
-        (old) => (old ? { ...old, options: payload.updatedOptions } : old),
+        (old) => (old ? { ...old, options: normalizedOptions } : old),
+      );
+      qc.setQueryData<Poll[]>(
+        queryKeys.polls.list(conversationId),
+        (old) => old?.map((poll) =>
+          poll.id === payload.pollId ? { ...poll, options: normalizedOptions } : poll,
+        ),
       );
     };
 
@@ -281,12 +298,23 @@ export function useGroupSocketEvents(conversationId: string) {
     // Strategy: merge isClosed + final options into the poll cache (§4.4).
     const onPollClosed = (payload: PollClosedEvent) => {
       if (payload.conversationId !== conversationId) return;
+      const normalizedOptions = normalizePoll({
+        id: payload.pollId,
+        conversationId: payload.conversationId,
+        options: payload.finalOptions,
+      }).options;
       qc.setQueryData<Poll>(
         queryKeys.polls.detail(payload.pollId),
         (old) =>
           old
-            ? { ...old, isClosed: true, options: payload.finalOptions }
+            ? { ...old, isClosed: true, options: normalizedOptions }
             : old,
+      );
+      qc.setQueryData<Poll[]>(
+        queryKeys.polls.list(conversationId),
+        (old) => old?.map((poll) =>
+          poll.id === payload.pollId ? { ...poll, isClosed: true, options: normalizedOptions } : poll,
+        ),
       );
     };
 

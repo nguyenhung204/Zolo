@@ -1,12 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { X, Plus, Trash2, Loader2, BarChart3 } from "lucide-react";
+import { X, Plus, Trash2, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { useConversation, useMyConversationRole } from "@/hooks/useConversations";
-import { useCreatePoll, usePolls } from "@/hooks/useGroup";
-import { PollUI } from "./PollUI";
+import { useConversation } from "@/hooks/useConversations";
+import { useCreatePoll } from "@/hooks/useGroup";
 
 interface PollPanelProps {
   conversationId: string;
@@ -20,10 +19,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   const [multipleChoice, setMultipleChoice] = useState(false);
   const [deadline, setDeadline] = useState("");
   const { data: conversation } = useConversation(conversationId);
-  const myRole = useMyConversationRole(conversationId);
-  const allowMemberMessage = conversation?.allowMemberMessage ?? true;
   const supportsPolls = conversation?.kind === "group";
-  const polls = usePolls(conversationId, open && supportsPolls);
   const createPoll = useCreatePoll(conversationId);
 
   if (!open) return null;
@@ -69,6 +65,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
         onSuccess: () => {
           toast.success("Poll created.");
           resetForm();
+          onClose();
         },
       },
     );
@@ -77,14 +74,16 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
-      <div
-        className="fixed top-0 right-0 bottom-0 z-50 w-[360px] max-w-[92vw] bg-surface flex flex-col shadow-2xl border-l border-border"
-        style={{ animation: "slideInFromRight 0.25s ease-out" }}
-      >
+      <div className="fixed left-1/2 top-1/2 z-50 w-[420px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-3xl bg-surface flex flex-col shadow-2xl border border-border overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <div>
-            <h2 className="text-sm font-bold text-primary">Polls</h2>
-            <p className="text-xs text-muted mt-0.5">Create and vote inside group conversations</p>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-cta/10 text-cta flex items-center justify-center">
+              <BarChart3 className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-primary">Create Poll</h2>
+              <p className="text-xs text-muted mt-0.5">Poll will appear in the conversation</p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -94,10 +93,9 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
           </button>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
+        <div className="max-h-[75vh] overflow-y-auto p-5">
           {supportsPolls ? (
-          <div className="rounded-2xl border border-border bg-bg p-4 space-y-3">
-            <p className="text-xs font-bold text-secondary uppercase tracking-wider">New Poll</p>
+          <div className="space-y-3">
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
@@ -171,38 +169,6 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
             <div className="rounded-2xl border border-border bg-bg p-4 text-sm text-muted">
               Polls are only available in group conversations.
             </div>
-          )}
-
-          {supportsPolls && (
-          <div className="space-y-3">
-            <p className="text-xs font-bold text-secondary uppercase tracking-wider">Active Polls</p>
-            {polls.isLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-muted" />
-              </div>
-            ) : polls.data?.length ? (
-              polls.data.map((poll, index) =>
-                poll.id ? (
-                  <PollUI
-                    key={`${poll.id}-${index}`}
-                    pollId={poll.id}
-                    myRole={myRole}
-                    allowMemberMessage={allowMemberMessage}
-                    initialData={poll}
-                  />
-                ) : (
-                  <div key={`poll-missing-id-${index}`} className="rounded-xl border border-border bg-surface p-4 text-sm text-muted">
-                    Poll data is missing an id.
-                  </div>
-                ),
-              )
-            ) : (
-              <div className="flex flex-col items-center gap-2 py-10 text-muted">
-                <BarChart3 className="w-9 h-9 opacity-40" />
-                <p className="text-sm">No polls yet.</p>
-              </div>
-            )}
-          </div>
           )}
         </div>
       </div>

@@ -28,6 +28,10 @@ import type { MessagesInfiniteData } from "@/hooks/useMessages";
 import { toast } from "sonner";
 import { getUserById } from "@/lib/api/users";
 import { usePresenceStore } from "@/stores/presenceStore";
+import { useConversation, useMyConversationRole } from "@/hooks/useConversations";
+import { usePolls } from "@/hooks/useGroup";
+import { PollUI } from "@/components/conversations/PollUI";
+import type { Poll } from "@/lib/api/group";
 
 interface VirtualMessageListProps {
   conversationId: string;
@@ -45,23 +49,35 @@ interface VirtualMessageListProps {
 
 type ListItem =
   | { kind: "message"; msg: Message; prev: Message | null; next: Message | null }
+  | { kind: "poll"; poll: Poll }
   | { kind: "divider"; label: string }
   | { kind: "padding" };
 
-function buildItems(messages: Message[]): ListItem[] {
-  if (messages.length === 0) return [];
+function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
+  const timeline = [
+    ...messages.map((msg) => ({ kind: "message" as const, createdAt: msg.createdAt, msg })),
+    ...polls.map((poll) => ({ kind: "poll" as const, createdAt: poll.createdAt, poll })),
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  if (timeline.length === 0) return [];
   const items: ListItem[] = [{ kind: "padding" }]; // top spacer
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    const prev = messages[i - 1] ?? null;
+  for (let i = 0; i < timeline.length; i++) {
+    const item = timeline[i];
+    const prev = timeline[i - 1] ?? null;
     // Insert date divider when date changes
     if (
       !prev ||
-      new Date(prev.createdAt).toDateString() !== new Date(msg.createdAt).toDateString()
+      new Date(prev.createdAt).toDateString() !== new Date(item.createdAt).toDateString()
     ) {
-      items.push({ kind: "divider", label: formatDateDivider(msg.createdAt) });
+      items.push({ kind: "divider", label: formatDateDivider(item.createdAt) });
     }
-    items.push({ kind: "message", msg, prev, next: messages[i + 1] ?? null });
+    if (item.kind === "poll") {
+      items.push({ kind: "poll", poll: item.poll });
+      continue;
+    }
+    const prevMsg = prev?.kind === "message" ? prev.msg : null;
+    const next = timeline[i + 1] ?? null;
+    const nextMsg = next?.kind === "message" ? next.msg : null;
+    items.push({ kind: "message", msg: item.msg, prev: prevMsg, next: nextMsg });
   }
   items.push({ kind: "padding" }); // bottom spacer
   return items;
@@ -75,6 +91,8 @@ interface RowData {
   messageById: Map<string, Message>;
   memberMap: Map<string, ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }>;
   otherMembers: Array<{ userId: string; lastSeenOffset: number; lastDeliveredOffset: number; avatarUrl?: string | null; displayName?: string; username?: string }>;
+  myRole: ConversationMember["role"] | null;
+  allowMemberMessage: boolean;
   setReplyTo: (msg: ReplyTarget | null) => void;
   onEdit: (msg: Message) => void;
   onDelete: (msg: Message) => void;
@@ -94,6 +112,8 @@ function MessageRowComponent({
   messageById,
   memberMap,
   otherMembers,
+  myRole,
+  allowMemberMessage,
   setReplyTo,
   onEdit,
   onDelete,
@@ -125,6 +145,19 @@ function MessageRowComponent({
     );
   }
 
+  if (item.kind === "poll") {
+    return (
+      <div style={style} className="px-4 py-2 flex justify-center">
+        <PollUI
+          pollId={item.poll.id}
+          myRole={myRole}
+          allowMemberMessage={allowMemberMessage}
+          initialData={item.poll}
+        />
+      </div>
+    );
+  }
+
   // item.kind === "message"
   const { msg, prev, next } = item;
   const isMine = msg.senderId === userId;
@@ -145,6 +178,13 @@ function MessageRowComponent({
   // Prefer a human-readable name: displayName > username — never show raw IDs
   const senderName = member?.displayName ?? member?.username ?? "";
   const replyMsg = msg.replyToMessageId ? messageById.get(msg.replyToMessageId) ?? null : null;
+  const mentionLabels = (msg.metadata?.mentions ?? [])
+    .map((userId) => {
+      const mentionedMember = memberMap.get(userId);
+      const label = mentionedMember?.displayName ?? mentionedMember?.username;
+      return label ? `@${label}` : "";
+    })
+    .filter(Boolean);
 
   return (
     <div style={style}>
@@ -157,6 +197,7 @@ function MessageRowComponent({
         senderName={senderName}
         senderAvatarUrl={member?.avatarUrl ?? undefined}
         otherMembers={otherMembers}
+        mentionLabels={mentionLabels}
         onReply={(m) => setReplyTo({ messageId: m.messageId, senderId: m.senderId, senderName, content: m.content, type: m.type, metadata: m.metadata })}
         onEdit={onEdit}
         onDelete={onDelete}
@@ -186,6 +227,11 @@ export function VirtualMessageList({
   const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
     useMessages(conversationId);
+  const { data: conversation } = useConversation(conversationId);
+  const myRole = useMyConversationRole(conversationId);
+  const supportsPolls = conversation?.kind === "group";
+  const { data: polls = [] } = usePolls(conversationId, false);
+  const allowMemberMessage = conversation?.allowMemberMessage ?? true;
 
   // ─── Seen cursor tracking ────────────────────────────────────────────────
   const [lastVisibleOffset, setLastVisibleOffset] = useState<number | null>(null);
@@ -313,7 +359,9 @@ export function VirtualMessageList({
     ? [...data.pages].reverse().flatMap((p) => p.data)
     : [];
 
-  const items = buildItems(messages);
+  const visiblePolls = supportsPolls ? polls.filter((poll) => poll.id) : [];
+  const items = buildItems(messages, visiblePolls);
+  const timelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
   const messageById = new Map(messages.map((m) => [m.messageId, m]));
 
@@ -462,18 +510,18 @@ export function VirtualMessageList({
   useEffect(() => {
     if (initialScrollDoneRef.current) return;
     if (targetOffset !== null && targetOffset !== undefined) return;
-    if (messages.length === 0) return;
+    if (timelineCount === 0) return;
     initialScrollDoneRef.current = true;
-    prevCountRef.current = messages.length;
+    prevCountRef.current = timelineCount;
     domScrollToBottom();
   // conversationId ensures re-run when switching conversations even if cache already has data
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, messages.length]);
+  }, [conversationId, timelineCount]);
 
   // Handle new messages arriving + history prepend scroll restoration
   useEffect(() => {
     if (!initialScrollDoneRef.current) return;
-    const newCount = messages.length;
+    const newCount = timelineCount;
     const oldCount = prevCountRef.current;
     if (newCount === oldCount) return;
 
@@ -492,8 +540,13 @@ export function VirtualMessageList({
       }
     } else if (newCount > oldCount) {
       // New message arrived — auto-scroll if user is at bottom OR it's their own message
-      const lastMsg = messages[messages.length - 1];
-      const isMine = lastMsg?.senderId === userId;
+      const lastItem = items[items.length - 2];
+      const isMine =
+        lastItem?.kind === "message"
+          ? lastItem.msg.senderId === userId
+          : lastItem?.kind === "poll"
+            ? lastItem.poll.creatorId === userId
+            : false;
       if (atBottomRef.current || isMine) {
         domScrollToBottom();
       }
@@ -501,7 +554,7 @@ export function VirtualMessageList({
 
     prevCountRef.current = newCount;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, messages.length, userId]);
+  }, [conversationId, timelineCount, userId, items]);
   // Native scroll handler — drives atBottom tracking and reverse-infinite-scroll trigger.
   // Using react-window's onScroll pass-through (HTMLAttributes spread) gives us a single,
   // reliable event source without manual addEventListener/removeEventListener.
@@ -581,7 +634,7 @@ export function VirtualMessageList({
     );
   }
 
-  if (!isLoading && messages.length === 0) {
+  if (!isLoading && messages.length === 0 && visiblePolls.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center select-none">
         <div className="w-12 h-12 rounded-2xl bg-border/60 flex items-center justify-center">
@@ -608,7 +661,7 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, messageById, memberMap, otherMembers, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
+        rowProps={{ items, userId, messageById, memberMap, otherMembers, myRole, allowMemberMessage, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
         overscanCount={8}
@@ -636,4 +689,3 @@ export function VirtualMessageList({
     </div>
   );
 }
-
