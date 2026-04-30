@@ -3,6 +3,7 @@
 import { NavRail } from "./NavRail";
 import { ConversationList } from "@/components/conversations/ConversationList";
 import { usePathname, useRouter } from "next/navigation";
+import { cn } from "@/lib/utils";
 import { useEffect, useRef } from "react";
 import { useSocket } from "@/hooks/useSocket";
 import { useCallWebSocketListeners } from "@/hooks/useCallWebSocketListeners";
@@ -176,17 +177,45 @@ export function AppShell({ children }: AppShellProps) {
     router.push("/login");
   };
 
+  // On mobile, the conversation list and the chat page can't both fit on
+  // screen at the same time. Whenever we are on a "detail" route (e.g.
+  // /conversations/<id> or /settings/...) we hide the list and let the main
+  // content take over. On the list root (/conversations exactly) we instead
+  // hide the empty main pane on mobile so the list fills the screen.
+  const isAtListRoot =
+    pathname === "/conversations" ||
+    pathname === "/conversations/" ||
+    pathname === "/friends" ||
+    pathname === "/friends/";
+
   return (
     <>
-      <div className="flex h-screen overflow-hidden bg-bg">
-        {/* Left: icon rail */}
+      <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-bg">
+        {/* Left: icon rail (becomes bottom bar on mobile) */}
         <NavRail />
 
         {/* Middle: conversation list (conditional) */}
-        {showSidebar && <ConversationList />}
+        {showSidebar && (
+          <div
+            className={cn(
+              "min-h-0",
+              // On desktop always visible. On mobile only at the list root.
+              isAtListRoot ? "flex flex-1 md:flex-initial" : "hidden md:flex",
+            )}
+          >
+            <ConversationList />
+          </div>
+        )}
 
         {/* Right: main content area */}
-        <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <main
+          className={cn(
+            "flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden",
+            // Hide the empty main pane on mobile when we're at a list root
+            // (otherwise the list and main would split the screen 50/50).
+            showSidebar && isAtListRoot ? "hidden md:flex" : "flex",
+          )}
+        >
           {children}
         </main>
       </div>

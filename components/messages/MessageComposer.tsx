@@ -18,11 +18,13 @@ import { cn } from "@/lib/utils";
 import type { Sticker } from "@/lib/api/stickers";
 import { toast } from "sonner";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
-import { useConversation, useConversationMembers } from "@/hooks/useConversations";
+import { useConversation, useConversationMembers, useMyConversationRole } from "@/hooks/useConversations";
 import { useAuthStore } from "@/stores/authStore";
 import { MentionPicker, type MentionMember } from "./MentionPicker";
-import { useUserSearch } from "@/hooks/useFriends";
-import type { UserSearchResult } from "@/lib/api/friends";
+import { useFriendProfiles } from "@/hooks/useFriendProfiles";
+import { hasMinRole } from "@/lib/api/group";
+import type { UserProfile } from "@/lib/api/users";
+import { ShieldOff, Users as UsersIcon } from "lucide-react";
 
 const ALLOWED_IMAGE_TYPES = [
   "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/tiff",
@@ -93,6 +95,37 @@ interface MessageComposerProps {
   placeholder?: string;
 }
 
+// Subset of UserProfile we need to render a contact card row.
+type ContactPickUser = Pick<
+  UserProfile,
+  "id" | "username" | "firstName" | "lastName" | "avatarUrl"
+>;
+
+// Filter the friend list locally by name / username. Excludes self.
+function useFriendList(
+  friends: UserProfile[],
+  query: string,
+  myId: string,
+): ContactPickUser[] {
+  const q = query.trim().toLowerCase();
+  return friends
+    .filter((u) => u.id !== myId)
+    .filter((u) => {
+      if (!q) return true;
+      const fullName = `${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
+      return (
+        u.username.toLowerCase().includes(q) ||
+        fullName.includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      const an = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim() || a.username;
+      const bn = `${b.firstName ?? ""} ${b.lastName ?? ""}`.trim() || b.username;
+      return an.localeCompare(bn);
+    });
+}
+
 export function MessageComposer({
   conversationId,
   disabled,
@@ -119,8 +152,20 @@ export function MessageComposer({
   const isMentionSupported =
     conversation?.kind === "group" || conversation?.kind === "community";
   // My role in this conversation
-  const myRole = rawMembers.find((m) => m.userId === myId)?.role;
+  const myRoleFromMembers = rawMembers.find((m) => m.userId === myId)?.role;
+  const myRoleFromHook = useMyConversationRole(conversationId);
+  const myRole = myRoleFromMembers ?? myRoleFromHook;
   const canMentionAll = myRole === "owner" || myRole === "admin";
+
+  // ── Permission gate ──────────────────────────────────────────────────────
+  // When the group setting `allowMemberMessage=false` is on, only OWNER/ADMIN
+  // can post. For direct chats / when the flag is undefined we treat as
+  // allowed. The composer is replaced with a notice for restricted members.
+  const allowMemberMessage = conversation?.allowMemberMessage ?? true;
+  const isMessagingRestricted =
+    conversation?.kind !== "direct" &&
+    !allowMemberMessage &&
+    !hasMinRole(myRole ?? "member", "admin");
   // Members eligible for explicit mention (exclude self)
   const mentionableMembers: MentionMember[] = rawMembers
     .filter((m) => m.userId !== myId)
@@ -149,7 +194,10 @@ export function MessageComposer({
   const stickerTriggerRef = useRef<HTMLButtonElement>(null);
   const contactPickerRef = useRef<HTMLDivElement>(null);
   const contactTriggerRef = useRef<HTMLButtonElement>(null);
-  const { data: contactResults = [] } = useUserSearch(contactQuery);
+  // Contact picker pulls from the user's friend list (per requirement) and
+  // filters in-memory by name/username. The list is cached across opens.
+  const { profiles: friendProfiles, isLoading: friendsLoading } = useFriendProfiles();
+  const filteredFriends = useFriendList(friendProfiles, contactQuery, myId);
 
   // Tracks ongoing thumbnail upload promises keyed by staged-file id.
   const thumbUploadPromises = useRef<Map<string, Promise<string | null>>>(new Map());
@@ -725,7 +773,7 @@ export function MessageComposer({
     setShowEmojiPicker(false);
   };
 
-  const handleSendContact = (user: UserSearchResult) => {
+  const handleSendContact = (user: ContactPickUser) => {
     const caption = text.trim();
     send({
       conversationId,
@@ -758,6 +806,30 @@ export function MessageComposer({
       void handleSend();
     }
   };
+
+  // ── Restricted: render notice instead of composer ───────────────────────
+  if (isMessagingRestricted) {
+    return (
+      <div
+        ref={composerWrapRef}
+        className="relative shrink-0 border-t border-border bg-surface px-4 py-3"
+      >
+        <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface-secondary px-4 py-3">
+          <div className="w-9 h-9 shrink-0 rounded-full bg-cta/10 text-cta flex items-center justify-center">
+            <ShieldOff className="w-4 h-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-text">
+              Members can&apos;t send messages
+            </p>
+            <p className="text-xs text-muted">
+              Only the owner and admins can post in this group.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={composerWrapRef} className="relative shrink-0 border-t border-border bg-surface px-4 py-3">
@@ -832,50 +904,64 @@ export function MessageComposer({
       {showContactPicker && (
         <div
           ref={contactPickerRef}
-          className="absolute bottom-[72px] left-28 z-50 w-72 rounded-2xl border border-border bg-surface shadow-2xl p-3"
+          className="absolute bottom-[72px] left-28 z-50 w-80 rounded-2xl border border-border bg-surface shadow-xl p-3 max-w-[calc(100vw-2rem)]"
         >
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <UsersIcon className="w-4 h-4 text-cta shrink-0" />
+            <p className="text-xs font-bold text-secondary tracking-wide">
+              Share a friend
+            </p>
+          </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
             <input
               value={contactQuery}
               onChange={(e) => setContactQuery(e.target.value)}
-              placeholder="Search friends to share…"
+              placeholder="Search friends…"
               autoFocus
-              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
             />
           </div>
-          <div className="mt-2 max-h-60 overflow-y-auto">
-            {contactQuery.trim().length < 2 ? (
-              <p className="px-2 py-6 text-center text-xs text-muted">Type at least 2 characters.</p>
-            ) : contactResults.filter((u) => u.friendship === "FRIEND" && u.id !== myId).length === 0 ? (
-              <p className="px-2 py-6 text-center text-xs text-muted">No friends found.</p>
+          <div className="mt-2 max-h-72 overflow-y-auto scrollbar-thin">
+            {friendsLoading && filteredFriends.length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted">Loading friends…</p>
+            ) : filteredFriends.length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted">
+                {contactQuery.trim()
+                  ? "No friends match that search."
+                  : "You have no friends yet — add some first!"}
+              </p>
             ) : (
-              contactResults
-                .filter((u) => u.friendship === "FRIEND" && u.id !== myId)
-                .slice(0, 8)
-                .map((user) => {
-                  const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username;
-                  return (
-                    <button
-                      key={user.id}
-                      type="button"
-                      onClick={() => handleSendContact(user)}
-                      className="w-full flex items-center gap-3 px-2 py-2 rounded-xl text-left hover:bg-border/40 transition cursor-pointer"
-                    >
-                      {user.avatarUrl ? (
-                        <img src={user.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-cta/10 text-cta flex items-center justify-center shrink-0">
-                          <Contact className="w-4 h-4" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-text truncate">{displayName}</p>
-                        <p className="text-xs text-muted truncate">@{user.username}</p>
+              filteredFriends.slice(0, 30).map((user) => {
+                const displayName =
+                  [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+                  user.username;
+                return (
+                  <button
+                    key={user.id}
+                    type="button"
+                    onClick={() => handleSendContact(user)}
+                    className="w-full flex items-center gap-3 px-2 py-2 rounded-xl text-left hover:bg-border/40 transition cursor-pointer"
+                  >
+                    {user.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={user.avatarUrl}
+                        alt=""
+                        className="w-9 h-9 rounded-full object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-cta/10 text-cta flex items-center justify-center shrink-0">
+                        <Contact className="w-4 h-4" />
                       </div>
-                    </button>
-                  );
-                })
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-text truncate">{displayName}</p>
+                      <p className="text-xs text-muted truncate">@{user.username}</p>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>

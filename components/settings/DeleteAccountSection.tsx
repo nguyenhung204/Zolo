@@ -101,7 +101,7 @@ export function DeleteAccountSection() {
               </p>
             </div>
 
-            <div className="rounded-xl border border-border bg-background/70 p-4 space-y-2">
+            <div className="rounded-xl border border-border bg-bg/70 p-4 space-y-2">
               <p className="text-sm font-medium text-text">This will immediately:</p>
               <ul className="space-y-1 text-sm text-secondary list-disc pl-5">
                 {ACCOUNT_DELETION_POLICY.map((item) => (
@@ -121,7 +121,7 @@ export function DeleteAccountSection() {
                 value={confirmation}
                 onChange={(event) => setConfirmation(event.target.value)}
                 placeholder={DELETE_CONFIRMATION_TEXT}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-error/30 focus:border-error transition"
+                className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-error/30 focus:border-error transition"
               />
               <p className="text-xs text-muted">
                 This action cannot be reversed after the request is submitted.

@@ -106,7 +106,7 @@ function SessionCard({
   const clientNames = clientList.join(", ") || "Unknown client";
 
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl border border-border/70 bg-background/50 hover:bg-background transition">
+    <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl border border-border/70 bg-bg/50 hover:bg-bg transition">
       <div className="flex items-center gap-3 min-w-0">
         <div className="shrink-0 w-8 h-8 rounded-full bg-border/60 flex items-center justify-center">
           <DeviceIcon />

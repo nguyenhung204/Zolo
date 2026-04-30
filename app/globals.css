@@ -5,12 +5,19 @@
   --color-primary:   #0F172A;
   --color-secondary: #334155;
   --color-cta:       #0369A1;
+  --color-cta-hover: #075985;
   --color-bg:        #F8FAFC;
   --color-text:      #020617;
   --color-border:    #E2E8F0;
   --color-muted:     #94A3B8;
   --color-surface:   #FFFFFF;
   --color-surface-secondary: #F1F5F9;
+  --color-elevated:  #FFFFFF;
+
+  /* Bubble / chat tones */
+  --color-bubble-mine:   #0369A1;          /* sent bubble */
+  --color-bubble-other:  #FFFFFF;          /* received bubble */
+  --color-mention-bg:    rgba(3, 105, 161, 0.10);
 
   /* Status / semantic */
   --color-success:   #16A34A;
@@ -23,10 +30,13 @@
   --font-sans: var(--font-jakarta), "Plus Jakarta Sans", system-ui, sans-serif;
 
   /* ─── Shadows ──────────────────────────────────────────────── */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-  --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
-  --shadow-lg: 0 10px 15px rgba(0,0,0,0.10);
-  --shadow-xl: 0 20px 25px rgba(0,0,0,0.15);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 24px 48px rgba(15, 23, 42, 0.18);
+
+  /* ─── Breakpoints (Tailwind v4 reads these) ───────────────── */
+  --breakpoint-xs: 30rem;          /* 480px */
 }
 
 /* ─── Sticker sprite-sheet animation ──────────────────────────────────────── */
@@ -35,10 +45,22 @@
   to   { background-position: 100% 0%; }
 }
 
-/* ─── Sidebar slide-in ─────────────────────────────────────────────────────── */
+/* ─── Sidebar slide-in (right) ────────────────────────────────────────────── */
 @keyframes slideInFromRight {
   from { transform: translateX(100%); }
   to   { transform: translateX(0); }
+}
+
+/* ─── Drawer slide-in (left) ──────────────────────────────────────────────── */
+@keyframes slideInFromLeft {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+/* ─── Fade-in for overlays ────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* ─── Base resets ──────────────────────────────────────────────── */
@@ -49,18 +71,37 @@
 html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   background-color: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
+  /* Smooth theme switching */
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+/* Selection — keep highly readable in both themes */
+::selection {
+  background: rgba(3, 105, 161, 0.30);
+  color: inherit;
+}
+
+/* Disable focus ring on mouse, keep it for keyboard a11y */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--color-cta);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* ─── Scrollbar ────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -68,33 +109,65 @@ body {
 ::-webkit-scrollbar-thumb {
   background: var(--color-border);
   border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-muted);
+  background-clip: content-box;
+}
+
+/* Compact scrollbar for narrow panels (chat list, etc) */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
 }
 
 /* ─── Dark theme ───────────────────────────────────────────────── */
 [data-theme="dark"] {
-  --color-bg:        #0F172A;
-  --color-surface:   #1E293B;
-  --color-surface-secondary: #273548;
+  --color-bg:        #0B1220;
+  --color-surface:   #131C2E;
+  --color-surface-secondary: #1B2438;
+  --color-elevated:  #1E2A42;
   --color-primary:   #F1F5F9;
   --color-text:      #F1F5F9;
-  --color-secondary: #94A3B8;
-  --color-border:    #334155;
-  --color-muted:     #475569;
+  --color-secondary: #CBD5E1;
+  --color-border:    #243049;
+  --color-muted:     #64748B;
+  --color-bubble-other: #1B2438;
+  --color-mention-bg: rgba(56, 189, 248, 0.15);
+  /* Slightly brighter CTA for dark */
+  --color-cta:       #38BDF8;
+  --color-cta-hover: #7DD3FC;
+
+  color-scheme: dark;
+}
+
+[data-theme="dark"] ::selection {
+  background: rgba(56, 189, 248, 0.35);
 }
 
 @media (prefers-color-scheme: dark) {
   [data-theme="system"] {
-    --color-bg:        #0F172A;
-    --color-surface:   #1E293B;
-    --color-surface-secondary: #273548;
+    --color-bg:        #0B1220;
+    --color-surface:   #131C2E;
+    --color-surface-secondary: #1B2438;
+    --color-elevated:  #1E2A42;
     --color-primary:   #F1F5F9;
     --color-text:      #F1F5F9;
-    --color-secondary: #94A3B8;
-    --color-border:    #334155;
-    --color-muted:     #475569;
+    --color-secondary: #CBD5E1;
+    --color-border:    #243049;
+    --color-muted:     #64748B;
+    --color-bubble-other: #1B2438;
+    --color-mention-bg: rgba(56, 189, 248, 0.15);
+    --color-cta:       #38BDF8;
+    --color-cta-hover: #7DD3FC;
+
+    color-scheme: dark;
+  }
+
+  [data-theme="system"] ::selection {
+    background: rgba(56, 189, 248, 0.35);
   }
 }
 
@@ -117,5 +190,18 @@ body {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Utilities ────────────────────────────────────────────────── */
+/* Safe area for notched devices in mobile bottom nav */
+.pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+
+/* No-tap-highlight for cleaner mobile UX */
+@media (pointer: coarse) {
+  button, a {
+    -webkit-tap-highlight-color: transparent;
   }
 }

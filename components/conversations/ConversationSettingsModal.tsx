@@ -415,9 +415,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
         onClick={handleClose}
       />
 
-      {/* Sidebar panel — slides in from right */}
+      {/* Sidebar panel — slides in from right (full-screen on mobile) */}
       <div
-        className="fixed top-0 right-0 bottom-0 z-50 w-80 bg-surface flex flex-col shadow-2xl border-l border-border"
+        className="fixed top-0 right-0 bottom-0 z-50 w-full sm:w-96 max-w-full bg-surface flex flex-col shadow-2xl border-l border-border"
         style={{ animation: "slideInFromRight 0.25s ease-out" }}
       >
         {/* Header */}
@@ -891,7 +891,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
                   <SettingRow
                     label="Allow member messages"
-                    description="Members below moderator can send messages"
+                    description="When off, only the owner and admins can send messages"
                     checked={conv.allowMemberMessage ?? true}
                     onChange={(v) => handleSettingChange("allowMemberMessage", v)}
                     disabled={updateSettingsMutation.isPending}
