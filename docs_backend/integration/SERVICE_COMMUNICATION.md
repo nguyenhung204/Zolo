@@ -342,7 +342,7 @@ sequenceDiagram
   {
     messageId: string;
     conversationId: string;
-    conversationType: 'DIRECT' | 'GROUP' | 'COMMUNITY';
+    conversationType: 'DIRECT' | 'GROUP' | 'ANNOUNCEMENT';
     senderId: string;
     content: string;
     type: 'text' | 'image' | 'file';
@@ -423,7 +423,7 @@ sequenceDiagram
   ```typescript
   {
     conversationId: string;
-    type: 'DIRECT' | 'GROUP' | 'COMMUNITY';
+    type: 'DIRECT' | 'GROUP' | 'ANNOUNCEMENT';
     createdBy: string;
     memberIds: string[];
     timestamp: string;

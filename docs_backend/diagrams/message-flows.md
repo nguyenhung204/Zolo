@@ -260,7 +260,7 @@ Stickers have no `mediaId`; they reference pre-uploaded static files that the se
 ## Typing Indicator Flow
 
 ### Description
-Real-time typing indicators for DIRECT and GROUP conversations. Not supported for COMMUNITY channels (members cannot post, so typing is irrelevant).
+Real-time typing indicators for DIRECT and GROUP conversations. Not supported for ANNOUNCEMENT channels (members cannot post, so typing is irrelevant).
 
 ### Flow Diagram
 
@@ -286,8 +286,8 @@ sequenceDiagram
     RealtimeGW->>ConvSvc: TCP: GET_CONVERSATION<br/>{conversationId}
     ConvSvc-->>RealtimeGW: {kind: GROUP, memberCount: 8}
 
-    alt kind = COMMUNITY
-        RealtimeGW-->>UserA: error: Not supported for COMMUNITY
+    alt kind = ANNOUNCEMENT
+        RealtimeGW-->>UserA: error: Not supported for ANNOUNCEMENT
     else kind = DIRECT or GROUP
         %% Publish typing event to Kafka
         RealtimeGW->>Kafka: Publish: TYPING_STARTED<br/>{conversationId, userId, timestamp}
@@ -338,7 +338,7 @@ sequenceDiagram
 
 1. **Start Typing** - User A begins typing, client emits `typing:start`
 2. **Validate Membership** - Ensure user is member of conversation
-3. **Check Kind** - Verify conversation kind is DIRECT or GROUP (not COMMUNITY)
+3. **Check Kind** - Verify conversation kind is DIRECT or GROUP (not ANNOUNCEMENT)
 4. **Publish to Kafka** - TYPING_STARTED event published
 5. **Consume Event** - Realtime Gateway consumes event
 6. **Broadcast to Room** - Notify all members in conversation room (except sender)
@@ -368,8 +368,8 @@ sequenceDiagram
 - Handles tab switches, network hiccups
 - Prevents "stuck" typing indicators
 
-**Why Not COMMUNITY?**
-- COMMUNITY channels are read-only for members
+**Why Not ANNOUNCEMENT?**
+- ANNOUNCEMENT channels are read-only for members
 - Members cannot send messages, so typing indicators are irrelevant
 
 ### Client Implementation
@@ -409,9 +409,9 @@ setInterval(() => {
 - 1 typing event -> 99 broadcasts
 - Still within capacity
 
-**COMMUNITY Channel (many members)**:
+**ANNOUNCEMENT Channel (many members)**:
 - Typing not supported; members are read-only
-- **Result**: Disabled for COMMUNITY kind
+- **Result**: Disabled for ANNOUNCEMENT kind
 
 ---
 
@@ -953,7 +953,7 @@ sequenceDiagram
 ## Member Add / Remove Flow
 
 ### Description
-Adding or removing a member from a GROUP or COMMUNITY conversation, with cache invalidation and real-time notifications.
+Adding or removing a member from a GROUP or ANNOUNCEMENT conversation, with cache invalidation and real-time notifications.
 
 ### Flow Diagram
 

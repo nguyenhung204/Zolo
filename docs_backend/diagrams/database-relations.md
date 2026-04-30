@@ -232,7 +232,7 @@ Host port: **5433** → container 5432
 erDiagram
     conversations {
         UUID id PK
-        VARCHAR type "direct | group | community"
+        VARCHAR type "direct | group | announcement"
         VARCHAR name "NULL for direct"
         TEXT description
         VARCHAR avatarMediaId "UUID ref to media record (nullable)"
@@ -266,7 +266,7 @@ erDiagram
   - `idx_conversations_created_by` on `createdBy` (find user's created conversations)
 
 **Fields Explained**:
-- `type`: `direct` (2 members), `group` (manual membership), `community` (OWNER/ADMIN post, MEMBER react)
+- `type`: `direct` (2 members), `group` (manual membership), `announcement` (OWNER/ADMIN post, MEMBER react)
 - `avatarMediaId`: UUID reference to the media record in Media Service (nullable). Raw URL is never stored — presigned URLs are resolved at the Gateway layer on every list/detail request.
 - `memberCount`: Denormalized counter for performance (no COUNT query)
 - `maxOffset`: Atomic counter for message ordering (incremented per message)
@@ -342,10 +342,10 @@ async getUnreadCount(conversationId: string, userId: string): Promise<number> {
 stateDiagram-v2
     [*] --> DIRECT: Create 1-on-1
     [*] --> GROUP: Create group chat
-    [*] --> COMMUNITY: Create community channel
+    [*] --> ANNOUNCEMENT: Create announcement channel
     DIRECT --> [*]: Delete
     GROUP --> [*]: Archive or delete
-    COMMUNITY --> [*]: Archive or delete
+    ANNOUNCEMENT --> [*]: Archive or delete
 
     note right of DIRECT
         memberCount = 2
@@ -357,7 +357,7 @@ stateDiagram-v2
         OWNER/ADMIN can add/remove
     end note
 
-    note right of COMMUNITY
+    note right of ANNOUNCEMENT
         Read-only for MEMBER
         Only OWNER/ADMIN can post
     end note

@@ -71,7 +71,7 @@ graph LR
         CONV2["chat.event.conversation_updated (6 partitions)"]
         CONV4["chat.event.member_added (6 partitions)"]
         CONV5["chat.event.member_removed (6 partitions)"]
-        CONV6["chat.event.community_notify (6 partitions)"]
+        CONV6["chat.event.announcement_notify (6 partitions)"]
     end
 
     subgraph "Friendship Topics (7 day retention)"
@@ -168,7 +168,7 @@ graph LR
 | `chat.event.conversation_updated` | 6 | 3 | 7 days | 2 | Conversation metadata updated |
 | `chat.event.member_added` | 6 | 3 | 7 days | 2 | Member added to conversation |
 | `chat.event.member_removed` | 6 | 3 | 7 days | 2 | Member removed from conversation |
-| `chat.event.community_notify` | 6 | 3 | 7 days | 2 | `community` channel “hasNew” broadcast notification |
+| `chat.event.announcement_notify` | 6 | 3 | 7 days | 2 | `announcement` channel “hasNew” broadcast notification |
 
 **Why 6 partitions?**
 - Lower throughput than messages

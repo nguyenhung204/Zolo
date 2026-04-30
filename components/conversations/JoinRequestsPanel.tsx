@@ -97,7 +97,7 @@ function RequestRow({
 
 /**
  * Displays the pending join request queue for OWNER/ADMIN.
- * Real-time updates arrive via useGroupSocketEvents (group.join_requested).
+ * Real-time updates arrive via useGroupSocketEvents (group:join_requested).
  */
 export function JoinRequestsPanel({ conversationId }: JoinRequestsPanelProps) {
   const { data: requests = [], isLoading } = useJoinRequests(conversationId);

@@ -1,11 +1,13 @@
 "use client";
 
 import { useAuthStore } from "@/stores/authStore";
+import { useCallStore } from "@/stores/callStore";
+import { useMentionStore } from "@/stores/mentionStore";
 import { cn } from "@/lib/utils";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatDistanceToNowStrict } from "@/lib/utils/date";
 import type { Conversation } from "@/lib/api/conversations";
-import { FileText, Hash, Image, Mic, Megaphone, Sticker, Video } from "lucide-react";
+import { FileText, Hash, Image, Mic, Megaphone, Phone, Sticker, Video, AtSign } from "lucide-react";
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -48,6 +50,9 @@ function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
 
 export function ConversationItem({ conversation, isActive, onClick }: ConversationItemProps) {
   const userId = useAuthStore((s) => s.user?.id ?? "");
+  const callEntry = useCallStore((s) => s.groupCallsByConversation[conversation.id]);
+  const mentionedConversations = useMentionStore((s) => s.mentionedConversations);
+  const hasMention = mentionedConversations.has(conversation.id) && !isActive;
   const unread = Math.max(
     0,
     Number(conversation.maxOffset) - (conversation.lastSeenOffset ?? Number(conversation.maxOffset))
@@ -109,6 +114,15 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
         {hasUnread && (
           <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-cta border-2 border-bg" />
         )}
+        {/* Active call badge */}
+        {callEntry && !hasUnread && (
+          <span className={cn(
+            "absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center",
+            callEntry.status === "RINGING" ? "bg-warning" : "bg-success",
+          )}>
+            <Phone className="w-2 h-2 text-white" />
+          </span>
+        )}
       </div>
 
       {/* Content */}
@@ -137,8 +151,15 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
         </div>
       </div>
 
+      {/* Mention badge (shows @mention icon) */}
+      {hasMention && (
+        <div className="shrink-0 w-[18px] h-[18px] rounded-full bg-warning/10 border border-warning flex items-center justify-center">
+          <AtSign className="w-2.5 h-2.5 text-warning" />
+        </div>
+      )}
+
       {/* Unread badge */}
-      {hasUnread && (
+      {hasUnread && !hasMention && (
         <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-cta text-white text-[10px] font-bold flex items-center justify-center">
           {unread > 99 ? "99+" : unread}
         </span>

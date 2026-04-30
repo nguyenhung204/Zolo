@@ -2,15 +2,23 @@
 
 System messages are activity records automatically injected into a conversation's
 message history whenever a significant event occurs (member joins/leaves, role change,
-group rename, etc.).  They arrive via the **same WebSocket event** as normal messages
-(`message:new`) so no extra subscription is needed.
+group rename, etc.).
+
+FE receives them via **two parallel channels** so rendering is always immediate:
+
+1. **`message:new`** — persisted record stored in message history (same as normal messages).
+2. **Dedicated action socket events** — instant pre-computed events emitted the moment the
+   action is committed, carrying full display names so no extra HTTP fetch is needed.
 
 ---
 
 ## 1. How FE Receives System Messages
 
+### 1a. Via `message:new` (persisted history)
+
 System messages flow through the standard `message:new` WebSocket event emitted to the
-`conversation:{id}` room:
+`conversation:{id}` room.  All `metadata` fields now include **pre-resolved display names**
+so FE can render without a separate user lookup:
 
 ```jsonc
 // WebSocket event: "message:new"
@@ -25,7 +33,9 @@ System messages flow through the standard `message:new` WebSocket event emitted 
   "metadata": {                  // ← see section 2 for all shapes
     "action": "MEMBER_ADDED",
     "actorId": "user-uuid",
-    "targetIds": ["user-uuid-1", "user-uuid-2"]
+    "actorName": "Nguyen Van A",          // ← display name, always present
+    "targetIds": ["user-uuid-1", "user-uuid-2"],
+    "targetNames": ["Tran Thi B", "Le C"] // ← parallel array, same order as targetIds
   },
   "attachments": null,
   "replyToId": null,
@@ -35,11 +45,30 @@ System messages flow through the standard `message:new` WebSocket event emitted 
 
 **Detection rule:** `message.type === 'system'`
 
+### 1b. Via dedicated action events (real-time, immediate)
+
+The realtime-gateway also emits a **dedicated WebSocket event** the moment each action is
+committed — before the `message:new` record is persisted — so UI updates are instant.
+These events include the same display-name fields.
+
+| Action | Dedicated event | Emitted to |
+|---|---|---|
+| Member added | `conversation:member-added` | added users' personal rooms |
+| Member removed / left | `conversation:member-removed` | removed users' personal rooms |
+| Member kicked | `group:member_kicked` | kicked user + all remaining members |
+| Role changed | `group:member_role_changed` | all group members |
+| Group settings updated | `group:settings_updated` | all group members |
+
+See section 3 for full payload shapes.
+
 ---
 
 ## 2. `metadata.action` Values and Their Payloads
 
 All system messages have `senderId === "SYSTEM"` and `content === ""`.
+`actorName` and `targetNames` are **always pre-populated** by the `message-store` service
+via a batch call to the Users service before the message is persisted; FE never needs a
+separate lookup.
 
 ### `MEMBER_ADDED`
 > Someone was added to the group.
@@ -47,11 +76,13 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 ```jsonc
 {
   "action": "MEMBER_ADDED",
-  "actorId": "uuid",        // user who performed the add
-  "targetIds": ["uuid", …]  // users who were added
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",         // display name of the user who performed the add
+  "targetIds": ["uuid", …],
+  "targetNames": ["Tran Thi B", …]     // parallel array — same order as targetIds
 }
 ```
-**Render:** *"[Actor] added [targets] to the group"*
+**Render:** *"[actorName] added [targetNames] to the group"*
 
 ---
 
@@ -61,11 +92,28 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 ```jsonc
 {
   "action": "MEMBER_LEFT",
-  "actorId": "uuid",        // the user who left (same as targetIds[0])
-  "targetIds": ["uuid"]
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",
+  "targetIds": ["uuid"],
+  "targetNames": ["Nguyen Van A"],     // same person as actor
+  "ownershipTransferredTo": "uuid",    // present only when leaver was OWNER
+  "visibility": "all" | "admins"       // see "Silent leave" below
 }
 ```
-**Render:** *"[Actor] left the group"*
+**Render:** *"[actorName] left the group"*
+
+#### Silent leave (`visibility: "admins"`)
+
+When the user passes `silent: true` to `POST /conversations/:id/leave`, the
+emitted event sets `metadata.visibility = "admins"`. The realtime-gateway
+**only fanouts the `message:new` payload to OWNER/ADMIN sockets** in that
+conversation (via `notifyUsersSelf(adminUserIds, …)`); regular MEMBERs never
+receive the system message and therefore never see a "left the group" line in
+their history.
+
+FE rule of thumb: the visibility filtering is enforced server-side, but if you
+do receive such a message you can render it normally — by construction the
+recipient is an admin/owner.
 
 ---
 
@@ -75,11 +123,13 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 ```jsonc
 {
   "action": "MEMBER_REMOVED",
-  "actorId": "uuid",        // admin who removed
-  "targetIds": ["uuid", …]  // users who were removed
+  "actorId": "uuid",
+  "actorName": "Admin Name",
+  "targetIds": ["uuid", …],
+  "targetNames": ["Removed User", …]
 }
 ```
-**Render:** *"[Actor] removed [targets] from the group"*
+**Render:** *"[actorName] removed [targetNames] from the group"*
 
 ---
 
@@ -89,11 +139,13 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 ```jsonc
 {
   "action": "MEMBER_KICKED",
-  "actorId": "uuid",        // admin who kicked
-  "targetIds": ["uuid"]     // the kicked user
+  "actorId": "uuid",
+  "actorName": "Admin Name",
+  "targetIds": ["uuid"],
+  "targetNames": ["Kicked User"]
 }
 ```
-**Render:** *"[Actor] kicked [target] from the group"*
+**Render:** *"[actorName] kicked [targetNames[0]] from the group"*
 
 ---
 
@@ -103,12 +155,14 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 ```jsonc
 {
   "action": "ROLE_CHANGED",
-  "actorId": "uuid",        // admin who changed the role
-  "targetIds": ["uuid"],    // the affected member
-  "newRole": "ADMIN"        // "ADMIN" | "MEMBER" | "MODERATOR" (etc.)
+  "actorId": "uuid",
+  "actorName": "Admin Name",
+  "targetIds": ["uuid"],
+  "targetNames": ["Promoted User"],
+  "newRole": "ADMIN"                   // "ADMIN" | "MEMBER" | "MODERATOR"
 }
 ```
-**Render:** *"[Actor] made [target] an [newRole]"*
+**Render:** *"[actorName] made [targetNames[0]] an [newRole]"*
 
 ---
 
@@ -119,19 +173,103 @@ All system messages have `senderId === "SYSTEM"` and `content === ""`.
 {
   "action": "GROUP_INFO_UPDATED",
   "actorId": "uuid",
+  "actorName": "Nguyen Van A",
   "changes": {
     "name": "New Name",       // present only if name changed
     "avatarChanged": true     // present only if avatar changed
   }
 }
 ```
-**Render (name):** *"[Actor] renamed the group to '[changes.name]'"*  
-**Render (avatar):** *"[Actor] changed the group photo"*  
-**Render (both):** show both lines, or *"[Actor] updated the group info"*
+**Render (name):** *"[actorName] renamed the group to '[changes.name]'"*  
+**Render (avatar):** *"[actorName] changed the group photo"*  
+**Render (both):** show both lines, or *"[actorName] updated the group info"*
 
 ---
 
-## 3. Message List Rendering Rules
+## 3. Dedicated Action Socket Events (Realtime)
+
+These events are emitted **immediately** when an action is committed (before the
+`message:new` persisted record arrives). Subscribe to them to update UI in real time
+without waiting for the history record.
+
+### `conversation:member-added`
+Emitted to each added user's personal room (`user:{id}`).
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "addedBy": "uuid",
+  "addedByName": "Nguyen Van A",        // display name of who performed the add
+  "addedUsers": [                       // all users added in this batch
+    { "id": "uuid", "displayName": "Tran Thi B" },
+    { "id": "uuid", "displayName": "Le C" }
+  ],
+  "conversationType": "GROUP",
+  "memberCount": 12,
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `conversation:member-removed`
+Emitted to each removed user's personal room (`user:{id}`).
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "removedBy": "uuid",
+  "removedByName": "Admin Name",
+  "removedUsers": [
+    { "id": "uuid", "displayName": "Removed User" }
+  ],
+  "conversationType": "GROUP",
+  "memberCount": 11,
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:member_kicked`
+Emitted to the kicked user's personal room AND all remaining members.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "userId": "uuid",                     // the kicked user
+  "userName": "Kicked User",
+  "kickedBy": "uuid",
+  "kickedByName": "Admin Name",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:member_role_changed`
+Emitted to all group members.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "userId": "uuid",                     // the affected member
+  "userName": "Promoted User",
+  "newRole": "ADMIN",
+  "changedBy": "uuid",
+  "changedByName": "Admin Name",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:settings_updated`
+Emitted to all group members when group name/avatar is changed.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "changes": { "name": "New Name", "avatarChanged": true },
+  "updatedBy": "uuid",
+  "updatedByName": "Nguyen Van A",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+---
 
 | Rule | Detail |
 |------|--------|
@@ -171,7 +309,7 @@ FE should apply the same rendering rules as for the real-time `message:new` payl
 
 | Kafka Topic | `action` value | Triggered by |
 |---|---|---|
-| `chat.event.member_added` | `MEMBER_ADDED` | Adding members to group/community |
+| `chat.event.member_added` | `MEMBER_ADDED` | Adding members to group/announcement |
 | `chat.event.member_removed` | `MEMBER_LEFT` | Self-leave |
 | `chat.event.member_removed` | `MEMBER_REMOVED` | Admin removes member |
 | `group.event.member_kicked` | `MEMBER_KICKED` | Hard-kick by admin |

@@ -58,6 +58,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
   const isUploading =
     avatarUpload.status === "uploading" ||
     avatarUpload.status === "finalizing";
+  const uploadFailed = avatarUpload.status === "error";
 
   // ─── Reset ─────────────────────────────────────────────────────────────────
 
@@ -155,9 +156,11 @@ export function CreateConversationModal({ open, onClose }: Props) {
         await updateConversationInfo(conv.id, { avatarMediaId: avatarUpload.mediaId });
       }
 
-      // Clear avatar state so handleClose won't delete the now-saved media
-      avatarUpload.reset();
-      handleClose();
+      // Bypass handleClose: its orphan-delete logic reads from a stale closure that
+      // still sees the old mediaId even after avatarUpload.reset() is called, which
+      // would delete the media we just saved. Call reset() + onClose() directly instead.
+      reset();
+      onClose();
       router.push(`/conversations/${encodeId(conv.id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create conversation");
@@ -167,7 +170,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const isPending = create.isPending;
-  const disabled = isPending || isUploading;
+  const disabled = isPending || isUploading || uploadFailed;
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -230,7 +233,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
                     <img
                       src={previewUrl}
                       alt="avatar preview"
-                      className="w-full h-full object-cover"
+                      className={cn("w-full h-full object-cover", uploadFailed && "opacity-40")}
                     />
                   ) : isUploading ? (
                     <Loader2 className="w-5 h-5 text-muted animate-spin" />
@@ -246,7 +249,11 @@ export function CreateConversationModal({ open, onClose }: Props) {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-text">Channel avatar</p>
-                  <p className="text-xs text-muted mt-0.5">Optional · click to upload</p>
+                  {uploadFailed ? (
+                    <p className="text-xs text-error mt-0.5">Upload failed · click to retry</p>
+                  ) : (
+                    <p className="text-xs text-muted mt-0.5">Optional · click to upload</p>
+                  )}
                 </div>
                 <input
                   ref={fileInputRef}

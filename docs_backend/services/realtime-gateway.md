@@ -16,7 +16,7 @@ This service does not perform business validation or data persistence. Instead, 
 - Consuming Kafka events and broadcasting them to relevant connected clients
 - Broadcasting MESSAGE_SAVED notifications to conversation members for all conversation types
 - Broadcasting MEMBER_ADDED and MEMBER_REMOVED events for membership changes
-- Handling typing indicators for DIRECT and GROUP conversations (not COMMUNITY)
+- Handling typing indicators for DIRECT and GROUP conversations (not ANNOUNCEMENT)
 - Integrating with Presence Service for automatic online/offline status management
 - Providing real-time mark-as-read functionality via Message Store Service
 - Validating conversation membership before allowing typing broadcasts or message receipt
@@ -107,14 +107,15 @@ This service does not perform business validation or data persistence. Instead, 
 - Uses a **dedicated ioredis subscriber connection** (exclusive to PUB/SUB; not shared with the cache client)
 - Server reference injected by `CallGateway.afterInit()` to avoid circular dependency
 
-| `eventType` in message | WS event emitted | Target room |
-|---|---|---|
-| `call.event.ringing` | `call:ringing` | `user:{calleeId}` (per callee) |
-| `call.event.accepted` | `call:accepted` | `call:{callId}` |
-| `call.event.declined` | `call:declined` | `call:{callId}` |
-| `call.event.ended` | `call:ended` | `call:{callId}` |
+| `eventType` in message | WS event emitted | Target room                    |
+| ---------------------- | ---------------- | ------------------------------ |
+| `call.event.ringing`   | `call:ringing`   | `user:{calleeId}` (per callee) |
+| `call.event.accepted`  | `call:accepted`  | `call:{callId}`                |
+| `call.event.declined`  | `call:declined`  | `call:{callId}`                |
+| `call.event.ended`     | `call:ended`     | `call:{callId}`                |
 
 Message envelope:
+
 ```json
 {
   "eventType": "call.event.ringing",
@@ -145,14 +146,24 @@ Message envelope:
 - `message:deleted_for_me` - Message hidden for this user only (**private** — emitted to `user:{userId}` room); payload: `{ messageId, conversationId, deletedAt }`
 - `message:reaction_updated` - Reaction changed on message; payload: `{ messageId, conversationId, reactions, action, reactorId, emoji }`
 - `message:updated` - Generic fallback for other mutations
-- `community:notify` - Lightweight large-channel new message indicator
+- `announcement:notify` - Lightweight large-channel new message indicator
 - `typing:start` - User started typing
 - `typing:stop` - User stopped typing
-- `conversation:member-added` - New member added to conversation
-- `conversation:member-removed` - Member removed from conversation
+- `friendship:request_sent` / `friendship:request_received` / `friendship:request_accepted` / `friendship:request_rejected` - Friend-request lifecycle events emitted to the involved users' own sockets; accepted requests are followed by `conversation:new` when the DIRECT conversation is ready
+- `conversation:member-added` - Member added, invite-link join, or join-request approval; emitted to all current members' own sockets with `source: 'member_add' | 'invite_link' | 'join_approved'`
+- `conversation:member-removed` - Member left/removed; emitted to remaining and removed users' own sockets with `source: 'member_left' | 'member_removed'`; removed users are forced out of the conversation room
 - `conversation:new` - New conversation created (e.g. friend request accepted triggers DIRECT conversation); payload: `{ conversationId, type, createdBy, timestamp }`; client should fetch `GET /conversations/:id` to populate the conversation list entry
 - `account:status-changed` - Force-disconnect signal: emitted to `user:{userId}` room when account is deactivated or deleted; payload: `{ reason: 'deactivated' | 'deleted' }`; sockets are force-closed immediately after
 - `conversation:updated` - Conversation info changed (name/description/avatar); payload: `{ conversationId, changes, updatedBy?, timestamp? }`; client should refetch `GET /conversations/:id` to get updated `avatarUrl`
+- `group:join_requested` - New join request with `userName` and `source: 'invite_link' | 'request'` for admin review queues
+- `group:join_approved` / `group:join_rejected` - Review result with `reviewedByName`; requester and current members can update pending queues without reload
+- `group:member_kicked` - Kicked user and remaining members receive `{ conversationId, userId, userName, kickedBy, kickedByName, timestamp }`; kicked user is forced out of the room
+- `group:disbanded` - All members from the pre-disband snapshot receive `{ conversationId, disbandedBy, disbandedByName, timestamp }` and are forced out of the room
+- `conversation:removed` - Generic forced-room-removal safety event emitted to affected sockets after kick/remove/disband; payload includes `{ conversationId, reason, message }`
+- `group:member_role_changed` - Role badge/admin-control update with actor and target display names
+- `group:poll_created` - New poll posted in a group; emitted to every member's `user:{userId}` room. Payload: `{ conversationId, poll: { id, conversationId, creatorId, question, options[], multipleChoice, deadline, isClosed: false }, createdBy, createdByName, timestamp }`. FE should prepend `payload.poll` to the polls list — no refetch needed.
+- `group:poll_voted` - A member cast or updated their vote. Payload: `{ conversationId, pollId, voterId, voterName, optionIds, options: [{ id, text, voterIds[] }], timestamp }`. Carries the **full updated options snapshot**, so FE can replace `poll.options` directly. Skip if `voterId === currentUser.id` and the optimistic update is already applied.
+- `group:poll_closed` - Poll closed (no more votes). Payload: `{ conversationId, pollId, closedBy, closedByName, options[], timestamp }`. FE should set `isClosed = true` and replace `options`.
 - `user:profile-updated` - User profile changed (name or avatar); payload: `{ userId, changedFields, snapshot: { displayName, avatarMediaId }, timestamp }`; client should invalidate cached avatar URL and refetch presigned URL via `GET /media/avatar/:mediaId` when `changedFields` includes `avatarMediaId`
 - `call:ringing` - Incoming call alert for callee(s); emitted to `user:{calleeId}` room; payload: `{ callId, conversationId, callerId, startedAt }`
 - `call:accepted` - Callee joined the call; emitted to `call:{callId}` room; payload: `{ callId, conversationId, calleeId, acceptedAt }`
@@ -240,16 +251,34 @@ None. This service does not publish Kafka events; it only consumes them.
 - Event Type: MEMBER_ADDED
 - Consumer Group: `realtime-gateway`
 - Purpose: Notify existing members when new members join a conversation
-- Payload: conversationId, addedUserIds, addedBy, timestamp
-- Processing: Broadcast to existing members and send welcome notification to new members
+- Payload: conversationId, userIds, addedBy, conversationType, newMemberCount, timestamp
+- Processing: Invalidate member cache, refetch current members, emit `conversation:member-added` to all current members' own sockets. `source` is `invite_link` when `addedBy` is one of the added users, otherwise `member_add`.
 
 **Topic: `chat.event.member_removed`**
 
 - Event Type: MEMBER_REMOVED
 - Consumer Group: `realtime-gateway`
 - Purpose: Notify members when users are removed from a conversation
-- Payload: conversationId, removedUserIds, removedBy, timestamp
-- Processing: Broadcast removal notification to remaining members and removal confirmation to removed users
+- Payload: conversationId, userIds, removedBy, conversationType, newMemberCount, timestamp
+- Processing: Invalidate member cache, emit `conversation:member-removed` to remaining and removed users' own sockets, then force removed users to leave `conversation:{id}`.
+
+**Topic: `friendship.request.sent` / `friendship.request.accepted` / `friendship.request.rejected`**
+
+- Consumer Group: `realtime-gateway`
+- Purpose: Keep friend request trays, profile CTAs, and friend lists in sync across devices
+- Processing: emit `friendship:request_sent` to sender, `friendship:request_received` to receiver, and accepted/rejected events to both users' own sockets. On accepted, Conversation Service separately creates the DIRECT conversation and emits `conversation:new`.
+
+**Topic: `group.event.join_requested` / `group.event.join_approved` / `group.event.join_rejected`**
+
+- Consumer Group: `realtime-gateway.group-events`
+- Purpose: Realtime group approval queue and requester feedback
+- Processing: join requests fan out to current members for client-side admin filtering with `source` preserved (`invite_link` when submitted from an invite token); approval emits both `group:join_approved` and `conversation:member-added`; rejection emits `group:join_rejected` to requester and current members.
+
+**Topic: `group.event.member_kicked` / `group.event.disbanded`**
+
+- Consumer Group: `realtime-gateway.group-events`
+- Purpose: Remove kicked/disbanded groups from UI without reload
+- Processing: kicked users and disbanded members receive direct socket events and are forced to leave `conversation:{id}`. The force-leave path also emits `conversation:removed` with `reason: 'group-member-kicked' | 'group-disbanded'`. Disband uses a member snapshot captured before deletion, so broadcasts still work when the members table is already empty.
 
 **Topic: `chat.event.conversation_updated`**
 
@@ -260,11 +289,11 @@ None. This service does not publish Kafka events; it only consumes them.
 - Processing: Fetch member list (Redis cache, TTL 10 min), broadcast `conversation:updated` to all members
 - Client contract: On receiving `conversation:updated`, clients must call `GET /conversations/:id` to get a fresh presigned `avatarUrl`. Presigned URLs are not included in the WebSocket payload.
 
-**Topic: `chat.event.community_notify`**
+**Topic: `chat.event.announcement_notify`**
 
 - Consumer Group: `realtime-gateway`
 - Purpose: Lightweight notification for large-channel message events
-- Processing: Broadcast `community:notify` to subscribed clients
+- Processing: Broadcast `announcement:notify` to subscribed clients
 
 **Topic: `user.profile.updated`** (KAFKA_TOPICS.USER.PROFILE_UPDATED)
 
@@ -328,9 +357,11 @@ None. This service does not persist data to a database.
 ### In-Memory State — ConnectionManager
 
 `ConnectionManager` tracks active local socket connections per user:
+
 ```
 Map<userId, Set<socketId>>
 ```
+
 - `register(userId, socketId)`: adds socketId to the user's Set.
 - `unregister(userId, socketId)`: removes socketId; deletes the Set if empty.
 - `getSockets(userId)`: returns `Set<socketId>` for a user (undefined if offline locally).
@@ -421,14 +452,14 @@ Enforces per-platform connection limits on authenticate. MAX_WEB = 1, MAX_MOBILE
   - **Tier 2** (`conversation:{id}` room): `message:new` with **full payload** (content, type, attachments, forwardedFrom, metadata) — received by users who have actively joined the conversation room.
   - **Tier 1** (personal `user:{userId}` rooms): `message:notify` with lightweight payload `{ conversationId, latestOffset }` — received by all members regardless of which conversation they are viewing; batched over an 80 ms window to reduce WS spam.
   - `message:saved` (personal `user:{senderId}` room): delivery confirmation to sender immediately (not batched).
-- Broadcasting is performed for all conversation types: DIRECT, GROUP, COMMUNITY.
+- Broadcasting is performed for all conversation types: DIRECT, GROUP, ANNOUNCEMENT.
 - Member IDs for the Tier 1 `message:notify` broadcast are fetched from a Redis JSON cache (key: `conversation:{id}:members`, TTL 600 s); on miss, fetched from Conversation Service via TCP.
 - Offline members do not receive broadcasts; they sync on reconnection.
 
 ### Typing Indicators
 
 - Typing indicators are ONLY supported for DIRECT and GROUP conversations
-- COMMUNITY conversations do not support typing indicators (validation enforced)
+- ANNOUNCEMENT conversations do not support typing indicators (validation enforced)
 - Typing events are validated for membership before broadcasting
 - Typing start/stop events are broadcast to all other conversation members except sender
 - No persistence or replay of typing indicators
@@ -535,9 +566,9 @@ MESSAGE_SAVED notifications are lightweight and contain no message content to re
 
 Redis provides fast, centralized connection state storage, enabling multi-instance deployments without sticky sessions. Future migration to Redis Socket.IO adapter will enable cross-instance broadcasting.
 
-**Why No COMMUNITY Typing Indicators:**
+**Why No ANNOUNCEMENT Typing Indicators:**
 
-COMMUNITY conversations are broadcast-only channels where only OWNER/ADMIN can post. Typing indicators would be meaningless for members who cannot post.
+ANNOUNCEMENT conversations are broadcast-only channels where only OWNER/ADMIN can post. Typing indicators would be meaningless for members who cannot post.
 
 **Why Separate Consumers for Different Events:**
 

@@ -121,6 +121,16 @@ export function useUnblockUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: unblockUser,
-    onSuccess: (_, userId) => invalidateFriendshipData(qc, userId),
+    onSuccess: (_, userId) => {
+      qc.setQueryData(
+        queryKeys.friends.status(userId),
+        (old: { userId: string; targetUserId: string; status: FriendshipStatus } | undefined) => ({
+          userId: old?.userId ?? "",
+          targetUserId: old?.targetUserId ?? userId,
+          status: "NONE",
+        })
+      );
+      invalidateFriendshipData(qc, userId);
+    },
   });
 }

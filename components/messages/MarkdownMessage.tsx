@@ -6,21 +6,42 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn } from "@/lib/utils";
+import { MentionHighlight } from "./MentionHighlight";
 
 interface Props {
   content: string;
   isMine?: boolean;
+  mentions?: string[];
+  mentionLabels?: string[];
+  mentionAll?: boolean;
 }
 
 // Defined at module level — stable reference, never recreated.
 const remarkPlugins = [remarkGfm];
 
-function buildComponents(isMine: boolean): Components {
+function buildComponents(
+  isMine: boolean,
+  mentions: string[] = [],
+  mentionLabels: string[] = [],
+  mentionAll = false
+): Components {
   return {
     // ── Paragraph ─────────────────────────────────────────────────────────
     p({ children }) {
       return (
-        <p className="mb-1.5 last:mb-0 break-words leading-relaxed">{children}</p>
+        <p className="mb-1.5 last:mb-0 break-words leading-relaxed">
+          {mentions.length > 0 || mentionAll ? (
+            <MentionHighlight
+              content={typeof children === "string" ? children : String(children)}
+              isMine={isMine}
+              mentions={mentions}
+              mentionLabels={mentionLabels}
+              mentionAll={mentionAll}
+            />
+          ) : (
+            children
+          )}
+        </p>
       );
     },
 
@@ -186,10 +207,19 @@ function buildComponents(isMine: boolean): Components {
 // ─── Component ────────────────────────────────────────────────────────────────
 // Wrapped in React.memo — AST parsing is expensive; skip re-renders when
 // neither `content` nor `isMine` changes (critical for react-window scroll).
-function MarkdownMessageBase({ content, isMine = false }: Props) {
+function MarkdownMessageBase({
+  content,
+  isMine = false,
+  mentions = [],
+  mentionLabels = [],
+  mentionAll = false,
+}: Props) {
   // buildComponents is cheap object creation; useMemo keyed on isMine (stable
   // per message) so the object reference is reused across the memo'd renders.
-  const components = useMemo(() => buildComponents(isMine), [isMine]);
+  const components = useMemo(
+    () => buildComponents(isMine, mentions, mentionLabels, mentionAll),
+    [isMine, mentions, mentionLabels, mentionAll]
+  );
 
   return (
     <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>

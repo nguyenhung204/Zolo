@@ -122,7 +122,7 @@ This library solves the problem of scattered business logic and inconsistent imp
 - CONVERSATION_UPDATED: chat.event.conversation_updated
 - MEMBER_ADDED: chat.event.member_added
 - MEMBER_REMOVED: chat.event.member_removed
-- COMMUNITY_NOTIFY: chat.event.community_notify
+- ANNOUNCEMENT_NOTIFY: chat.event.announcement_notify
 - FRIENDSHIP.REQUEST_SENT: friendship.request.sent
 - FRIENDSHIP.REQUEST_ACCEPTED: friendship.request.accepted
 - FRIENDSHIP.REQUEST_REJECTED: friendship.request.rejected
@@ -139,7 +139,7 @@ This library solves the problem of scattered business logic and inconsistent imp
 **ConversationType Enum**
 - DIRECT - One-to-one conversation (exactly 2 members)
 - GROUP - Group chat (3+ members, role-based permissions)
-- COMMUNITY - Broadcast channel (only OWNER/ADMIN can post; MEMBER can react only)
+- ANNOUNCEMENT - Broadcast channel (only OWNER/ADMIN can post; MEMBER can react only)
 
 **FriendshipStatus Enum**
 - FRIEND - Active friendship

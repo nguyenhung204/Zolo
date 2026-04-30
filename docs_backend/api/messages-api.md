@@ -95,6 +95,49 @@ curl -X POST http://localhost:3000/chat/messages \
   }'
 ```
 
+### Gửi tin nhắn có mention
+
+Mention chỉ hỗ trợ trong conversation `group` và `announcement`. `direct` sẽ bị từ chối với `MENTIONS_NOT_SUPPORTED_FOR_CONVERSATION_TYPE`.
+
+```bash
+curl -X POST http://localhost:3000/chat/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "95782059-71f1-4489-97ec-d3a7b1e25553",
+    "content": "Nhờ @Bob kiểm tra giúp nhé",
+    "type": "text",
+    "mentions": ["user-bob-uuid"],
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440005"
+  }'
+```
+
+### Gửi mention toàn bộ thành viên
+
+`@all` / `@here` / `@channel` dùng `metadata.mentionAll = true`. Chỉ `owner` hoặc `admin` được phép dùng.
+
+```bash
+curl -X POST http://localhost:3000/chat/messages \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "95782059-71f1-4489-97ec-d3a7b1e25553",
+    "content": "@all Họp lúc 15:00",
+    "type": "text",
+    "metadata": { "mentionAll": true },
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440006"
+  }'
+```
+
+### Flow FE implement mention
+
+1. Khi mở composer, FE đã có danh sách members của conversation; chỉ bật mention UI nếu `conversation.type` là `group` hoặc `announcement`.
+2. Khi user gõ `@`, hiển thị member picker; chọn user thì insert label vào `content` và lưu `userId` vào `mentions`.
+3. Dedupe `mentions` trước khi gửi; không gửi user không còn là member. Tối đa 50 user explicit.
+4. Với `@all` / `@here` / `@channel`, gửi `metadata.mentionAll = true`; chỉ show option này cho `owner`/`admin`.
+5. Sau `POST /chat/messages`, render optimistic bubble bằng `clientMessageId`; khi nhận `message:saved`, cập nhật `offset`; khi nhận `message:new`, render `mentions` hoặc `metadata.mentions`.
+6. Với `message:notify`, nếu `payload.mentions?.includes(currentUserId)` thì highlight conversation row / mention badge; push notification mention có priority `high`.
+
 ### Body
 
 | Field | Type | Bắt buộc | Mô tả |
@@ -108,7 +151,8 @@ curl -X POST http://localhost:3000/chat/messages \
 | `attachments[].mediaId` | string (UUID v4) | ✓ (trong mảng) | ID media đã upload |
 | `attachments[].type` | `'image'` \| `'video'` \| `'audio'` \| `'file'` | ✗ | Loại attachment |
 | `replyToMessageId` | string (UUID) | ✗ | ID tin nhắn đang trả lời |
-| `mentions` | string[] | ✗ | Danh sách userId được mention |
+| `mentions` | string[] | ✗ | Danh sách userId được mention; chỉ hỗ trợ `group` và `announcement`; tối đa 50 |
+| `metadata.mentionAll` | boolean | ✗ | Mention toàn bộ members trừ sender; chỉ `owner`/`admin` |
 | `metadata` | object | ✗ | Dữ liệu mở rộng tùy chỉnh |
 
 > Validation hiện tại: `text` bắt buộc `content`; `sticker` cho phép bỏ qua `content`; `media` bắt buộc `attachments`; `image` / `video` / `audio` / `file` cần `mediaId` hoặc `attachments` nhưng không bắt buộc `content`. Với tin media-only, `content` có thể là chuỗi rỗng.
@@ -136,6 +180,9 @@ curl -X POST http://localhost:3000/chat/messages \
 | HTTP | Code | Mô tả |
 |------|------|-------|
 | 403 | `FORBIDDEN_NOT_MEMBER` | Không phải thành viên của conversation |
+| 400 | `MENTIONS_NOT_SUPPORTED_FOR_CONVERSATION_TYPE` | Mention không hỗ trợ trong `direct` |
+| 400 | `MENTION_TARGET_NOT_MEMBER` | Có userId trong `mentions` không phải member của conversation |
+| 403 | `FORBIDDEN_MENTION_ALL` | User không phải `owner`/`admin` nhưng gửi `metadata.mentionAll = true` |
 | 400 | `VALIDATION_ERROR` | Body không hợp lệ (thiếu trường bắt buộc, sai kiểu dữ liệu) |
 | 503 | — | Chat Core hoặc Message Store không khả dụng |
 

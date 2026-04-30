@@ -153,6 +153,82 @@ Disband the group entirely (OWNER only).
 
 ---
 
+#### `POST /conversations/:conversationId/leave`
+
+Leave a group. **OWNERs MUST transfer ownership** to another existing member
+before they can leave; the gateway rejects the call otherwise.
+
+| Field    | Value                                                      |
+|----------|------------------------------------------------------------|
+| **Auth** | Required — caller must be a member of the group           |
+
+**Request body:**
+```json
+{
+  "transferOwnershipTo": "user-uuid",  // required when caller is OWNER
+  "silent": false                       // optional, default false
+}
+```
+
+| Field                 | Type     | Required        | Notes                                                                                  |
+|-----------------------|----------|-----------------|----------------------------------------------------------------------------------------|
+| `transferOwnershipTo` | `string` | OWNER only      | UUID of an existing member to receive the OWNER role. Must NOT equal the caller.       |
+| `silent`              | `boolean`| optional        | When `true`, the system message announcing the leave is shown **only to admins/owners**. Other members will not see a notification. |
+
+**Behaviour:**
+
+1. If the caller is OWNER:
+   - The new owner's role is updated to `OWNER` in the same DB transaction.
+   - A `group.member_role_changed` event is published before the member-removed event.
+2. The caller is removed from the conversation; `memberCount` is decremented.
+3. A `conversation.member-removed` event is published with `reason: "left"` and
+   `systemMessageVisibility: "all" | "admins"` based on the `silent` flag.
+4. The `message-store` consumer creates a system message of type `member_left`.
+   When visibility is `"admins"`, the realtime gateway only broadcasts the
+   `message:new` event to OWNER/ADMIN sockets via `notifyUsersSelf` — regular
+   members will never see the system message.
+
+**Responses:**
+
+| Status            | Body                                                                                       |
+|-------------------|--------------------------------------------------------------------------------------------|
+| `200 OK`          | `{ "success": true }`                                                                      |
+| `403 Forbidden`   | OWNER tried to leave without `transferOwnershipTo`, or transferred to themselves.          |
+| `404 Not Found`   | The conversation, the caller, or the new owner does not exist as a member.                 |
+
+---
+
+#### `DELETE /conversations/:conversationId/for-me`
+
+Hide the conversation from **only the requesting user**'s list and clear their
+view of all existing messages. Other members are unaffected. New messages sent
+by anyone after this call will re-surface the conversation.
+
+| Field    | Value                                          |
+|----------|------------------------------------------------|
+| **Auth** | Required — caller must be a member             |
+
+**Behaviour:**
+
+- The user's `deleted_until` cursor is bumped to the conversation's current
+  `maxOffset`. The message-store filters out messages with `offset <= deleted_until`
+  whenever this user requests history, but preserves the rows for everyone else.
+- The cursor is **monotonic** — sending another delete-for-me later will only
+  raise the bound, never lower it.
+
+**Response `200 OK`:**
+```json
+{ "deletedUntil": 1234 }
+```
+
+| Status          | Reason                                       |
+|-----------------|----------------------------------------------|
+| `200 OK`        | Cursor advanced. UI should remove the conversation from the local list until a newer message arrives. |
+| `403 Forbidden` | Caller is not a member of the conversation. |
+| `404 Not Found` | Conversation does not exist.                 |
+
+---
+
 ### 2.3 Invite Links
 
 #### `POST /conversations/:conversationId/invite-link`
@@ -247,9 +323,36 @@ Constraints: 2–10 options. `deadline` is optional. `multipleChoice` defaults t
 
 ---
 
-#### `POST /polls/:pollId/vote`
+#### `GET /conversations/:conversationId/polls`
 
-Cast or update your vote. **Idempotent** — submitting the same `optionIds` twice is safe.
+List every poll in the conversation. Set `?includeClosed=false` to hide closed polls.
+
+**Response `200 OK`:** `{ "polls": Poll[] }`, newest first.
+
+---
+
+#### `GET /conversations/:conversationId/polls/:pollId`
+
+Fetch a single poll directly by ID (use this for the FE poll detail panel
+instead of `GET /polls/:pollId` — the latter does NOT exist).
+
+**Response `200 OK`:** `{ "poll": Poll }` — same shape as create's response.
+
+**Errors:** `403 Forbidden` if you are not a member, `404 Not Found` if the
+poll does not belong to this conversation.
+
+---
+
+#### `POST /conversations/:conversationId/polls/:pollId/votes`
+
+Cast or update your vote. **Idempotent** — submitting the same `optionIds` twice
+is safe (we wipe your previous selection then apply the new one inside a
+PostgreSQL `SELECT … FOR UPDATE` transaction, so concurrent voters cannot
+clobber each other).
+
+> ⚠️ **Path naming:** The route segment is `votes` (plural), not `vote`. The
+> top-level `/polls/:pollId/vote` endpoint does **not** exist — calling it
+> returns `404 Not Found`.
 
 **Request body:**
 ```json
@@ -259,26 +362,34 @@ Cast or update your vote. **Idempotent** — submitting the same `optionIds` twi
 ```
 
 For `multipleChoice: true`, include multiple IDs.  
-For `multipleChoice: false`, include exactly one ID.
+For `multipleChoice: false`, include exactly one ID.  
+Single-choice clients may also send `{ "optionId": "<uuid>" }` — the gateway
+wraps it into an array automatically.
 
-**Response `200 OK`:** Updated `Poll` object with new `voterIds`.
+**Response `200 OK`:** `{ "success": true, "poll": Poll }` — Poll has the
+updated `options` (with new `voterIds`).
 
 **Responses:**
 
 | Status | Meaning |
 |--------|---------|
-| `200 OK` | Vote recorded — body is updated Poll |
+| `200 OK` | Vote recorded — body is `{ success, poll }` |
 | `400 Bad Request` | Empty `optionIds`, invalid IDs, or too many IDs for single-choice |
 | `403 Forbidden` | Poll is closed or deadline passed |
 | `404 Not Found` | Poll not found |
 
+After the HTTP response succeeds, the backend writes a `poll.voted` event to
+the transactional outbox; the realtime-gateway consumes Kafka topic
+`group.event.poll_voted` and emits the **`group:poll_voted`** Socket.IO event
+to every member of the conversation (see §3, "Group Events").
+
 ---
 
-#### `POST /polls/:pollId/close`
+#### `POST /conversations/:conversationId/polls/:pollId/close`
 
-Close a poll (no more votes accepted). Only the OWNER, ADMIN, or poll creator may close.
+Close a poll (no more votes accepted). Only the OWNER or ADMIN can close.
 
-**Response `200 OK`:** Updated `Poll` object with `isClosed: true`.
+**Response `200 OK`:** `{ "success": true, "poll": Poll }` — Poll has `isClosed: true`.
 
 ---
 
@@ -349,6 +460,93 @@ Approve or reject.
 ```
 
 Valid values: `approved`, `rejected`.
+
+---
+
+### 2.7 Notification Mute
+
+#### `PUT /notifications/conversations/:conversationId/mute`
+
+Toggle per-conversation mute. Use the simple **duration token** form so the
+backend handles the timestamp arithmetic — the FE never has to compute
+`muteUntil` manually.
+
+**Request body:**
+```json
+{ "duration": "1h" }
+```
+
+| Token       | Effect                                                                                       |
+|-------------|----------------------------------------------------------------------------------------------|
+| `1h`        | Mute for 1 hour (`muteUntil = now + 1h`, message + mention pushes still allowed afterwards). |
+| `4h`        | Mute for 4 hours.                                                                            |
+| `8h`        | Mute for 8 hours.                                                                            |
+| `24h`       | Mute for 24 hours.                                                                           |
+| `forever`   | Disable message **and** mention pushes indefinitely (`muteUntil = null`, `notifyOnMessage: false`, `notifyOnMention: false`). The conversation stays muted until the user explicitly sends `off`. |
+| `off`       | Unmute. Restores `notifyOnMessage: true`, `notifyOnMention: true`, `muteUntil: null`.        |
+
+**High-priority pushes (mentions, incoming calls)** continue to bypass the
+finite-duration mute (`1h–24h`) — they only stop when `forever` is selected.
+
+**Response `200 OK`:**
+```json
+{
+  "userId": "...",
+  "conversationId": "...",
+  "muteUntil": "2026-04-30T01:00:00.000Z",
+  "notifyOnMessage": true,
+  "notifyOnMention": true,
+  "updatedAt": "..."
+}
+```
+
+> For finer-grained control (quiet-hours, granular flags), use
+> `PUT /notifications/preferences` directly with the full `UpdatePrefBody`
+> shape.
+
+---
+
+### 2.8 Contact Card Messages
+
+Send another user's contact information into a conversation. Implemented as a
+first-class message `type: "contact_card"` on `POST /chat/messages` so it
+participates in the same delivery, ordering, and offline notification flow as
+text/media messages.
+
+**Request body:**
+```json
+{
+  "conversationId": "conv-uuid",
+  "clientMessageId": "uuid-v4-from-fe",
+  "type": "contact_card",
+  "metadata": {
+    "contactUserId": "friend-uuid"
+  }
+}
+```
+
+| Field                       | Required                          | Notes                                                                                                                         |
+|-----------------------------|-----------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| `type`                      | yes                               | Must be `"contact_card"`.                                                                                                     |
+| `metadata.contactUserId`    | yes                               | UUID of the user whose card is being shared. **Must be a friend** of the sender — chat-core resolves this via the friendship service. |
+| `content`                   | optional                          | Free-form caption ("Bạn có thể nhắn anh ấy giúp em nhé"). Trimmed; max 10 000 chars like other messages.                       |
+| `attachments` / `mediaId`   | **must be absent**                | Contact cards are pure metadata; the gateway returns `400 CONTACT_CARD_MEDIA_NOT_ALLOWED` if any media is attached.            |
+
+**Validation errors:**
+
+| Error code                       | Cause                                                                       |
+|----------------------------------|-----------------------------------------------------------------------------|
+| `CONTACT_USER_REQUIRED`          | `metadata.contactUserId` missing or empty.                                  |
+| `CANNOT_SHARE_SELF_CONTACT`      | The contact target equals the sender.                                       |
+| `CONTACT_USER_NOT_FRIEND`        | Sender and contact target are not friends — sharing is forbidden.           |
+| `CONTACT_CARD_MEDIA_NOT_ALLOWED` | The request included `mediaId` or a non-empty `attachments` array.          |
+
+**FE rendering tip:**
+
+The `MESSAGE_SAVED` event for a contact-card message carries the same metadata
+shape on the realtime side. After receiving it, the FE should call the Users
+service (or use a cached `getUsersByIds` result) to resolve the contact's
+display name + avatar; do not embed PII in the message itself beyond the UUID.
 
 ---
 
@@ -482,39 +680,52 @@ socket.on('group.member_kicked', (payload) => {
 
 ---
 
-### Event: `poll.created`
+### Event: `group:poll_created`
+
+> Emitted to every group member's personal user room as soon as the
+> conversation-service commits the create transaction (≤200 ms typical).
 
 ```jsonc
 {
-  "pollId": "uuid",
   "conversationId": "uuid",
-  "creatorId": "uuid",
-  "question": "When should we ship?",
-  "options": [
-    { "id": "uuid", "text": "This Friday",    "voterIds": [] },
-    { "id": "uuid", "text": "Next Monday",    "voterIds": [] }
-  ],
-  "multipleChoice": false,
-  "deadline": "2026-04-28T18:00:00.000Z",
+  "poll": {
+    "id": "uuid",
+    "conversationId": "uuid",
+    "creatorId": "uuid",
+    "question": "When should we ship?",
+    "options": [
+      { "id": "uuid", "text": "This Friday",    "voterIds": [] },
+      { "id": "uuid", "text": "Next Monday",    "voterIds": [] }
+    ],
+    "multipleChoice": false,
+    "deadline": "2026-04-28T18:00:00.000Z",
+    "isClosed": false
+  },
+  "createdBy": "uuid",
+  "createdByName": "Alice",
   "timestamp": "2026-04-25T10:06:00.000Z"
 }
 ```
 
-**FE action:** Prepend the new poll to the polls list for this conversation. No refetch needed.
+**FE action:** Prepend `payload.poll` to the polls list for this conversation. No refetch needed. Members who are offline at this moment also receive an
+FCM push (title `New poll`, body `{creator}: {question}`) — see §FCM matrix
+below.
 
 ---
 
-### Event: `poll.voted`
+### Event: `group:poll_voted`
 
-This is the most performance-critical event. The payload carries the **full updated options snapshot** so the UI can render without a round trip.
+This is the most performance-critical event. The payload carries the **full
+updated options snapshot** so the UI can render without a round trip.
 
 ```jsonc
 {
-  "pollId": "uuid",
   "conversationId": "uuid",
-  "userId": "voter-uuid",
+  "pollId": "uuid",
+  "voterId": "voter-uuid",
+  "voterName": "Bob",
   "optionIds": ["opt-uuid"],
-  "updatedOptions": [
+  "options": [
     { "id": "opt-uuid-1", "text": "This Friday",  "voterIds": ["user-a", "user-b"] },
     { "id": "opt-uuid-2", "text": "Next Monday",  "voterIds": [] }
   ],
@@ -522,35 +733,40 @@ This is the most performance-critical event. The payload carries the **full upda
 }
 ```
 
-**FE action:** Skip this event if `payload.userId === currentUser.id` **and** you already applied the vote optimistically. Otherwise replace `poll.options` in your local cache with `updatedOptions`.
+**FE action:** Skip this event if `payload.voterId === currentUser.id` **and** you already applied the vote optimistically. Otherwise replace `poll.options` in your local cache with `payload.options`.
 
 ```ts
-socket.on('poll.voted', (payload) => {
+socket.on('group:poll_voted', (payload) => {
   // Skip: our own optimistic update already applied this
-  if (payload.userId === currentUser.id) return;
+  if (payload.voterId === currentUser.id) return;
 
   queryClient.setQueryData(['poll', payload.pollId], (old: Poll) => ({
     ...old,
-    options: payload.updatedOptions,
+    options: payload.options,
   }));
 });
 ```
 
+> NOTE: there is **no FCM push for vote events** — they would spam every
+> member every time anyone clicks. Voters only see updates when their socket
+> is connected.
+
 ---
 
-### Event: `poll.closed`
+### Event: `group:poll_closed`
 
 ```jsonc
 {
-  "pollId": "uuid",
   "conversationId": "uuid",
+  "pollId": "uuid",
   "closedBy": "user-uuid",
-  "finalOptions": [ /* same shape as updatedOptions */ ],
+  "closedByName": "Alice",
+  "options": [ /* same shape as group:poll_voted.options */ ],
   "timestamp": "2026-04-25T10:08:00.000Z"
 }
 ```
 
-**FE action:** Set `isClosed = true` and update `options` in the poll cache. Disable the voting UI.
+**FE action:** Set `isClosed = true` and replace `options` in the poll cache. Disable the voting UI.
 
 ---
 
@@ -643,8 +859,11 @@ For groups with `joinApprovalRequired = true`:
 
 ```ts
 const voteMutation = useMutation({
-  mutationFn: ({ pollId, optionIds }: VoteArgs) =>
-    api.post(`/polls/${pollId}/vote`, { optionIds }),
+  mutationFn: ({ conversationId, pollId, optionIds }: VoteArgs) =>
+    api.post(
+      `/conversations/${conversationId}/polls/${pollId}/votes`,
+      { optionIds },
+    ),
 
   onMutate: async ({ pollId, optionIds }) => {
     // 1. Cancel any in-flight refetches
@@ -713,8 +932,8 @@ const canInteract =
 | Trigger | Strategy | Reason |
 |---------|----------|--------|
 | `group.settings_updated` Socket event | **Merge** diff into cache | Payload already contains the full diff |
-| `poll.voted` Socket event | **Replace** `options` array | Payload carries the authoritative full snapshot |
-| `poll.closed` Socket event | **Merge** `isClosed + finalOptions` | No refetch needed |
+| `group:poll_voted` Socket event | **Replace** `options` array | Payload carries the authoritative full snapshot |
+| `group:poll_closed` Socket event | **Replace** `options` and set `isClosed = true` | No refetch needed |
 | `group.member_kicked` (other user) | **Remove** member from list | Precise incremental update |
 | `group.member_kicked` (self) | **Evict** entire conversation from cache | User is no longer a member |
 | `group.disbanded` | **Evict** entire conversation | Conversation no longer exists |
@@ -804,6 +1023,100 @@ BE  → Realtime Gateway → Socket room emit
 Kicked user's FE ← group.member_kicked  (userId === self → navigate away)
 Other members' FE ← group.member_kicked (remove from member list cache)
 ```
+
+### Flow D: Owner leaves a group (with ownership transfer)
+
+```
+FE → POST /conversations/:id/leave  { transferOwnershipTo: "user-X", silent: false }
+     ↓
+GroupController.leaveConversation
+     ↓ (TCP) GROUP_PATTERNS.LEAVE_CONVERSATION
+ConversationService.leaveConversation (single DB transaction)
+  ├── ConversationMember.update({ userId: "user-X", role: OWNER })
+  ├── outbox: group.event.member_role_changed
+  ├── ConversationMember.delete({ userId: callerId })
+  ├── memberCount = memberCount − 1
+  └── outbox: conversation.event.member-removed { reason: "left", silent: false, systemMessageVisibility: "all", ownershipTransferredTo: "user-X" }
+     ↓ Outbox relay → Kafka
+     ├── group.event.member_role_changed     → realtime: emit `group:member_role_changed`
+     └── chat.event.member-removed           → message-store: createSystemMessage(type: 'member_left')
+                                              → realtime: emit `message:new` (room broadcast)
+```
+
+**Silent variant** (`silent: true`): the realtime gateway compares
+`payload.metadata.visibility === 'admins'` and uses `notifyUsersSelf(adminIds, …)`
+instead of the conversation room broadcast — only OWNER/ADMIN sockets receive
+the system message.
+
+---
+
+### Flow E: User deletes a conversation just for themselves
+
+```
+FE → DELETE /conversations/:id/for-me
+     ↓
+ConversationService.clearConversationForUser
+     UPDATE conversation_members
+        SET deleted_until = GREATEST(deleted_until, conversation.maxOffset)
+      WHERE conversation_id = :id AND user_id = :me
+     ↓
+{ deletedUntil: <maxOffset> } returned to FE
+     ↓
+FE removes the conversation from the local list.
+History fetch endpoints filter out messages with offset ≤ deleted_until for THIS user only.
+Other members continue to see the conversation untouched.
+```
+
+---
+
+### Flow F: Mute conversation for 4 hours
+
+```
+FE → PUT /notifications/conversations/:id/mute  { duration: "4h" }
+     ↓
+resolveMutePreference("4h") → { muteUntil: now+4h, notifyOnMessage: true, notifyOnMention: true }
+     ↓
+NotificationGatewayService.updatePreference
+     ↓ (TCP) NotificationService upserts NotificationPreference row
+     ↓
+On every push job: NotificationPreferenceService.shouldNotify checks `muteUntil > now`
+  → low/normal priority pushes are suppressed until muteUntil passes
+  → 'high' priority (mention, call) still bypasses finite-duration mute
+```
+
+For `duration: "forever"` the row is stored with `muteUntil: null` and
+`notifyOnMessage: notifyOnMention: false` — calls remain delivered, but message
+and mention pushes are suppressed until the FE sends `duration: "off"`.
+
+---
+
+### Flow G: Send a contact card
+
+```
+FE → POST /chat/messages
+     {
+       conversationId,
+       clientMessageId,
+       type: "contact_card",
+       metadata: { contactUserId: "friend-uuid" }
+     }
+     ↓
+MessageSendOrchestrator.execute
+  ├── validateInteractionOrThrow (membership/ACL)
+  ├── validateContactCard
+  │     ├── metadata.contactUserId required && != senderId
+  │     └── friendship.areFriends(sender, contactUserId)  ← ServiceRegistry
+  ├── validateMessageContent (rejects mediaId/attachments)
+  └── enqueue chat:kafka:outbox  (event.metadata.cardType = "friend_contact")
+     ↓
+chat-core outbox relay → Kafka (chat.event.message_accepted)
+     ↓
+message-store persists, realtime-gateway broadcasts message:new
+     ↓
+FE renders the message: fetch contactUserId via getUsersByIds for display name + avatar.
+```
+
+---
 
 ### Flow C: Appointment reminder (passive, BullMQ-driven)
 

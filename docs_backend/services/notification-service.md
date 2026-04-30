@@ -108,14 +108,39 @@ Source: `apps/notification-service/src/consumers/friendship.consumer.ts`
 
 Source: `apps/notification-service/src/consumers/call-event.consumer.ts`
 
-- Topic: `KAFKA_TOPICS.CALL.STARTED`
-- Reads conversation members from Redis
-- Excludes host
-- Enqueues `high` priority jobs
+- **Transport: Redis Pub/Sub** (channel `realtime:call_events`), NOT Kafka.
+  Call signaling intentionally bypasses the outbox→Kafka pipeline so the
+  ringing FCM push goes out within ~50 ms. The `call.event.*` Kafka topics
+  are reserved for the durable `ended` event only.
+- Filters on `eventType === 'call.event.ringing'` (ignores `accepted` /
+  `declined` / `ended` — those are realtime-only UI signals; the device is
+  already ringing and pushing again would re-ring an already-handled call).
+- Enqueues one `high` priority push per callee with
+  `notificationType: 'call'`, `dedupId: 'call_ringing:{callId}'` for
+  idempotency.
 - Push payload:
   - title: `Incoming call`
   - body: `You have an incoming call`
-  - data: `{ callId, conversationId, type: 'incoming_call' }`
+  - data: `{ callId, conversationId, callerId, type: 'incoming_call' }`
+
+### PollEventsConsumer
+
+Source: `apps/notification-service/src/consumers/poll-events.consumer.ts`
+
+- Topic: `KAFKA_TOPICS.GROUP.POLL_CREATED` (vote/close events do **not** push
+  — they would spam every member every time anyone clicks).
+- Reads conversation members from Redis set
+  `chat:conversation:{conversationId}:members` (or from `payload.memberIds`
+  if the producer embeds it).
+- Excludes the creator.
+- Enqueues `normal` priority jobs with `notificationType: 'message'`, so
+  per-conversation mute, global mute, quiet hours and `notifyOnMessage`
+  are all respected.
+- `dedupId: 'poll_created:{pollId}'` for idempotency.
+- Push payload:
+  - title: `New poll`
+  - body: `{creatorName}: {question}` (truncated to 60 chars)
+  - data: `{ type: 'group_poll_created', conversationId, pollId, creatorId }`
 
 ### MemberChangesConsumer
 
@@ -180,9 +205,25 @@ Repositories under `apps/notification-service/src/infrastructure/repositories`:
 
 From `NotificationPreferenceService`:
 
-1. High priority -> always allowed.
-2. If conversation preference exists, evaluate it first.
-3. Else evaluate global preference.
-4. If none exists -> allowed.
+| `notificationType` | `priority` | `muteUntil` | quiet hours | `notifyOnX` toggle |
+|--------------------|------------|-------------|-------------|---------------------|
+| `call`             | `high`     | bypass      | bypass      | bypass (always urgent) |
+| `mention`          | `high`     | bypass      | bypass      | respected (`notifyOnMention`) |
+| `message`          | `normal`   | respected   | respected   | respected (`notifyOnMessage`) |
 
-Checks include `notifyOnMessage`, `muteUntil`, and quiet-hours window (`quietHoursStart`, `quietHoursEnd`, `timezone`).
+Resolution order:
+
+1. If `notificationType === 'call'` and `priority === 'high'` → always allowed.
+2. Else, if a per-conversation preference row exists, evaluate it (and stop —
+   the conversation row overrides the global row even if it allows the push).
+3. Else, evaluate the global preference (`conversationId IS NULL`).
+4. If neither row exists → allowed.
+
+Checks include `notifyOnMessage`, `muteUntil`, and the quiet-hours window
+(`quietHoursStart`, `quietHoursEnd`, `timezone`). Quiet hours support
+overnight windows (e.g. 22:00 → 07:00).
+
+The product policy is "tuân theo setting; chỉ bypass nếu độ ưu tiên cao":
+only HIGH-priority pushes may bypass mute / quiet hours. Even high-priority
+mentions still respect the explicit `notifyOnMention` toggle, so a user who
+turned mention notifications off will not be paged.

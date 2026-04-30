@@ -1,4 +1,5 @@
 import { apiClient } from "@/lib/api/client";
+import type { AxiosRequestConfig } from "axios";
 
 export type FriendshipStatus =
   | "FRIEND"
@@ -108,8 +109,19 @@ export async function blockUser(userId: string): Promise<FriendshipMutationRespo
 }
 
 export async function unblockUser(userId: string): Promise<FriendshipMutationResponse> {
-  const res = await apiClient.delete(`/friendships/blocks/${userId}`);
-  return res.data.data;
+  try {
+    const res = await apiClient.delete(
+      `/friendships/blocks/${userId}`,
+      { _silent400: true } as AxiosRequestConfig & { _silent400: boolean }
+    );
+    return res.data.data;
+  } catch (error) {
+    const err = error as { status?: number; code?: string; message?: string };
+    if (err.status === 400 && err.code === "RESOURCE_CONFLICT" && err.message === "User is not blocked") {
+      return { success: true, message: "User is not blocked" };
+    }
+    throw error;
+  }
 }
 
 export async function searchUsers(query: string): Promise<UserSearchResult[]> {

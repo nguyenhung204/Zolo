@@ -428,6 +428,7 @@ export function ActiveCallModal() {
             },
             adaptiveStream: true,
           }}
+          onConnected={() => useCallStore.getState().setHasJoinedCall(true)}
           className="flex flex-col flex-1 min-h-0"
         >
           <ActiveCallRoom

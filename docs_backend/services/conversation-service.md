@@ -10,7 +10,7 @@
 
 ## Purpose
 
-Manages conversation lifecycle and membership for all conversation kinds: DIRECT, GROUP, and COMMUNITY. Publishes membership change events to Kafka so that downstream services (Realtime Gateway, membership cache) can react in real time.
+Manages conversation lifecycle and membership for all conversation kinds: DIRECT, GROUP, and ANNOUNCEMENT. Publishes membership change events to Kafka so that downstream services (Realtime Gateway, membership cache) can react in real time.
 
 ---
 
@@ -20,7 +20,7 @@ Manages conversation lifecycle and membership for all conversation kinds: DIRECT
 |------|---------|----------|
 | `direct` | Exactly 2 | One-on-one chat, created automatically on friendship acceptance |
 | `group` | Unlimited | Group chat with manual membership; OWNER/ADMIN manage members |
-| `community` | Unlimited | Broadcast channel; only OWNER/ADMIN can post; MEMBER can only react |
+| `announcement` | Unlimited | Broadcast channel; only OWNER/ADMIN can post; MEMBER can only react |
 
 ---
 
@@ -30,7 +30,7 @@ Manages conversation lifecycle and membership for all conversation kinds: DIRECT
 
 ```
 id                    UUID (PK)
-type                  ENUM('direct', 'group', 'community')
+type                  ENUM('direct', 'group', 'announcement')
 name                  VARCHAR (NULL for direct)
 description           TEXT
 avatarMediaId         VARCHAR(36) (NULL — UUID of the media record in Media Service)
@@ -146,7 +146,7 @@ User profile enrichment (username, displayName, avatarUrl) is **not** performed 
 ### List Conversations
 
 1. Paginate conversations where the user is a member
-2. Load member records only for `direct` conversations (GROUP/COMMUNITY do not expose participant lists at list level)
+2. Load member records only for `direct` conversations (GROUP/ANNOUNCEMENT do not expose participant lists at list level)
 3. For each `direct` conversation, extract `otherUserId` (the other member)
 4. Return raw list: `{ ...conv, otherUserId? }` — no user-profile enrichment
 
@@ -415,7 +415,7 @@ APP_BASE_URL=https://zolo-smoky.vercel.app  # base URL prepended to invite links
 
 - `direct`: always exactly 2 members; type is immutable; created automatically on friendship acceptance
 - `group`: manual member management; `OWNER`/`ADMIN` add/remove; supports invite links, join requests, polls, appointments
-- `community`: only `OWNER`/`ADMIN` may post; all other members are `MEMBER` (react only)
+- `announcement`: only `OWNER`/`ADMIN` may post; all other members are `MEMBER` (react only)
 - `createdBy` always receives `OWNER` role on creation
 - At least one `OWNER` must remain in any conversation (enforced before remove)
 - Valid roles: `owner`, `admin`, `member` (lowercase, matches DB constraint)

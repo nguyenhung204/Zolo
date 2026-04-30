@@ -67,6 +67,10 @@ export default function ConversationPage({ params }: Props) {
     // when returning to a conversation that received messages while away.
     qc.removeQueries({ queryKey: queryKeys.messages.list(id) });
 
+    // Clear mention badge when viewing the conversation
+    const { useMentionStore } = require("@/stores/mentionStore");
+    useMentionStore.getState().clearMention(id);
+
     // Immediately mark all messages as seen so the unread badge clears without
     // waiting for the IntersectionObserver. Use maxOffset from the local cache —
     // it is already up-to-date because useSocket keeps it in sync via WS events.

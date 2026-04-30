@@ -437,7 +437,7 @@ sequenceDiagram
 **Kind Validation:**
 - DIRECT: must have exactly 2 members (including creator); one-on-one only
 - GROUP: manual member list; must have at least 2 members
-- COMMUNITY: read-only for members; only OWNER/ADMIN can post
+- ANNOUNCEMENT: read-only for members; only OWNER/ADMIN can post
 
 **Member Validation:**
 - All memberIds must be valid user IDs

@@ -452,7 +452,7 @@ export class HourlyRateLimitRule implements IAclRule {
 
 ### Problem
 
-Each `ConversationKind` (`direct`, `group`, `community`) has its own permission matrix, membership rules, and post constraints. Without the Strategy pattern, this becomes one large class with a `switch(kind)` block duplicated across every operation. Adding a new channel kind means editing every switch block.
+Each `ConversationKind` (`direct`, `group`, `announcement`) has its own permission matrix, membership rules, and post constraints. Without the Strategy pattern, this becomes one large class with a `switch(kind)` block duplicated across every operation. Adding a new channel kind means editing every switch block.
 
 ### Pattern Applied
 
@@ -462,7 +462,7 @@ Each `ConversationKind` (`direct`, `group`, `community`) has its own permission 
 apps/chat-core/src/strategies/conversation/
   direct-conversation.strategy.ts         ← direct: symmetric perms for all members
   group-conversation.strategy.ts          ← group: role-based perms (OWNER > ADMIN > MEMBER)
-  community-conversation.strategy.ts      ← community: only OWNER/ADMIN post; MEMBER react-only
+  announcement-conversation.strategy.ts      ← announcement: only OWNER/ADMIN post; MEMBER react-only
   conversation-strategy.registry.ts       ← Map<ConversationKind, IConversationStrategy>
 ```
 
@@ -476,14 +476,14 @@ if (!result.isValid) throw new ForbiddenException(result.errorCode);
 
 Each strategy encapsulates:
 - Which `Permission` codes are available per `MemberRole`
-- Kind-specific pre-checks (e.g., `community` blocks non-admin `MSG.SEND_TEXT`)
-- Join policies (e.g., `direct` disallows join; `community` auto-assigns MEMBER role)
+- Kind-specific pre-checks (e.g., `announcement` blocks non-admin `MSG.SEND_TEXT`)
+- Join policies (e.g., `direct` disallows join; `announcement` auto-assigns MEMBER role)
 
 Permission sets are hardcoded per-strategy in `getPermissionsForRole()` — there is no database-backed `policy_rules` table.
 
 ### What it Solves
 
-- **Isolated per-kind logic**: changing `community` permissions doesn't risk breaking `group` logic
+- **Isolated per-kind logic**: changing `announcement` permissions doesn't risk breaking `group` logic
 - **Extensibility**: adding a new kind = one new strategy class + one registry entry
 
 ### How to Extend

@@ -44,6 +44,9 @@ interface InstantCallState {
   addGroupCallParticipant: (conversationId: string, userId: string) => void;
   /** Clears all call state - call on terminal events (ended/declined/missed). */
   clearCallState: () => void;
+  /** True once the user has actually connected to the LiveKit room. */
+  hasJoinedCall: boolean;
+  setHasJoinedCall: (v: boolean) => void;
 }
 
 export const useCallStore = create<InstantCallState>()(
@@ -55,6 +58,7 @@ export const useCallStore = create<InstantCallState>()(
       liveKitCredentials: null,
       declinedGroupCall: null,
       groupCallsByConversation: {},
+      hasJoinedCall: false,
 
       setIncomingCall: (call) => set({ incomingCall: call }),
       setOutgoingCall: (call) => set({ outgoingCall: call }),
@@ -91,7 +95,9 @@ export const useCallStore = create<InstantCallState>()(
         }),
 
       clearCallState: () =>
-        set({ incomingCall: null, outgoingCall: null, activeCall: null, liveKitCredentials: null, declinedGroupCall: null }),
+        set({ incomingCall: null, outgoingCall: null, activeCall: null, liveKitCredentials: null, declinedGroupCall: null, hasJoinedCall: false }),
+
+      setHasJoinedCall: (v) => set({ hasJoinedCall: v }),
     }),
     {
       name: 'zolo-call-state',

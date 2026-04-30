@@ -903,9 +903,9 @@ curl -X POST http://localhost:3000/conversations \
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `type` | `'direct'\|'group'\|'community'` | ✓ | Normalized to lowercase |
+| `type` | `'direct'\|'group'\|'announcement'` | ✓ | Normalized to lowercase |
 | `memberIds` | `string[]` | ✓ | User IDs to add (the creator is added automatically as `OWNER`) |
-| `name` | `string` | | Required for `group` / `community` |
+| `name` | `string` | | Required for `group` / `announcement` |
 | `description` | `string` | | |
 
 ---
@@ -1188,6 +1188,8 @@ curl -X POST http://localhost:3000/chat/messages \
 | `type` | `'text'\|'image'\|'video'\|'audio'\|'file'\|'sticker'\|'media'` | | Default: `'text'` |
 | `replyToMessageId` | `string` | | ID of the message being replied to |
 | `metadata` | `Record<string, any>` | | Additional metadata (sticker info, etc.) |
+| `mentions` | `string[]` | | Mentioned user IDs. Supported only in `group` and `announcement`; max 50 explicit users. |
+| `metadata.mentionAll` | `boolean` | | Mention every member except sender (`@all` / `@here` / `@channel`). OWNER/ADMIN only. |
 | `attachments` | `AttachmentRefDto[]` | | Max 30 attachments |
 | `attachments[].mediaId` | `string` (UUID v4) | ✓ | Media ID from completed upload |
 | `attachments[].type` | `'image'\|'video'\|'audio'\|'file'` | | |
@@ -1208,6 +1210,8 @@ curl -X POST http://localhost:3000/chat/messages \
 | HTTP | Scenario |
 |---|---|
 | 403 | Caller is blocked or not a member (`FORBIDDEN_NOT_MEMBER`) |
+| 400 | Mentions are used in `direct` (`MENTIONS_NOT_SUPPORTED_FOR_CONVERSATION_TYPE`) or target is not a member (`MENTION_TARGET_NOT_MEMBER`) |
+| 403 | Regular member uses `metadata.mentionAll` (`FORBIDDEN_MENTION_ALL`) |
 | 429 | Rate limit exceeded |
 
 > See [Guide 1: Fast-Ack Message Send Flow](#guide-1-fast-ack-message-send-flow) for full client implementation.

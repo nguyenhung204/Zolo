@@ -72,6 +72,32 @@ export async function getInstantCallById(callId: string): Promise<CallDto | null
   return res.data.data ?? res.data ?? null;
 }
 
+export interface CallSummaryDto {
+  callId: string;
+  conversationId: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  endedBy: string;
+  endReason: string;
+  participantCount: number;
+  generatedAt: string;
+}
+
+export async function getCallHistory(
+  conversationId: string,
+  page = 1,
+  limit = 20,
+): Promise<CallDto[]> {
+  const res = await apiClient.get(`/calls/history/${conversationId}`, { params: { page, limit } });
+  return res.data.data ?? res.data ?? [];
+}
+
+export async function getCallSummary(callId: string): Promise<CallSummaryDto | null> {
+  const res = await apiClient.get(`/calls/${callId}/summary`);
+  return res.data.data ?? res.data ?? null;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Meeting {
@@ -243,22 +269,4 @@ export async function stopRecording(meetingId: string): Promise<Recording> {
 export async function getRecordings(meetingId: string): Promise<Recording[]> {
   const res = await apiClient.get(`/calls/${meetingId}/recordings`);
   return res.data.data ?? [];
-}
-
-// ─── History ──────────────────────────────────────────────────────────────────
-
-export async function getCallHistory(
-  conversationId: string,
-  page = 1,
-  limit = 20
-): Promise<Meeting[]> {
-  const res = await apiClient.get(
-    `/calls/history/${conversationId}?page=${page}&limit=${limit}`
-  );
-  return res.data.data ?? [];
-}
-
-export async function getMeetingSummary(meetingId: string): Promise<MeetingSummary | null> {
-  const res = await apiClient.get(`/calls/${meetingId}/summary`);
-  return res.data.data ?? null;
 }

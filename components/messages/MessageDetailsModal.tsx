@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { X, Reply, Pencil, Clock3, ShieldAlert, User, MessageSquareText, Image, Video, Mic, Sticker, ClipboardList, Hash, Eye, CheckCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/api/messages";
+import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
 
 type MemberLike = { displayName?: string; username?: string; avatarUrl?: string | null };
 
@@ -79,6 +80,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
   const repliedToSenderName = repliedToMsg ? resolveName(memberMap.get(repliedToMsg.senderId)) : null;
 
   const isEdited = !!message.editedAt;
+  const deliveryStatus = resolveMessageDeliveryStatus(message, otherMembers);
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -110,7 +112,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
           <Field
             icon={<ShieldAlert className="w-4 h-4" />}
             label="Status"
-            value={message.isRevoked ? "Revoked" : message.deletedAt ? "Deleted" : message._failed ? "Failed" : message._pending ? "Sending" : "Sent"}
+            value={message.isRevoked ? "Revoked" : message.deletedAt ? "Deleted" : messageDeliveryLabel(deliveryStatus)}
           />
           {isEdited && (
             <Field icon={<Pencil className="w-4 h-4" />} label="Edited at" value={formatDate(message.editedAt)} />
