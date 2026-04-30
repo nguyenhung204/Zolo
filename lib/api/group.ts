@@ -359,8 +359,15 @@ export async function createPoll(
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
-export async function votePoll(pollId: string, optionIds: string[]): Promise<Poll> {
-  const res = await apiClient.patch(`/polls/${pollId}/vote`, { optionIds });
+export async function votePoll(
+  conversationId: string,
+  pollId: string,
+  optionIds: string[],
+): Promise<Poll> {
+  const res = await apiClient.post(
+    `/conversations/${conversationId}/polls/${pollId}/votes`,
+    { optionIds },
+  );
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 

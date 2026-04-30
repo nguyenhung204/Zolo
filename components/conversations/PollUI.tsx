@@ -108,7 +108,7 @@ export function PollUI({
 
   // ── Vote mutation ──────────────────────────────────────────────────────────
   const voteMutation = useMutation<Poll, ApiError, VoteArgs>({
-    mutationFn: ({ pollId: id, optionIds }) => votePoll(id, optionIds),
+    mutationFn: ({ pollId: id, optionIds }) => votePoll(poll!.conversationId, id, optionIds),
 
     onMutate: async ({ pollId: id, optionIds }) => {
       // 1. Cancel any in-flight refetches so they don't overwrite our optimistic update.

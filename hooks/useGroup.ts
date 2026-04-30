@@ -103,6 +103,7 @@ export function useCreatePoll(conversationId: string) {
 }
 
 interface VoteArgs {
+  conversationId: string;
   pollId: string;
   optionIds: string[];
 }
@@ -116,7 +117,8 @@ export function useVotePoll() {
   const myId = useAuthStore((s) => s.user?.id);
 
   return useMutation<Poll, ApiError, VoteArgs>({
-    mutationFn: ({ pollId, optionIds }) => votePoll(pollId, optionIds),
+    mutationFn: ({ conversationId, pollId, optionIds }) =>
+      votePoll(conversationId, pollId, optionIds),
 
     onMutate: async ({ pollId, optionIds }) => {
       await qc.cancelQueries({ queryKey: queryKeys.polls.detail(pollId) });
