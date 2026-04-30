@@ -65,14 +65,16 @@ type GroupEventSocket = {
     reason: "removed-from-conversation" | "group-member-kicked" | "group-disbanded" | string;
     message?: string;
   }) => void): void;
-  on(event: "poll.created", handler: (p: PollCreatedEvent) => void): void;
-  on(event: "poll.voted", handler: (p: PollVotedEvent) => void): void;
-  on(event: "poll.closed", handler: (p: PollClosedEvent) => void): void;
+  on(event: "group:poll_created", handler: (p: PollCreatedEvent) => void): void;
+  on(event: "group:poll_voted", handler: (p: PollVotedEvent) => void): void;
+  on(event: "group:poll_closed", handler: (p: PollClosedEvent) => void): void;
   on(event: "group.appointment_created", handler: (p: AppointmentEvent) => void): void;
   on(event: "group.appointment_updated", handler: (p: AppointmentEvent) => void): void;
   on(event: "group.appointment_deleted", handler: (p: AppointmentEvent) => void): void;
   on(event: "group.appointment_reminder", handler: (p: AppointmentReminderEvent) => void): void;
+  on(event: "connect", handler: () => void): void;
   off(event: string, handler: (...args: unknown[]) => void): void;
+  io: { on(event: string, handler: (...args: unknown[]) => void): void; off(event: string, handler: (...args: unknown[]) => void): void };
 };
 
 /**
@@ -241,21 +243,11 @@ export function useGroupSocketEvents(conversationId: string) {
       qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
     };
 
-    // ── poll.created ───────────────────────────────────────────────────────
-    // Strategy: prepend the new poll to the polls list cache (§4.4).
+    // ── group:poll_created ──────────────────────────────────────────────────
+    // Strategy: prepend the new poll to the polls list cache. No refetch.
     const onPollCreated = (payload: PollCreatedEvent) => {
       if (payload.conversationId !== conversationId) return;
-      const newPoll: Poll = normalizePoll({
-        id: payload.pollId,
-        conversationId: payload.conversationId,
-        creatorId: payload.creatorId,
-        question: payload.question,
-        options: payload.options,
-        multipleChoice: payload.multipleChoice,
-        deadline: payload.deadline,
-        isClosed: false,
-        createdAt: payload.timestamp,
-      });
+      const newPoll: Poll = normalizePoll(payload.poll);
       qc.setQueryData<Poll[]>(
         queryKeys.polls.list(conversationId),
         (old) => {
@@ -267,19 +259,17 @@ export function useGroupSocketEvents(conversationId: string) {
       qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);
     };
 
-    // ── poll.voted ─────────────────────────────────────────────────────────
+    // ── group:poll_voted ────────────────────────────────────────────────────
     // Strategy: skip if it is our own vote (optimistic update already applied).
-    // Otherwise replace the options array with the authoritative server snapshot (§4.4).
+    // Otherwise replace the options array with the authoritative server snapshot.
     const onPollVoted = (payload: PollVotedEvent) => {
       if (payload.conversationId !== conversationId) return;
-      // The guide explicitly instructs to skip our own events so that the
-      // optimistic update in useMutation is not overwritten prematurely.
-      if (payload.userId === myId) return;
+      if (payload.voterId === myId) return;
 
       const normalizedOptions = normalizePoll({
         id: payload.pollId,
         conversationId: payload.conversationId,
-        options: payload.updatedOptions,
+        options: payload.options,
       }).options;
 
       qc.setQueryData<Poll>(
@@ -294,14 +284,14 @@ export function useGroupSocketEvents(conversationId: string) {
       );
     };
 
-    // ── poll.closed ────────────────────────────────────────────────────────
-    // Strategy: merge isClosed + final options into the poll cache (§4.4).
+    // ── group:poll_closed ───────────────────────────────────────────────────
+    // Strategy: merge isClosed + final options into the poll cache. Disable voting UI.
     const onPollClosed = (payload: PollClosedEvent) => {
       if (payload.conversationId !== conversationId) return;
       const normalizedOptions = normalizePoll({
         id: payload.pollId,
         conversationId: payload.conversationId,
-        options: payload.finalOptions,
+        options: payload.options,
       }).options;
       qc.setQueryData<Poll>(
         queryKeys.polls.detail(payload.pollId),
@@ -505,9 +495,16 @@ export function useGroupSocketEvents(conversationId: string) {
     socket.on("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
     socket.on("conversation:member-removed", onMemberRemoved as (...args: unknown[]) => void);
     socket.on("conversation:removed", onConversationRemoved as (...args: unknown[]) => void);
-    socket.on("poll.created", onPollCreated);
-    socket.on("poll.voted", onPollVoted);
-    socket.on("poll.closed", onPollClosed);
+    // Socket.IO does not buffer missed events across disconnects.
+    // Refetch the poll list on reconnect to reconcile any missed changes.
+    const onReconnect = () => {
+      qc.invalidateQueries({ queryKey: queryKeys.polls.list(conversationId) });
+    };
+    socket.io.on("reconnect", onReconnect);
+
+    socket.on("group:poll_created", onPollCreated);
+    socket.on("group:poll_voted", onPollVoted);
+    socket.on("group:poll_closed", onPollClosed);
     socket.on("group.appointment_created", onAppointmentMutated);
     socket.on("group.appointment_updated", onAppointmentMutated);
     socket.on("group.appointment_deleted", onAppointmentMutated);
@@ -526,9 +523,10 @@ export function useGroupSocketEvents(conversationId: string) {
       socket.off("conversation:member-added", onMemberAdded as (...args: unknown[]) => void);
       socket.off("conversation:member-removed", onMemberRemoved as (...args: unknown[]) => void);
       socket.off("conversation:removed", onConversationRemoved as (...args: unknown[]) => void);
-      socket.off("poll.created", onPollCreated as (...args: unknown[]) => void);
-      socket.off("poll.voted", onPollVoted as (...args: unknown[]) => void);
-      socket.off("poll.closed", onPollClosed as (...args: unknown[]) => void);
+      socket.io.off("reconnect", onReconnect as (...args: unknown[]) => void);
+      socket.off("group:poll_created", onPollCreated as (...args: unknown[]) => void);
+      socket.off("group:poll_voted", onPollVoted as (...args: unknown[]) => void);
+      socket.off("group:poll_closed", onPollClosed as (...args: unknown[]) => void);
       socket.off("group.appointment_created", onAppointmentMutated as (...args: unknown[]) => void);
       socket.off("group.appointment_updated", onAppointmentMutated as (...args: unknown[]) => void);
       socket.off("group.appointment_deleted", onAppointmentMutated as (...args: unknown[]) => void);

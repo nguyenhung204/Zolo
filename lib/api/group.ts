@@ -114,30 +114,29 @@ export interface GroupInviteLinkResetEvent {
 }
 
 export interface PollCreatedEvent {
-  pollId: string;
   conversationId: string;
-  creatorId: string;
-  question: string;
-  options: PollOption[];
-  multipleChoice: boolean;
-  deadline?: string;
+  poll: Poll;
+  createdBy: string;
+  createdByName: string;
   timestamp: string;
 }
 
 export interface PollVotedEvent {
-  pollId: string;
   conversationId: string;
-  userId: string;
+  pollId: string;
+  voterId: string;
+  voterName: string;
   optionIds: string[];
-  updatedOptions: PollOption[];
+  options: PollOption[];
   timestamp: string;
 }
 
 export interface PollClosedEvent {
-  pollId: string;
   conversationId: string;
+  pollId: string;
   closedBy: string;
-  finalOptions: PollOption[];
+  closedByName: string;
+  options: PollOption[];
   timestamp: string;
 }
 
@@ -346,8 +345,8 @@ export async function getPolls(conversationId: string): Promise<Poll[]> {
   return Array.isArray(d) ? d.map((poll) => normalizePoll(poll as RawPoll)) : [];
 }
 
-export async function getPoll(pollId: string): Promise<Poll> {
-  const res = await apiClient.get(`/polls/${pollId}`);
+export async function getPoll(conversationId: string, pollId: string): Promise<Poll> {
+  const res = await apiClient.get(`/conversations/${conversationId}/polls/${pollId}`);
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
@@ -380,8 +379,8 @@ export async function votePoll(
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
-export async function closePoll(pollId: string): Promise<Poll> {
-  const res = await apiClient.post(`/polls/${pollId}/close`);
+export async function closePoll(conversationId: string, pollId: string): Promise<Poll> {
+  const res = await apiClient.post(`/conversations/${conversationId}/polls/${pollId}/close`);
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 

@@ -2,11 +2,11 @@
 
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BarChart3, Lock, Clock, CheckCircle2, Loader2 } from "lucide-react";
+import { BarChart3, Lock, Clock, CheckCircle2, Loader2, XCircle, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
-import { votePoll, hasMinRole } from "@/lib/api/group";
+import { votePoll, closePoll, hasMinRole } from "@/lib/api/group";
 import type { Poll, PollOption } from "@/lib/api/group";
 import type { MemberRole } from "@/lib/api/conversations";
 import type { ApiError } from "@/lib/api/errors";
@@ -15,11 +15,8 @@ import type { ApiError } from "@/lib/api/errors";
 
 interface PollUIProps {
   pollId: string;
-  /** Caller's resolved role in this conversation. */
   myRole: MemberRole | null;
-  /** Reflects the conversation's allowMemberMessage setting. */
   allowMemberMessage: boolean;
-  /** Seed data to populate the cache before the query fires (avoids flash). */
   initialData?: Poll;
 }
 
@@ -36,8 +33,6 @@ function optionPercent(option: PollOption, total: number): number {
 
 function isPollExpired(deadline?: string): boolean {
   if (!deadline) return false;
-  // Use the ISO timestamp directly — never compare with Date.now() to avoid
-  // local clock skew. The deadline itself is an ISO 8601 UTC string from the server.
   return new Date(deadline).getTime() < Date.now();
 }
 
@@ -59,21 +54,6 @@ interface VoteArgs {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-/**
- * Renders an interactive poll with optimistic voting.
- *
- * Optimistic update pattern follows Section 4.2 of FE_INTEGRATION_GUIDE.md:
- *  1. Cancel in-flight refetches to prevent overwrites.
- *  2. Snapshot the previous state for rollback.
- *  3. Apply the vote locally before the server responds.
- *  4. Roll back on error (403 → closed poll or muted group).
- *  5. Invalidate on settled to reconcile with the server state.
- *
- * Socket.IO `poll.voted` events from OTHER users are handled in
- * useGroupSocketEvents and replace the options array directly.
- * Our own `poll.voted` events are skipped there since the optimistic
- * update already applied the change.
- */
 export function PollUI({
   pollId,
   myRole,
@@ -83,9 +63,6 @@ export function PollUI({
   const qc = useQueryClient();
   const myId = useAuthStore((s) => s.user?.id);
 
-  // ── Poll query ─────────────────────────────────────────────────────────────
-  // There is no documented GET /polls/:id endpoint. This query only observes
-  // React Query cache populated by createPoll / poll.created / poll.voted.
   const { data: poll, isLoading } = useQuery<Poll>({
     queryKey: queryKeys.polls.detail(pollId),
     queryFn: () => Promise.resolve(
@@ -93,12 +70,9 @@ export function PollUI({
     ),
     initialData,
     enabled: false,
-    staleTime: Infinity, // Socket events (`poll.voted`, `poll.closed`) handle updates.
+    staleTime: Infinity,
   });
 
-  // ── Permission guard ───────────────────────────────────────────────────────
-  // A member with a role below moderator cannot vote when allowMemberMessage is off.
-  // Proactively disable the UI before any round-trip (§4.3).
   const canVote =
     !!myId &&
     !!poll &&
@@ -106,26 +80,27 @@ export function PollUI({
     !isPollExpired(poll.deadline) &&
     (allowMemberMessage || hasMinRole(myRole ?? "member", "admin"));
 
+  const canClose =
+    !!myId &&
+    !!poll &&
+    !poll.isClosed &&
+    (poll.creatorId === myId || hasMinRole(myRole ?? "member", "admin"));
+
   // ── Vote mutation ──────────────────────────────────────────────────────────
   const voteMutation = useMutation<Poll, ApiError, VoteArgs>({
     mutationFn: ({ pollId: id, optionIds }) => votePoll(poll!.conversationId, id, optionIds),
 
     onMutate: async ({ pollId: id, optionIds }) => {
-      // 1. Cancel any in-flight refetches so they don't overwrite our optimistic update.
       await qc.cancelQueries({ queryKey: queryKeys.polls.detail(id) });
-
-      // 2. Snapshot the current state for rollback.
       const snapshot = qc.getQueryData<Poll>(queryKeys.polls.detail(id));
 
-      // 3. Apply optimistic update immediately.
       qc.setQueryData<Poll>(queryKeys.polls.detail(id), (old) => {
         if (!old || !myId) return old;
         const voteSet = new Set(optionIds);
         return {
           ...old,
           options: (old.options ?? []).map((opt) => {
-            // Strip existing vote for this user, then add back if selected.
-            let voters = (opt.voterIds ?? []).filter((id) => id !== myId);
+            let voters = (opt.voterIds ?? []).filter((vid) => vid !== myId);
             if (voteSet.has(opt.id)) voters = [...voters, myId];
             return { ...opt, voterIds: voters };
           }),
@@ -136,14 +111,12 @@ export function PollUI({
     },
 
     onError: (err, { pollId: id }, ctx) => {
-      // Roll back to the snapshot so the UI reflects the pre-vote state.
       const context = ctx as { snapshot?: Poll } | undefined;
       if (context?.snapshot) {
         qc.setQueryData(queryKeys.polls.detail(id), context.snapshot);
       }
-      // Surface role/deadline 403 errors with a clear, non-disruptive message.
       if (err.status === 403) {
-        toast.error("You cannot vote — the poll is closed or you lack permission.");
+        toast.error("Voting is closed for this poll.");
       } else {
         toast.error(err.message ?? "Failed to record your vote.");
       }
@@ -155,6 +128,25 @@ export function PollUI({
         queryKeys.polls.list(updated.conversationId),
         (old) => old?.map((poll) => (poll.id === updated.id ? updated : poll)),
       );
+    },
+  });
+
+  // ── Close mutation ──────────────────────────────────────────────────────────
+  const closeMutation = useMutation<Poll, ApiError, void>({
+    mutationFn: () => closePoll(poll!.conversationId, poll!.id),
+    onSuccess: (updated) => {
+      qc.setQueryData<Poll>(queryKeys.polls.detail(updated.id), updated);
+      qc.setQueryData<Poll[]>(
+        queryKeys.polls.list(updated.conversationId),
+        (old) => old?.map((p) => (p.id === updated.id ? updated : p)),
+      );
+    },
+    onError: (err) => {
+      if (err.status === 403) {
+        toast.error("Only the poll creator or an admin can close this poll.");
+      } else {
+        toast.error("Failed to close poll.");
+      }
     },
   });
 
@@ -176,12 +168,10 @@ export function PollUI({
 
     let nextVotes: string[];
     if (poll.multipleChoice) {
-      // Toggle the selected option in the set.
       const next = new Set(myVotes);
-      next.has(optionId) ? next.delete(optionId) : next.add(optionId);
+      if (next.has(optionId)) { next.delete(optionId); } else { next.add(optionId); }
       nextVotes = [...next];
     } else {
-      // Single choice — selecting the same option deselects it.
       nextVotes = myVotes.has(optionId) ? [] : [optionId];
     }
 
@@ -200,55 +190,58 @@ export function PollUI({
 
   if (!poll) return null;
 
+  // Find the leading option (most votes)
+  const maxVoterCount = Math.max(...options.map((o) => o.voterIds?.length ?? 0), 0);
+
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4 space-y-3 w-full max-w-[420px] shadow-sm">
+    <div className="rounded-2xl bg-surface border border-border w-full max-w-[420px] overflow-hidden shadow-sm">
       {/* Header */}
-      <div className="space-y-2">
-        <div className="flex items-start gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-cta/10 text-cta flex items-center justify-center shrink-0">
-            <BarChart3 className="w-4 h-4" />
+      <div className="px-4 pt-4 pb-3">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-cta/10 text-cta flex items-center justify-center shrink-0 mt-0.5">
+            <BarChart3 className="w-[18px] h-[18px]" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-semibold text-cta uppercase tracking-wide">Poll</p>
-            <p className="text-sm font-semibold text-foreground leading-snug mt-0.5">
+            <p className="text-sm font-bold text-text leading-snug">
               {poll.question}
             </p>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              {poll.multipleChoice && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-cta/10 text-cta">
+                  Multiple choice
+                </span>
+              )}
+              {isClosed && (
+                <span className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-error/10 text-error">
+                  <Lock className="w-2.5 h-2.5" />
+                  Closed
+                </span>
+              )}
+              {!isClosed && isExpired && (
+                <span className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-warning/10 text-warning">
+                  <Clock className="w-2.5 h-2.5" />
+                  Expired
+                </span>
+              )}
+              {!isClosed && !isExpired && poll.deadline && (
+                <span className="flex items-center gap-1 text-[10px] text-muted">
+                  <Clock className="w-2.5 h-2.5" />
+                  {formatDeadline(poll.deadline)}
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted flex-wrap pl-10">
-          {poll.multipleChoice && (
-            <span className="px-1.5 py-0.5 rounded bg-muted/20 text-muted-foreground">
-              Multiple choice
-            </span>
-          )}
-          {isClosed && (
-            <span className="flex items-center gap-1 text-warning">
-              <Lock className="w-3 h-3" />
-              Closed
-            </span>
-          )}
-          {!isClosed && isExpired && (
-            <span className="flex items-center gap-1 text-destructive">
-              <Clock className="w-3 h-3" />
-              Expired
-            </span>
-          )}
-          {!isClosed && !isExpired && poll.deadline && (
-            <span className="flex items-center gap-1 text-muted">
-              <Clock className="w-3 h-3" />
-              Closes {formatDeadline(poll.deadline)}
-            </span>
-          )}
         </div>
       </div>
 
       {/* Options */}
-      <div className="space-y-2">
+      <div className="px-4 pb-2 space-y-1.5">
         {options.map((option, index) => {
           const pct = optionPercent(option, total);
           const isSelected = myVotes.has(option.id);
           const isInteractive = canVote && !isPending;
           const voterCount = option.voterIds?.length ?? 0;
+          const isLeading = voterCount > 0 && voterCount === maxVoterCount && total > 0;
 
           return (
             <button
@@ -256,42 +249,66 @@ export function PollUI({
               onClick={() => handleOptionClick(option.id)}
               disabled={!isInteractive}
               className={cn(
-                "relative w-full text-left rounded-xl border overflow-hidden transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "relative w-full text-left rounded-xl overflow-hidden transition-all duration-200",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cta/40",
                 isInteractive
-                  ? "cursor-pointer hover:border-cta/60"
+                  ? "cursor-pointer active:scale-[0.98]"
                   : "cursor-default",
                 isSelected
-                  ? "border-cta bg-cta/5"
-                  : "border-border bg-surface-secondary",
+                  ? "ring-1 ring-cta/40"
+                  : "",
               )}
             >
-              {/* Progress fill — renders behind the label */}
+              {/* Background */}
+              <div className={cn(
+                "absolute inset-0",
+                isSelected ? "bg-cta/8" : "bg-surface-secondary",
+              )} />
+
+              {/* Progress bar */}
               <div
                 className={cn(
-                  "absolute inset-y-0 left-0 transition-all duration-300",
-                  isSelected ? "bg-cta/15" : "bg-muted/10",
+                  "absolute inset-y-0 left-0 transition-all duration-500 ease-out rounded-xl",
+                  isSelected
+                    ? "bg-cta/15"
+                    : isLeading
+                      ? "bg-cta/8"
+                      : "bg-border/40",
                 )}
                 style={{ width: `${pct}%` }}
                 aria-hidden="true"
               />
 
-              {/* Content row */}
+              {/* Content */}
               <div className="relative flex items-center justify-between px-3 py-2.5 gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  {isSelected && (
-                    <CheckCircle2 className="w-4 h-4 text-cta flex-shrink-0" />
-                  )}
-                  <span className="text-sm text-foreground truncate">
+                  <div className={cn(
+                    "w-4.5 h-4.5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
+                    isSelected
+                      ? "border-cta bg-cta"
+                      : "border-muted/50 bg-transparent",
+                  )}>
+                    {isSelected && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-white" />
+                    )}
+                  </div>
+                  <span className={cn(
+                    "text-sm truncate",
+                    isSelected ? "font-semibold text-text" : "text-text/80",
+                  )}>
                     {option.text}
                   </span>
                 </div>
-                <div className="flex items-center gap-1.5 flex-shrink-0 text-xs text-muted">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {isPending && isSelected && (
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <Loader2 className="w-3 h-3 animate-spin text-cta" />
                   )}
-                  <span>{pct}%</span>
-                  <span className="text-muted/60">({voterCount})</span>
+                  <span className={cn(
+                    "text-xs font-semibold tabular-nums",
+                    isSelected ? "text-cta" : "text-muted",
+                  )}>
+                    {pct}%
+                  </span>
                 </div>
               </div>
             </button>
@@ -300,15 +317,34 @@ export function PollUI({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between pt-1 border-t border-border/60">
-        <p className="text-xs text-muted">
-          {total} {total === 1 ? "vote" : "votes"}
-        </p>
-        {!canVote && !isClosed && !isExpired && (
-          <p className="text-xs text-muted italic">
-            Only admins can vote in this group.
-          </p>
-        )}
+      <div className="px-4 py-2.5 border-t border-border/60 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-xs text-muted">
+          <Users className="w-3 h-3" />
+          <span>
+            {total} {total === 1 ? "vote" : "votes"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!canVote && !isClosed && !isExpired && (
+            <p className="text-[10px] text-muted italic">
+              Only admins can vote
+            </p>
+          )}
+          {canClose && (
+            <button
+              onClick={() => closeMutation.mutate()}
+              disabled={closeMutation.isPending}
+              className="flex items-center gap-1 text-[10px] font-medium text-error/80 hover:text-error transition-colors cursor-pointer"
+            >
+              {closeMutation.isPending ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <XCircle className="w-3 h-3" />
+              )}
+              Close poll
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
