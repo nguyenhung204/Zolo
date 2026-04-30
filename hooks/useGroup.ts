@@ -62,12 +62,12 @@ export function usePolls(conversationId: string, enabled = true) {
 }
 
 /** Single poll detail. Seeded from the list cache via initialData when available. */
-export function usePoll(pollId: string, initialData?: Poll) {
+export function usePoll(conversationId: string, pollId: string, initialData?: Poll) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   return useQuery<Poll>({
     queryKey: queryKeys.polls.detail(pollId),
-    queryFn: () => getPoll(pollId),
-    enabled: isAuthenticated && !!pollId,
+    queryFn: () => getPoll(conversationId, pollId),
+    enabled: isAuthenticated && !!pollId && !!conversationId,
     staleTime: Infinity,
     initialData,
   });
@@ -169,8 +169,8 @@ export function useVotePoll() {
 /** Close a poll — merges isClosed + finalOptions into the detail cache. */
 export function useClosePoll() {
   const qc = useQueryClient();
-  return useMutation<Poll, ApiError, string>({
-    mutationFn: (pollId) => closePoll(pollId),
+  return useMutation<Poll, ApiError, { conversationId: string; pollId: string }>({
+    mutationFn: ({ conversationId, pollId }) => closePoll(conversationId, pollId),
     onSuccess: (updated) => {
       qc.setQueryData<Poll>(queryKeys.polls.detail(updated.id), updated);
       // Mirror into list cache so closed badge renders immediately

@@ -10,6 +10,7 @@
   --color-border:    #E2E8F0;
   --color-muted:     #94A3B8;
   --color-surface:   #FFFFFF;
+  --color-surface-secondary: #F1F5F9;
 
   /* Status / semantic */
   --color-success:   #16A34A;
@@ -76,6 +77,7 @@ body {
 [data-theme="dark"] {
   --color-bg:        #0F172A;
   --color-surface:   #1E293B;
+  --color-surface-secondary: #273548;
   --color-primary:   #F1F5F9;
   --color-text:      #F1F5F9;
   --color-secondary: #94A3B8;
@@ -87,6 +89,7 @@ body {
   [data-theme="system"] {
     --color-bg:        #0F172A;
     --color-surface:   #1E293B;
+    --color-surface-secondary: #273548;
     --color-primary:   #F1F5F9;
     --color-text:      #F1F5F9;
     --color-secondary: #94A3B8;
