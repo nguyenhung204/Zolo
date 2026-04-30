@@ -356,7 +356,16 @@ export async function createPoll(
   payload: CreatePollPayload,
 ): Promise<Poll> {
   const res = await apiClient.post(`/conversations/${conversationId}/polls`, payload);
-  return normalizePoll((res.data.data ?? res.data) as RawPoll);
+  const raw = (res.data.data ?? res.data) as RawPoll;
+  const pollId = raw.id ?? raw.pollId ?? raw._id;
+  return normalizePoll({
+    ...payload,
+    ...raw,
+    id: pollId,
+    conversationId: raw.conversationId ?? raw.conversation_id ?? conversationId,
+    options: raw.options ?? raw.pollOptions ?? raw.choices ?? payload.options,
+    createdAt: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
+  });
 }
 
 export async function votePoll(

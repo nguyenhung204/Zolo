@@ -79,6 +79,10 @@ export function useCreatePoll(conversationId: string) {
   return useMutation<Poll, ApiError, CreatePollPayload>({
     mutationFn: (payload) => createPoll(conversationId, payload),
     onSuccess: (newPoll) => {
+      if (!newPoll.id) {
+        toast.error("Poll created but the server did not return a poll id.");
+        return;
+      }
       // Prepend into the list cache (server broadcasts poll.created to other clients)
       qc.setQueryData<Poll[]>(
         queryKeys.polls.list(conversationId),

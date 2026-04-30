@@ -359,7 +359,9 @@ export function VirtualMessageList({
     ? [...data.pages].reverse().flatMap((p) => p.data)
     : [];
 
-  const visiblePolls = supportsPolls ? polls.filter((poll) => poll.id) : [];
+  const visiblePolls = supportsPolls
+    ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
+    : [];
   const items = buildItems(messages, visiblePolls);
   const timelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
