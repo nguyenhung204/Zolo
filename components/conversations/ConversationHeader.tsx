@@ -8,7 +8,8 @@ import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
-import { BarChart3, Hash, Megaphone, MoreHorizontal, Phone, PhoneForwarded, Search, Users } from "lucide-react";
+import { ArrowLeft, BarChart3, Hash, Megaphone, MoreHorizontal, Phone, PhoneForwarded, Search, Users } from "lucide-react";
+import Link from "next/link";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
@@ -131,7 +132,16 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
 
 
   return (
-    <div className="h-14 border-b border-border px-4 flex items-center gap-3 shrink-0 bg-surface">
+    <div className="h-14 border-b border-border px-2 md:px-4 flex items-center gap-2 md:gap-3 shrink-0 bg-surface">
+      {/* Back button — mobile only, returns to conversation list */}
+      <Link
+        href="/conversations"
+        aria-label="Back to conversations"
+        className="md:hidden w-9 h-9 rounded-lg flex items-center justify-center text-secondary hover:bg-border/50 transition cursor-pointer"
+      >
+        <ArrowLeft className="w-5 h-5" />
+      </Link>
+
       {/* Avatar / icon */}
       {isDirect ? (
         <UserAvatar
@@ -178,20 +188,32 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
           </ActionButton>
         )}
         {!isCommunity && (
-          <ActionButton onClick={() => setHistoryOpen(true)} title="Call history">
+          <ActionButton
+            onClick={() => setHistoryOpen(true)}
+            title="Call history"
+            hideOnMobile
+          >
             <PhoneForwarded className="w-4 h-4" />
           </ActionButton>
         )}
         <ActionButton onClick={onMembersClick} title="Members">
           <Users className="w-4 h-4" />
-          <span className="text-xs font-medium">{conv.memberCount}</span>
+          <span className="hidden sm:inline text-xs font-medium">{conv.memberCount}</span>
         </ActionButton>
         {!isDirect && (
-          <ActionButton onClick={() => setPollsOpen(true)} title="Polls">
+          <ActionButton
+            onClick={() => setPollsOpen(true)}
+            title="Polls"
+            hideOnMobile
+          >
             <BarChart3 className="w-4 h-4" />
           </ActionButton>
         )}
-        <ActionButton onClick={() => {}} title="Search in conversation">
+        <ActionButton
+          onClick={() => {}}
+          title="Search in conversation"
+          hideOnMobile
+        >
           <Search className="w-4 h-4" />
         </ActionButton>
         <ActionButton onClick={() => setSettingsOpen(true)} title="More options">
@@ -222,16 +244,22 @@ function ActionButton({
   onClick,
   title,
   children,
+  hideOnMobile,
 }: {
   onClick: () => void;
   title: string;
   children: React.ReactNode;
+  hideOnMobile?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
-      className="flex items-center gap-1 px-2 h-8 rounded-lg text-secondary hover:text-primary hover:bg-border/50 transition-colors cursor-pointer"
+      aria-label={title}
+      className={cn(
+        "flex items-center gap-1 px-2 h-9 md:h-8 rounded-lg text-secondary hover:text-primary hover:bg-border/50 transition-colors cursor-pointer",
+        hideOnMobile && "hidden md:flex",
+      )}
     >
       {children}
     </button>

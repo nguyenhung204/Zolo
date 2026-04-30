@@ -7,6 +7,7 @@ import { VirtualMessageList } from "@/components/messages/VirtualMessageList";
 import { MessageComposer } from "@/components/messages/MessageComposer";
 import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
+import { AddFriendBanner } from "@/components/conversations/AddFriendBanner";
 import { GroupCallBanner } from "@/components/calls/GroupCallBanner";
 import { MemberList } from "@/components/conversations/MemberList";
 import { useConversationMembers, useConversation } from "@/hooks/useConversations";
@@ -135,6 +136,7 @@ export default function ConversationPage({ params }: Props) {
         conversationId={id}
         onMembersClick={() => setMembersOpen(true)}
       />
+      <AddFriendBanner conversationId={id} />
       <PinnedMessageBanner
         conversationId={id}
         onViewDetails={setDetailsTarget}

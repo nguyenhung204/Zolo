@@ -361,7 +361,7 @@ function CompleteRegistrationContent() {
                     className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                       policyTab === tab.id
                         ? "bg-cta text-white"
-                        : "bg-background text-secondary hover:text-primary"
+                        : "bg-bg text-secondary hover:text-primary"
                     }`}
                   >
                     {tab.label}

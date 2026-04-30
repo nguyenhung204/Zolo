@@ -129,7 +129,7 @@ export function ProfileSection() {
             <button
               onClick={handleCancel}
               disabled={updateProfile.isPending}
-              className="px-4 py-2 rounded-lg border border-border text-sm font-medium text-secondary hover:bg-background transition cursor-pointer"
+              className="px-4 py-2 rounded-lg border border-border text-sm font-medium text-secondary hover:bg-bg transition cursor-pointer"
             >
               Cancel
             </button>
@@ -179,7 +179,7 @@ function Field({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="px-3 py-2 rounded-lg border border-border bg-background text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
+        className="px-3 py-2 rounded-lg border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
       />
     </div>
   );

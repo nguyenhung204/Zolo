@@ -27,7 +27,7 @@ export function ConversationList() {
   });
 
   return (
-    <aside className="flex flex-col h-full w-72 bg-surface border-r border-border shrink-0">
+    <aside className="flex flex-col h-full w-full md:w-80 lg:w-[22rem] bg-surface md:border-r border-border shrink-0 min-h-0">
       {/* Header */}
       <div className="px-4 pt-5 pb-3 space-y-3">
         <div className="flex items-center justify-between">

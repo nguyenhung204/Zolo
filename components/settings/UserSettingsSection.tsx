@@ -1,9 +1,25 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Sun, Moon, Monitor, AlignJustify, Rows3, Check } from "lucide-react";
 import { useMyProfile, useUpdateSettings } from "@/hooks/useUser";
 import type { NotificationSettings, UpdateSettingsDto } from "@/lib/api/users";
 import { usePreferencesStore } from "@/stores/preferencesStore";
+import { cn } from "@/lib/utils";
+
+type Theme = "LIGHT" | "DARK" | "SYSTEM";
+type Density = "COMFORTABLE" | "COMPACT";
+
+const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
+  { value: "LIGHT", label: "Light", icon: Sun },
+  { value: "DARK", label: "Dark", icon: Moon },
+  { value: "SYSTEM", label: "System", icon: Monitor },
+];
+
+const DENSITY_OPTIONS: { value: Density; label: string; description: string; icon: typeof AlignJustify }[] = [
+  { value: "COMFORTABLE", label: "Comfortable", description: "More spacing between messages", icon: Rows3 },
+  { value: "COMPACT", label: "Compact", description: "Fit more messages on screen", icon: AlignJustify },
+];
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -75,12 +91,15 @@ export function UserSettingsSection() {
   }
 
   return (
-    <section className="bg-surface rounded-2xl border border-border p-6 space-y-6">
-      <h2 className="text-sm font-semibold text-secondary uppercase tracking-wide">Preferences</h2>
+    <section className="bg-surface rounded-2xl border border-border p-5 sm:p-6 space-y-6">
+      <div>
+        <h2 className="text-base font-bold text-text">Preferences</h2>
+        <p className="text-xs text-muted mt-0.5">Personalise how Zolo looks and notifies you.</p>
+      </div>
 
       {/* ── Status message ───────────────────────────────────── */}
       <div className="space-y-1">
-        <label htmlFor="statusMessage" className="text-xs font-medium text-secondary">
+        <label htmlFor="statusMessage" className="text-xs font-semibold text-secondary">
           Status message
         </label>
         <input
@@ -89,53 +108,77 @@ export function UserSettingsSection() {
           value={statusMessage}
           maxLength={100}
           onChange={(e) => { setStatusMessage(e.target.value); mark(); }}
-          placeholder='"In a meeting", "BRB"'
-          className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
+          placeholder="“In a meeting”, “BRB”…"
+          className="w-full px-3 py-2.5 rounded-xl border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
         />
         <p className="text-[10px] text-muted text-right">{statusMessage.length}/100</p>
       </div>
 
-      {/* ── Appearance ───────────────────────────────────────── */}
+      {/* ── Appearance: theme cards ──────────────────────────── */}
       <SettingGroup label="Appearance">
-        {/* Theme */}
-        <SettingRow label="Theme" description="Interface colour scheme">
-          <div className="flex gap-1">
-            {(["LIGHT", "DARK", "SYSTEM"] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => { setTheme(t); setThemeStore(t); mark(); }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer border ${
-                  theme === t
-                    ? "bg-cta text-white border-cta"
-                    : "bg-background text-secondary border-border hover:border-secondary"
-                }`}
-              >
-                {t === "LIGHT" ? "☀ Light" : t === "DARK" ? "🌙 Dark" : "⚙ System"}
-              </button>
-            ))}
+        <div className="px-4 py-4 space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-text">Theme</p>
+            <p className="text-xs text-muted mt-0.5">Choose how Zolo looks for you.</p>
           </div>
-        </SettingRow>
+          <div className="grid grid-cols-3 gap-2">
+            {THEME_OPTIONS.map(({ value, label, icon: Icon }) => {
+              const active = theme === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => { setTheme(value); setThemeStore(value); mark(); }}
+                  className={cn(
+                    "relative flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition cursor-pointer text-center",
+                    active
+                      ? "border-cta bg-cta/5 text-cta"
+                      : "border-border bg-bg text-secondary hover:border-secondary/60"
+                  )}
+                >
+                  {active && (
+                    <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-cta text-white flex items-center justify-center">
+                      <Check className="w-2.5 h-2.5" />
+                    </span>
+                  )}
+                  <Icon className="w-5 h-5" />
+                  <span className="text-xs font-semibold">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-        {/* Message density */}
-        <SettingRow label="Message density" description="Spacing between messages in chat">
-          <div className="flex gap-1">
-            {(["COMFORTABLE", "COMPACT"] as const).map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => { setMessageDensity(d); setDensityStore(d); mark(); }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer border ${
-                  messageDensity === d
-                    ? "bg-cta text-white border-cta"
-                    : "bg-background text-secondary border-border hover:border-secondary"
-                }`}
-              >
-                {d === "COMFORTABLE" ? "Comfortable" : "Compact"}
-              </button>
-            ))}
+        <div className="px-4 py-4 border-t border-border space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-text">Message density</p>
+            <p className="text-xs text-muted mt-0.5">Spacing between messages in chat.</p>
           </div>
-        </SettingRow>
+          <div className="grid grid-cols-2 gap-2">
+            {DENSITY_OPTIONS.map(({ value, label, description, icon: Icon }) => {
+              const active = messageDensity === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => { setMessageDensity(value); setDensityStore(value); mark(); }}
+                  className={cn(
+                    "relative flex items-start gap-3 p-3 rounded-xl border-2 text-left transition cursor-pointer",
+                    active
+                      ? "border-cta bg-cta/5"
+                      : "border-border bg-bg hover:border-secondary/60"
+                  )}
+                >
+                  <Icon className={cn("w-4 h-4 mt-0.5 shrink-0", active ? "text-cta" : "text-muted")} />
+                  <div className="min-w-0">
+                    <p className={cn("text-sm font-semibold", active ? "text-cta" : "text-text")}>{label}</p>
+                    <p className="text-xs text-muted truncate">{description}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </SettingGroup>
 
       {/* ── Messaging ────────────────────────────────────────── */}
@@ -161,7 +204,7 @@ export function UserSettingsSection() {
             {NOTIFY_FOR_OPTIONS.map(({ value, label, description }) => (
               <label
                 key={value}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border cursor-pointer hover:bg-background transition has-checked:border-cta has-checked:bg-cta/5"
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border cursor-pointer hover:bg-bg transition has-checked:border-cta has-checked:bg-cta/5"
               >
                 <input
                   type="radio"
@@ -191,7 +234,7 @@ export function UserSettingsSection() {
               type="datetime-local"
               value={muteUntil ? muteUntil.slice(0, 16) : ""}
               onChange={(e) => { setMuteUntil(e.target.value ? new Date(e.target.value).toISOString() : ""); mark(); }}
-              className="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-sm text-text focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
+              className="flex-1 px-3 py-2 rounded-lg border border-border bg-bg text-sm text-text focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
             />
             {muteUntil && (
               <button
@@ -232,7 +275,7 @@ export function UserSettingsSection() {
 function SettingGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-0 rounded-xl border border-border overflow-hidden">
-      <div className="px-4 py-2 bg-background/60 border-b border-border">
+      <div className="px-4 py-2 bg-bg/60 border-b border-border">
         <p className="text-[11px] font-semibold text-secondary uppercase tracking-wider">{label}</p>
       </div>
       <div className="divide-y divide-border/60">{children}</div>
