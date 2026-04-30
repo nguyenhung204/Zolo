@@ -28,7 +28,10 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   if (!open) return null;
 
   const cleanOptions = options.map((option) => option.trim()).filter(Boolean);
-  const canCreate = question.trim().length > 0 && cleanOptions.length >= 2 && cleanOptions.length <= 10;
+  const uniqueOptions = Array.from(new Set(cleanOptions));
+  const deadlineDate = deadline ? new Date(deadline) : null;
+  const isDeadlineValid = !deadlineDate || (Number.isFinite(deadlineDate.getTime()) && deadlineDate.getTime() > Date.now());
+  const canCreate = question.trim().length > 0 && uniqueOptions.length >= 2 && uniqueOptions.length <= 10 && isDeadlineValid;
 
   const resetForm = () => {
     setQuestion("");
@@ -38,6 +41,14 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   };
 
   const handleCreate = () => {
+    if (cleanOptions.length !== uniqueOptions.length) {
+      toast.error("Poll options must be unique.");
+      return;
+    }
+    if (!isDeadlineValid) {
+      toast.error("Poll deadline must be in the future.");
+      return;
+    }
     if (!canCreate) {
       toast.error("Polls need a question and 2–10 options.");
       return;
@@ -45,9 +56,9 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
     createPoll.mutate(
       {
         question: question.trim(),
-        options: cleanOptions,
+        options: uniqueOptions,
         multipleChoice,
-        ...(deadline ? { deadline: new Date(deadline).toISOString() } : {}),
+        ...(deadlineDate ? { deadline: deadlineDate.toISOString() } : {}),
       },
       {
         onSuccess: () => {
@@ -158,15 +169,21 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
                 <Loader2 className="w-5 h-5 animate-spin text-muted" />
               </div>
             ) : polls.data?.length ? (
-              polls.data.map((poll) => (
-                <PollUI
-                  key={poll.id}
-                  pollId={poll.id}
-                  myRole={myRole}
-                  allowMemberMessage={allowMemberMessage}
-                  initialData={poll}
-                />
-              ))
+              polls.data.map((poll, index) =>
+                poll.id ? (
+                  <PollUI
+                    key={poll.id}
+                    pollId={poll.id}
+                    myRole={myRole}
+                    allowMemberMessage={allowMemberMessage}
+                    initialData={poll}
+                  />
+                ) : (
+                  <div key={`poll-missing-id-${index}`} className="rounded-xl border border-border bg-surface p-4 text-sm text-muted">
+                    Poll data is missing an id.
+                  </div>
+                ),
+              )
             ) : (
               <div className="flex flex-col items-center gap-2 py-10 text-muted">
                 <BarChart3 className="w-9 h-9 opacity-40" />

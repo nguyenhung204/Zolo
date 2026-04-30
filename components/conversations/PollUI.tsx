@@ -26,12 +26,12 @@ interface PollUIProps {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function totalVotes(options: PollOption[]): number {
-  return options.reduce((acc, opt) => acc + opt.voterIds.length, 0);
+  return options.reduce((acc, opt) => acc + (opt.voterIds?.length ?? 0), 0);
 }
 
 function optionPercent(option: PollOption, total: number): number {
   if (total === 0) return 0;
-  return Math.round((option.voterIds.length / total) * 100);
+  return Math.round(((option.voterIds?.length ?? 0) / total) * 100);
 }
 
 function isPollExpired(deadline?: string): boolean {
@@ -118,9 +118,9 @@ export function PollUI({
         const voteSet = new Set(optionIds);
         return {
           ...old,
-          options: old.options.map((opt) => {
+          options: (old.options ?? []).map((opt) => {
             // Strip existing vote for this user, then add back if selected.
-            let voters = opt.voterIds.filter((id) => id !== myId);
+            let voters = (opt.voterIds ?? []).filter((id) => id !== myId);
             if (voteSet.has(opt.id)) voters = [...voters, myId];
             return { ...opt, voterIds: voters };
           }),
@@ -151,12 +151,13 @@ export function PollUI({
   });
 
   // ── Derived state ──────────────────────────────────────────────────────────
+  const options = poll?.options ?? [];
   const myVotes = new Set(
-    poll?.options
-      .filter((opt) => myId && opt.voterIds.includes(myId))
+    options
+      .filter((opt) => myId && (opt.voterIds ?? []).includes(myId))
       .map((opt) => opt.id) ?? [],
   );
-  const total = poll ? totalVotes(poll.options) : 0;
+  const total = totalVotes(options);
   const isClosed = poll?.isClosed ?? false;
   const isExpired = poll ? isPollExpired(poll.deadline) : false;
   const isPending = voteMutation.isPending;
@@ -227,14 +228,15 @@ export function PollUI({
 
       {/* Options */}
       <div className="space-y-2">
-        {poll.options.map((option) => {
+        {options.map((option, index) => {
           const pct = optionPercent(option, total);
           const isSelected = myVotes.has(option.id);
           const isInteractive = canVote && !isPending;
+          const voterCount = option.voterIds?.length ?? 0;
 
           return (
             <button
-              key={option.id}
+              key={option.id || `${option.text}-${index}`}
               onClick={() => handleOptionClick(option.id)}
               disabled={!isInteractive}
               className={cn(
@@ -273,7 +275,7 @@ export function PollUI({
                     <Loader2 className="w-3 h-3 animate-spin" />
                   )}
                   <span>{pct}%</span>
-                  <span className="text-muted/60">({option.voterIds.length})</span>
+                  <span className="text-muted/60">({voterCount})</span>
                 </div>
               </div>
             </button>

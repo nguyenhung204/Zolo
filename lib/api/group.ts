@@ -141,6 +141,63 @@ export interface PollClosedEvent {
   timestamp: string;
 }
 
+type RawPollOption = string | {
+  id?: string;
+  optionId?: string;
+  text?: string;
+  label?: string;
+  optionText?: string;
+  voterIds?: unknown;
+  voters?: unknown;
+};
+
+type RawPoll = Partial<Omit<Poll, "options">> & {
+  id?: string;
+  pollId?: string;
+  _id?: string;
+  conversationId?: string;
+  conversation_id?: string;
+  creatorId?: string;
+  creator_id?: string;
+  options?: RawPollOption[];
+  pollOptions?: RawPollOption[];
+  choices?: RawPollOption[];
+  multipleChoice?: boolean;
+  multiple_choice?: boolean;
+  isClosed?: boolean;
+  is_closed?: boolean;
+  deadline?: string | null;
+  createdAt?: string;
+  created_at?: string;
+};
+
+function normalizePollOption(option: RawPollOption, index: number): PollOption {
+  if (typeof option === "string") {
+    return { id: option, text: option, voterIds: [] };
+  }
+  const rawVoters = option.voterIds ?? option.voters;
+  return {
+    id: option.id ?? option.optionId ?? `option-${index}`,
+    text: option.text ?? option.label ?? option.optionText ?? `Option ${index + 1}`,
+    voterIds: Array.isArray(rawVoters) ? rawVoters.filter((id): id is string => typeof id === "string") : [],
+  };
+}
+
+export function normalizePoll(raw: RawPoll): Poll {
+  const options = raw.options ?? raw.pollOptions ?? raw.choices ?? [];
+  return {
+    id: raw.id ?? raw.pollId ?? raw._id ?? "",
+    conversationId: raw.conversationId ?? raw.conversation_id ?? "",
+    creatorId: raw.creatorId ?? raw.creator_id ?? "",
+    question: raw.question ?? "",
+    options: options.map(normalizePollOption),
+    multipleChoice: raw.multipleChoice ?? raw.multiple_choice ?? false,
+    deadline: raw.deadline ?? undefined,
+    isClosed: raw.isClosed ?? raw.is_closed ?? false,
+    createdAt: raw.createdAt ?? raw.created_at ?? new Date(0).toISOString(),
+  };
+}
+
 export interface AppointmentEvent {
   appointmentId: string;
   conversationId: string;
@@ -285,13 +342,13 @@ export async function joinByInvite(payload: JoinByInvitePayload): Promise<JoinBy
 /** GET /conversations/:id/polls — list all polls for a conversation */
 export async function getPolls(conversationId: string): Promise<Poll[]> {
   const res = await apiClient.get(`/conversations/${conversationId}/polls`);
-  const d = res.data?.data;
-  return Array.isArray(d) ? d : [];
+  const d = res.data?.data?.polls ?? res.data?.data;
+  return Array.isArray(d) ? d.map((poll) => normalizePoll(poll as RawPoll)) : [];
 }
 
 export async function getPoll(pollId: string): Promise<Poll> {
   const res = await apiClient.get(`/polls/${pollId}`);
-  return res.data.data ?? res.data;
+  return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
 export async function createPoll(
@@ -299,17 +356,17 @@ export async function createPoll(
   payload: CreatePollPayload,
 ): Promise<Poll> {
   const res = await apiClient.post(`/conversations/${conversationId}/polls`, payload);
-  return res.data.data ?? res.data;
+  return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
 export async function votePoll(pollId: string, optionIds: string[]): Promise<Poll> {
   const res = await apiClient.post(`/polls/${pollId}/vote`, { optionIds });
-  return res.data.data ?? res.data;
+  return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
 export async function closePoll(pollId: string): Promise<Poll> {
   const res = await apiClient.post(`/polls/${pollId}/close`);
-  return res.data.data ?? res.data;
+  return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 
 // ─── Appointments ─────────────────────────────────────────────────────────────

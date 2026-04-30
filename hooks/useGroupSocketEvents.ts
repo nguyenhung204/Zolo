@@ -25,6 +25,7 @@ import type {
   AppointmentReminderEvent,
   JoinRequest,
 } from "@/lib/api/group";
+import { normalizePoll } from "@/lib/api/group";
 
 // Typed extension of the socket to register group management events without
 // touching the shared ServerEvents interface.
@@ -244,7 +245,7 @@ export function useGroupSocketEvents(conversationId: string) {
     // Strategy: prepend the new poll to the polls list cache (§4.4).
     const onPollCreated = (payload: PollCreatedEvent) => {
       if (payload.conversationId !== conversationId) return;
-      const newPoll: Poll = {
+      const newPoll: Poll = normalizePoll({
         id: payload.pollId,
         conversationId: payload.conversationId,
         creatorId: payload.creatorId,
@@ -254,7 +255,7 @@ export function useGroupSocketEvents(conversationId: string) {
         deadline: payload.deadline,
         isClosed: false,
         createdAt: payload.timestamp,
-      };
+      });
       qc.setQueryData<Poll[]>(
         queryKeys.polls.list(conversationId),
         (old) => (old ? [newPoll, ...old] : [newPoll]),
