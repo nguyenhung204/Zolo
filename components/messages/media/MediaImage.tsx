@@ -56,23 +56,39 @@ export function MediaImage({ message, isMine }: Props) {
   }, [isMediaReady, message.mediaId, message.conversationId, imageSrc]);
 
   const previewSrc = imageSrc ?? (isMine ? message._localPreviewUrl : undefined);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
 
   if (previewSrc) {
     return (
       <>
         <div
           ref={imgRef}
-          className="relative rounded-2xl overflow-hidden max-w-[420px] w-full bg-border/20 cursor-zoom-in"
+          className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in inline-block"
+          style={{
+            // Use natural aspect ratio when known so the layout doesn't jump
+            // and the displayed image keeps its real proportions instead of
+            // being cropped into a square.
+            aspectRatio: aspectRatio ?? undefined,
+            maxWidth: "min(420px, 100%)",
+            maxHeight: "70vh",
+          }}
           onClick={() => !isUploading && setLightboxSrc(previewSrc)}
           role="button"
           aria-label="Xem ảnh"
         >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={previewSrc}
             alt=""
-            className="w-full block"
-            style={{ maxHeight: "420px", objectFit: "cover" }}
+            className="block w-full h-full"
+            style={{ objectFit: "contain" }}
             loading="lazy"
+            onLoad={(e) => {
+              const t = e.currentTarget;
+              if (t.naturalWidth && t.naturalHeight) {
+                setAspectRatio(t.naturalWidth / t.naturalHeight);
+              }
+            }}
           />
           {isUploading && <UploadOverlay isMine={isMine} progress={message._uploadProgress} />}
         </div>
