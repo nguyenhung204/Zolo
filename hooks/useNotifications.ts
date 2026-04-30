@@ -79,7 +79,56 @@ export function useMuteConversation(conversationId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (duration: ConversationMuteDuration) => muteConversation(conversationId, duration),
-    onSuccess: () => {
+    // Optimistic update so the UI (mute toggle, "muted until …" label) reflects
+    // the new state instantly instead of waiting for the next refetch.
+    onMutate: async (duration) => {
+      const key = queryKeys.notifications.preferences(conversationId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<NotificationPreferences>(key);
+      const now = Date.now();
+      const muteUntil =
+        duration === "off"
+          ? null
+          : duration === "forever"
+            ? new Date(now + 100 * 365 * 24 * 60 * 60 * 1000).toISOString() // ~100 yrs
+            : new Date(
+                now +
+                  ({ "1h": 1, "4h": 4, "8h": 8, "24h": 24 }[duration] ?? 0) *
+                    60 *
+                    60 *
+                    1000,
+              ).toISOString();
+      const notifyOnMessage = duration === "off";
+      const next: NotificationPreferences = {
+        global: prev?.global ?? {
+          conversationId: null,
+          muteUntil: null,
+          notifyOnMention: true,
+          notifyOnMessage: true,
+          quietHoursEnabled: false,
+          quietHoursStart: null,
+          quietHoursEnd: null,
+          timezone: null,
+        },
+        conversation: {
+          conversationId,
+          muteUntil,
+          notifyOnMention: prev?.conversation?.notifyOnMention ?? true,
+          notifyOnMessage,
+          quietHoursEnabled: prev?.conversation?.quietHoursEnabled ?? false,
+          quietHoursStart: prev?.conversation?.quietHoursStart ?? null,
+          quietHoursEnd: prev?.conversation?.quietHoursEnd ?? null,
+          timezone: prev?.conversation?.timezone ?? null,
+        },
+      };
+      qc.setQueryData(key, next);
+      return { prev };
+    },
+    onError: (_err, _duration, ctx) => {
+      const key = queryKeys.notifications.preferences(conversationId);
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.notifications.preferences() });
     },

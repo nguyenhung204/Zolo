@@ -17,6 +17,9 @@ import {
   Bell,
   BellOff,
   Trash2,
+  ChevronDown,
+  LogOut,
+  AlertOctagon,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -42,6 +45,7 @@ import {
 } from "@/lib/api/group";
 import { GroupInviteConfig } from "./GroupInviteConfig";
 import { JoinRequestsPanel } from "./JoinRequestsPanel";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
 import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
 import type { ConversationMuteDuration } from "@/lib/api/notifications";
@@ -249,6 +253,76 @@ function NotificationControl({
   );
 }
 
+// ─── Danger zone (collapsible) ────────────────────────────────────────────────
+
+function DangerZone({
+  open,
+  onToggle,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="pt-4 border-t border-border">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 px-1 py-2 cursor-pointer"
+      >
+        <span className="text-xs font-bold text-error uppercase tracking-wider">
+          Danger zone
+        </span>
+        <ChevronDown
+          className={cn(
+            "w-4 h-4 text-error transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-error/30 bg-error/5 divide-y divide-error/20 overflow-hidden">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DangerRow({
+  icon,
+  label,
+  description,
+  tone = "warning",
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  description: string;
+  tone?: "warning" | "danger";
+  onClick: () => void;
+}) {
+  const text = tone === "danger" ? "text-error" : "text-warning";
+  const bg = tone === "danger" ? "bg-error/10" : "bg-warning/10";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-error/10 transition cursor-pointer"
+    >
+      <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", bg, text)}>
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className={cn("text-sm font-semibold", text)}>{label}</p>
+        <p className="text-xs text-muted mt-0.5 leading-snug">{description}</p>
+      </div>
+    </button>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -275,6 +349,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [transferOwnershipTo, setTransferOwnershipTo] = useState("");
   const [confirmDeleteForMe, setConfirmDeleteForMe] = useState(false);
   const [isBlockingDirect, setIsBlockingDirect] = useState(false);
+  const [confirmBlockDirect, setConfirmBlockDirect] = useState(false);
+  const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null);
+  const [dangerOpen, setDangerOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
@@ -669,13 +746,6 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                       <p className="text-xs text-muted">@{conv.otherUser.username}</p>
                     </div>
                   </div>
-                  <button
-                    onClick={handleBlockDirectUser}
-                    disabled={isBlockingDirect}
-                    className="w-full py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition disabled:opacity-50 cursor-pointer"
-                  >
-                    {isBlockingDirect ? "Blocking…" : "Block User"}
-                  </button>
                 </div>
               )}
 
@@ -693,38 +763,23 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                     />
                   </div>
 
-                  <div className="space-y-2">
-                    {!confirmDeleteForMe ? (
-                      <button
-                        onClick={() => setConfirmDeleteForMe(true)}
-                        className="w-full flex items-center justify-center gap-2 py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Delete Conversation For Me
-                      </button>
-                    ) : (
-                      <div className="space-y-2">
-                        <p className="text-xs text-error/80">
-                          This hides the conversation and clears your current message history only for you.
-                        </p>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => deleteForMeMutation.mutate(conversationId)}
-                            disabled={deleteForMeMutation.isPending}
-                            className="flex-1 py-2 text-xs font-bold text-white bg-error rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                          >
-                            {deleteForMeMutation.isPending ? "Deleting…" : "Delete"}
-                          </button>
-                          <button
-                            onClick={() => setConfirmDeleteForMe(false)}
-                            className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <DangerZone
+                    open={dangerOpen}
+                    onToggle={() => setDangerOpen((v) => !v)}
+                  >
+                    <DangerRow
+                      icon={<UserX className="w-4 h-4" />}
+                      label="Block user"
+                      description="They won't be able to message you anymore."
+                      onClick={() => setConfirmBlockDirect(true)}
+                    />
+                    <DangerRow
+                      icon={<Trash2 className="w-4 h-4" />}
+                      label="Delete conversation for me"
+                      description="Hides this chat and clears your local history."
+                      onClick={() => setConfirmDeleteForMe(true)}
+                    />
+                  </DangerZone>
                 </div>
               )}
 
@@ -968,15 +1023,11 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
 
                         {canRemove ? (
                           <button
-                            onClick={() =>
-                              removeMember.mutate({
-                                conversationId,
-                                userId: member.userId,
-                              })
-                            }
+                            onClick={() => setPendingRemoveMemberId(member.userId)}
                             disabled={removeMember.isPending}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-red-500 hover:bg-red-50 transition cursor-pointer opacity-0 group-hover:opacity-100 disabled:opacity-40 shrink-0"
+                            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-error hover:bg-error/10 transition cursor-pointer md:opacity-0 md:group-hover:opacity-100 disabled:opacity-40 shrink-0"
                             title="Remove member"
+                            aria-label={`Remove member`}
                           >
                             <UserX className="w-3.5 h-3.5" />
                           </button>
@@ -1040,145 +1091,36 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                 />
               </div>
 
-              {/* Leave group */}
-              <div className="pt-4 border-t border-border space-y-3">
-                <p className="text-xs font-bold text-secondary uppercase tracking-wider">
-                  Membership
-                </p>
-                {!confirmLeave ? (
-                  <button
-                    onClick={() => setConfirmLeave(true)}
-                    className="w-full py-2.5 text-sm font-semibold text-warning border border-warning/40 rounded-xl hover:bg-warning/10 transition cursor-pointer"
-                  >
-                    Leave Group
-                  </button>
-                ) : (
-                  <div className="space-y-3">
-                    <p className="text-xs text-warning/80">
-                      You will no longer have access to this group&apos;s messages.
-                      {isOwner && " Transfer ownership to another member before leaving."}
-                    </p>
-                    {isOwner && (
-                      <label className="block space-y-1.5">
-                        <span className="text-xs font-semibold text-secondary">
-                          Transfer ownership to
-                        </span>
-                        <select
-                          value={transferOwnershipTo}
-                          onChange={(e) => setTransferOwnershipTo(e.target.value)}
-                          className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer"
-                        >
-                          {ownershipTransferCandidates.map((member) => (
-                            <option key={member.userId} value={member.userId}>
-                              {member.displayName ?? member.username ?? member.userId}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    <label className="flex items-start gap-2 text-xs text-muted cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={leaveSilent}
-                        onChange={(e) => setLeaveSilent(e.target.checked)}
-                        className="mt-0.5 accent-[var(--color-cta)]"
-                      />
-                      <span>Leave silently — only admins see the system message.</span>
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleLeaveGroup}
-                        disabled={leaveGroupMutation.isPending || (isOwner && !transferOwnershipTo)}
-                        className="flex-1 py-2 text-xs font-bold text-white bg-warning rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                      >
-                        {leaveGroupMutation.isPending ? "Leaving…" : "Yes, Leave"}
-                      </button>
-                      <button
-                        onClick={() => setConfirmLeave(false)}
-                        className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+              <DangerZone
+                open={dangerOpen}
+                onToggle={() => setDangerOpen((v) => !v)}
+              >
+                <DangerRow
+                  icon={<LogOut className="w-4 h-4" />}
+                  label="Leave group"
+                  description={
+                    isOwner
+                      ? "You'll need to transfer ownership first."
+                      : "You'll lose access to this group's messages."
+                  }
+                  onClick={() => setConfirmLeave(true)}
+                />
+                {isOwner && (
+                  <DangerRow
+                    icon={<AlertOctagon className="w-4 h-4" />}
+                    label="Disband group"
+                    description="Permanently delete the group for all members. This can't be undone."
+                    tone="danger"
+                    onClick={() => setConfirmDisband(true)}
+                  />
                 )}
-              </div>
-
-              {/* Danger zone — owner only */}
-              {isOwner && (
-                <div className="pt-4 border-t border-border space-y-3">
-                  <p className="text-xs font-bold text-error uppercase tracking-wider">
-                    Danger Zone
-                  </p>
-                  {!confirmDisband ? (
-                    <button
-                      onClick={() => setConfirmDisband(true)}
-                      className="w-full py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition cursor-pointer"
-                    >
-                      Disband Group
-                    </button>
-                  ) : (
-                    <div className="space-y-2">
-                      <p className="text-xs text-error/80">
-                        This is permanent and cannot be undone. All members will be removed.
-                      </p>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => disbandMutation.mutate()}
-                          disabled={disbandMutation.isPending}
-                          className="flex-1 py-2 text-xs font-bold text-white bg-error rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                        >
-                          {disbandMutation.isPending ? "Disbanding…" : "Yes, Disband"}
-                        </button>
-                        <button
-                          onClick={() => setConfirmDisband(false)}
-                          className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Delete for me */}
-              <div className="pt-4 border-t border-border space-y-3">
-                <p className="text-xs font-bold text-error uppercase tracking-wider">
-                  Delete for me
-                </p>
-                {!confirmDeleteForMe ? (
-                  <button
-                    onClick={() => setConfirmDeleteForMe(true)}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 text-sm font-semibold text-error border border-error/40 rounded-xl hover:bg-error/10 transition cursor-pointer"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    Delete Conversation For Me
-                  </button>
-                ) : (
-                  <div className="space-y-2">
-                    <p className="text-xs text-error/80">
-                      This hides the conversation and clears your current message history only for you.
-                      New messages will make it appear again.
-                    </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => deleteForMeMutation.mutate(conversationId)}
-                        disabled={deleteForMeMutation.isPending}
-                        className="flex-1 py-2 text-xs font-bold text-white bg-error rounded-lg hover:opacity-90 disabled:opacity-50 cursor-pointer"
-                      >
-                        {deleteForMeMutation.isPending ? "Deleting…" : "Delete"}
-                      </button>
-                      <button
-                        onClick={() => setConfirmDeleteForMe(false)}
-                        className="flex-1 py-2 text-xs font-semibold text-secondary border border-border rounded-lg hover:bg-border/40 cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
+                <DangerRow
+                  icon={<Trash2 className="w-4 h-4" />}
+                  label="Delete conversation for me"
+                  description="Hides the chat and clears your local history. New messages bring it back."
+                  onClick={() => setConfirmDeleteForMe(true)}
+                />
+              </DangerZone>
             </div>
           )}
 
@@ -1195,6 +1137,123 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
           )}
         </div>
       </div>
+
+      {/* Confirm: remove member */}
+      <ConfirmDialog
+        open={!!pendingRemoveMemberId}
+        title="Remove this member?"
+        description={(() => {
+          const m = members.find((x) => x.userId === pendingRemoveMemberId);
+          const n = m?.displayName ?? m?.username ?? "this member";
+          return `${n} will lose access to this group's messages. You can re-add them later.`;
+        })()}
+        confirmLabel={removeMember.isPending ? "Removing…" : "Remove"}
+        loading={removeMember.isPending}
+        tone="danger"
+        onCancel={() => setPendingRemoveMemberId(null)}
+        onConfirm={() => {
+          if (!pendingRemoveMemberId) return;
+          removeMember.mutate(
+            { conversationId, userId: pendingRemoveMemberId },
+            { onSettled: () => setPendingRemoveMemberId(null) },
+          );
+        }}
+      />
+
+      {/* Confirm: leave group */}
+      <ConfirmDialog
+        open={confirmLeave}
+        title="Leave this group?"
+        description={
+          isOwner
+            ? "You're the owner — pick a member to take over before you go."
+            : "You'll lose access to this group's messages. You can rejoin via an invite link."
+        }
+        confirmLabel={leaveGroupMutation.isPending ? "Leaving…" : "Leave group"}
+        loading={leaveGroupMutation.isPending}
+        confirmDisabled={isOwner && !transferOwnershipTo}
+        tone="warning"
+        onCancel={() => setConfirmLeave(false)}
+        onConfirm={handleLeaveGroup}
+      >
+        {isOwner && (
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-secondary">
+              Transfer ownership to
+            </span>
+            <select
+              value={transferOwnershipTo}
+              onChange={(e) => setTransferOwnershipTo(e.target.value)}
+              className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer"
+            >
+              <option value="" disabled>
+                Choose a member…
+              </option>
+              {ownershipTransferCandidates.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.displayName ?? member.username ?? member.userId}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="flex items-start gap-2 text-xs text-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={leaveSilent}
+            onChange={(e) => setLeaveSilent(e.target.checked)}
+            className="mt-0.5 accent-[var(--color-cta)]"
+          />
+          <span>Leave silently — only admins see the system message.</span>
+        </label>
+      </ConfirmDialog>
+
+      {/* Confirm: disband group */}
+      <ConfirmDialog
+        open={confirmDisband}
+        title="Disband this group?"
+        description="This permanently deletes the group for everyone. All members will be removed and messages will be inaccessible. This can't be undone."
+        confirmLabel={disbandMutation.isPending ? "Disbanding…" : "Disband group"}
+        loading={disbandMutation.isPending}
+        tone="danger"
+        onCancel={() => setConfirmDisband(false)}
+        onConfirm={() => disbandMutation.mutate()}
+      />
+
+      {/* Confirm: delete conversation for me */}
+      <ConfirmDialog
+        open={confirmDeleteForMe}
+        title="Delete this conversation for you?"
+        description="The chat is hidden and your local message history is cleared. Other members aren't affected. New messages will bring it back."
+        confirmLabel={deleteForMeMutation.isPending ? "Deleting…" : "Delete for me"}
+        loading={deleteForMeMutation.isPending}
+        tone="danger"
+        onCancel={() => setConfirmDeleteForMe(false)}
+        onConfirm={() =>
+          deleteForMeMutation.mutate(conversationId, {
+            onSettled: () => setConfirmDeleteForMe(false),
+          })
+        }
+      />
+
+      {/* Confirm: block direct user */}
+      <ConfirmDialog
+        open={confirmBlockDirect}
+        title="Block this user?"
+        description={
+          conv?.otherUser?.displayName
+            ? `${conv.otherUser.displayName} won't be able to message you. You can unblock them later from Settings → Privacy.`
+            : "They won't be able to message you. You can unblock them later from Settings → Privacy."
+        }
+        confirmLabel={isBlockingDirect ? "Blocking…" : "Block user"}
+        loading={isBlockingDirect}
+        tone="danger"
+        onCancel={() => setConfirmBlockDirect(false)}
+        onConfirm={async () => {
+          await handleBlockDirectUser();
+          setConfirmBlockDirect(false);
+        }}
+      />
     </>
   );
 }
