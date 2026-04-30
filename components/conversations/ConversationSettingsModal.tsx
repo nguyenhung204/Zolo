@@ -14,6 +14,7 @@ import {
   UserPlus,
   Check,
   Users,
+  Bell,
   BellOff,
   Trash2,
 } from "lucide-react";
@@ -122,6 +123,132 @@ function SettingRow({
   );
 }
 
+// ─── Notification control ────────────────────────────────────────────────────
+
+const MUTE_DURATION_OPTIONS: Array<{ value: ConversationMuteDuration; label: string }> = [
+  { value: "1h", label: "1 hour" },
+  { value: "4h", label: "4 hours" },
+  { value: "8h", label: "8 hours" },
+  { value: "24h", label: "24 hours" },
+  { value: "forever", label: "Until I turn it back on" },
+];
+
+function NotificationControl({
+  isMuted,
+  muteUntil,
+  pending,
+  onChange,
+}: {
+  isMuted: boolean;
+  muteUntil?: string | null;
+  pending: boolean;
+  onChange: (value: ConversationMuteDuration) => void;
+}) {
+  const [pickingDuration, setPickingDuration] = useState(false);
+
+  const handleToggle = (turnOn: boolean) => {
+    if (turnOn) {
+      onChange("off");
+      setPickingDuration(false);
+    } else {
+      setPickingDuration(true);
+    }
+  };
+
+  const handlePickDuration = (value: ConversationMuteDuration) => {
+    onChange(value);
+    setPickingDuration(false);
+  };
+
+  const muteUntilLabel = muteUntil
+    ? new Date(muteUntil).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
+
+  return (
+    <div className="space-y-3">
+      {/* Status row with toggle */}
+      <div
+        className={cn(
+          "flex items-center gap-3 rounded-xl border px-3 py-3 transition",
+          isMuted
+            ? "bg-warning/5 border-warning/30"
+            : "bg-success/5 border-success/30",
+        )}
+      >
+        <div
+          className={cn(
+            "w-9 h-9 rounded-lg flex items-center justify-center shrink-0",
+            isMuted ? "bg-warning/15 text-warning" : "bg-success/15 text-success",
+          )}
+        >
+          {isMuted ? (
+            <BellOff className="w-4 h-4" />
+          ) : (
+            <Bell className="w-4 h-4" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-text">
+            {isMuted ? "Notifications muted" : "Notifications on"}
+          </p>
+          <p className="text-xs text-muted mt-0.5 leading-snug">
+            {isMuted
+              ? muteUntilLabel
+                ? `Muted until ${muteUntilLabel}`
+                : "Muted until you turn them back on"
+              : "You'll get a sound and badge for new messages"}
+          </p>
+        </div>
+        <Toggle
+          checked={!isMuted}
+          onChange={handleToggle}
+          disabled={pending}
+        />
+      </div>
+
+      {/* Mute-duration picker (shown when user just toggled OFF, or when already muted) */}
+      {(pickingDuration || isMuted) && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted">
+            {isMuted ? "Change mute duration" : "Mute for…"}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {MUTE_DURATION_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                disabled={pending}
+                onClick={() => handlePickDuration(option.value)}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-medium rounded-full border transition cursor-pointer",
+                  "border-border bg-bg text-text hover:bg-surface-secondary hover:border-cta/40",
+                  "disabled:opacity-50",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+            {!isMuted && (
+              <button
+                type="button"
+                onClick={() => setPickingDuration(false)}
+                className="px-3 py-1.5 text-xs font-medium rounded-full text-muted hover:text-text cursor-pointer"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -179,14 +306,6 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const isAnnouncement = conv?.kind === "community";
   const ownerCount = members.filter((m) => m.role === "owner").length;
   const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
-  const muteOptions: Array<{ value: ConversationMuteDuration; label: string }> = [
-    { value: "1h", label: "Mute 1 hour" },
-    { value: "4h", label: "Mute 4 hours" },
-    { value: "8h", label: "Mute 8 hours" },
-    { value: "24h", label: "Mute 24 hours" },
-    { value: "forever", label: "Mute until I turn it back on" },
-    { value: "off", label: "Turn notifications back on" },
-  ];
   const convNotification = notificationPreferences?.conversation;
   const isConversationMuted =
     convNotification?.notifyOnMessage === false ||
@@ -566,21 +685,12 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                     <p className="text-xs font-bold text-secondary uppercase tracking-wider">
                       Notifications
                     </p>
-                    <select
-                      value=""
-                      disabled={muteConversation.isPending}
-                      onChange={(e) => handleMuteChange(e.target.value as ConversationMuteDuration)}
-                      className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer disabled:opacity-50"
-                    >
-                      <option value="" disabled>
-                        {isConversationMuted ? "Muted — choose a new option…" : "Choose mute duration…"}
-                      </option>
-                      {muteOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                    <NotificationControl
+                      isMuted={isConversationMuted}
+                      muteUntil={convNotification?.muteUntil}
+                      pending={muteConversation.isPending}
+                      onChange={handleMuteChange}
+                    />
                   </div>
 
                   <div className="space-y-2">
@@ -922,31 +1032,12 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                 <p className="text-xs font-bold text-secondary uppercase tracking-wider">
                   Notifications
                 </p>
-                <div className="flex items-center gap-2 text-xs text-muted">
-                  <BellOff className="w-3.5 h-3.5" />
-                  <span>
-                    {isConversationMuted
-                      ? convNotification?.muteUntil
-                        ? `Muted until ${new Date(convNotification.muteUntil).toLocaleString()}`
-                        : "Muted until you turn notifications back on"
-                      : "Notifications are on"}
-                  </span>
-                </div>
-                <select
-                  value=""
-                  disabled={muteConversation.isPending}
-                  onChange={(e) => handleMuteChange(e.target.value as ConversationMuteDuration)}
-                  className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer disabled:opacity-50"
-                >
-                  <option value="" disabled>
-                    Choose mute duration…
-                  </option>
-                  {muteOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                <NotificationControl
+                  isMuted={isConversationMuted}
+                  muteUntil={convNotification?.muteUntil}
+                  pending={muteConversation.isPending}
+                  onChange={handleMuteChange}
+                />
               </div>
 
               {/* Leave group */}

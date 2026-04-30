@@ -80,7 +80,10 @@ export function useCreatePoll(conversationId: string) {
     mutationFn: (payload) => createPoll(conversationId, payload),
     onSuccess: (newPoll) => {
       if (!newPoll.id) {
-        toast.error("Poll created but the server did not return a poll id.");
+        // Some server versions only acknowledge poll creation via the WS
+        // `poll.created` broadcast and return a 201 without a body. Force a
+        // refetch of the polls list instead of surfacing a confusing error.
+        qc.invalidateQueries({ queryKey: queryKeys.polls.list(conversationId) });
         return;
       }
       // Prepend into the list cache (server broadcasts poll.created to other clients)

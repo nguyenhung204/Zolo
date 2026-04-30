@@ -6,7 +6,7 @@ import { formatTime } from "@/lib/utils/date";
 import type { Message } from "@/lib/api/messages";
 import {
   CheckCheck, Check, Clock, AlertCircle, Reply, MoreHorizontal, CornerUpLeft, Ban, RotateCcw,
-  Contact,
+  Contact, MessageCircle, UserPlus, UserCheck, Loader2,
 } from "lucide-react";
 import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -28,6 +28,10 @@ import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageSta
 import { useQuery } from "@tanstack/react-query";
 import { getUserById } from "@/lib/api/users";
 import { queryKeys } from "@/lib/query/keys";
+import { useRouter } from "next/navigation";
+import { useFriendshipStatus, useSendFriendRequest } from "@/hooks/useFriends";
+import { useCreateConversation } from "@/hooks/useConversations";
+import { encodeId } from "@/lib/utils/obfuscateId";
 
 interface OtherMember {
   userId: string;
@@ -470,40 +474,190 @@ function MessageContent({
 }
 
 function ContactCardContent({ message, isMine }: { message: Message; isMine: boolean }) {
-  const contactUserId = message.metadata?.contactUserId;
+  return (
+    <ContactCardInner
+      contactUserId={message.metadata?.contactUserId}
+      content={message.content}
+      isMine={isMine}
+    />
+  );
+}
+
+function ContactCardInner({
+  contactUserId,
+  content,
+  isMine,
+}: {
+  contactUserId: string | undefined;
+  content: string;
+  isMine: boolean;
+}) {
+  const myId = useAuthStore((s) => s.user?.id);
+  const router = useRouter();
   const { data: user } = useQuery({
     queryKey: queryKeys.users.detail(contactUserId ?? ""),
     queryFn: () => getUserById(contactUserId!),
     enabled: !!contactUserId,
     staleTime: 5 * 60_000,
   });
+  const isSelf = !!contactUserId && contactUserId === myId;
+  const { data: friendship } = useFriendshipStatus(
+    !isSelf ? contactUserId : undefined,
+  );
+  const sendRequest = useSendFriendRequest();
+  const createConv = useCreateConversation();
+  const [opening, setOpening] = useState(false);
+
   const name = user
     ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username
     : "Contact";
 
+  const handleMessage = useCallback(async () => {
+    if (!contactUserId || isSelf) return;
+    setOpening(true);
+    try {
+      const conv = await createConv.mutateAsync({
+        kind: "direct",
+        memberIds: [contactUserId],
+      });
+      router.push(`/conversations/${encodeId(conv.id)}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not open chat");
+    } finally {
+      setOpening(false);
+    }
+  }, [contactUserId, isSelf, createConv, router]);
+
+  const handleAdd = useCallback(async () => {
+    if (!contactUserId) return;
+    try {
+      await sendRequest.mutateAsync(contactUserId);
+      toast.success("Friend request sent");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not send request");
+    }
+  }, [contactUserId, sendRequest]);
+
+  // ── Friendship CTA state ──
+  const status = friendship?.status;
+  const isFriend = status === "FRIEND";
+  const requestPending = status === "PENDING_OUT";
+  const requestIncoming = status === "PENDING_IN";
+
   return (
-    <div className="space-y-2 min-w-56">
-      {message.content.trim() && <p className="whitespace-pre-wrap break-words">{message.content.trim()}</p>}
-      <div className={cn(
-        "flex items-center gap-3 rounded-2xl p-3 border",
-        isMine ? "bg-white/10 border-white/20" : "bg-bg border-border/70",
-      )}>
-        {user?.avatarUrl ? (
-          <img src={user.avatarUrl} alt={name} className="w-11 h-11 rounded-full object-cover shrink-0" />
-        ) : (
-          <div className={cn(
-            "w-11 h-11 rounded-full flex items-center justify-center shrink-0",
-            isMine ? "bg-white/20 text-white" : "bg-cta/10 text-cta",
-          )}>
-            <Contact className="w-5 h-5" />
+    <div className="space-y-2 min-w-64 max-w-72">
+      {content.trim() && (
+        <p className="whitespace-pre-wrap break-words">{content.trim()}</p>
+      )}
+      <div
+        className={cn(
+          "rounded-2xl p-3 border space-y-3",
+          isMine ? "bg-white/10 border-white/20" : "bg-bg border-border/70",
+        )}
+      >
+        <div className="flex items-center gap-3">
+          {user?.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={user.avatarUrl}
+              alt={name}
+              className="w-11 h-11 rounded-full object-cover shrink-0"
+            />
+          ) : (
+            <div
+              className={cn(
+                "w-11 h-11 rounded-full flex items-center justify-center shrink-0",
+                isMine ? "bg-white/20 text-white" : "bg-cta/10 text-cta",
+              )}
+            >
+              <Contact className="w-5 h-5" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold truncate">{name}</p>
+            <p
+              className={cn(
+                "text-xs truncate",
+                isMine ? "text-white/70" : "text-muted",
+              )}
+            >
+              @{user?.username ?? contactUserId ?? "unknown"}
+            </p>
+          </div>
+        </div>
+
+        {!isSelf && contactUserId && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleMessage}
+              disabled={opening}
+              className={cn(
+                "flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60",
+                isMine
+                  ? "bg-white/20 hover:bg-white/30 text-white"
+                  : "bg-cta text-white hover:bg-cta-hover",
+              )}
+            >
+              {opening ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <MessageCircle className="w-3.5 h-3.5" />
+              )}
+              <span>Message</span>
+            </button>
+            {isFriend ? (
+              <span
+                className={cn(
+                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
+                  isMine ? "text-white/80" : "text-success",
+                )}
+                title="Already friends"
+              >
+                <UserCheck className="w-3.5 h-3.5" /> Friend
+              </span>
+            ) : requestPending ? (
+              <span
+                className={cn(
+                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
+                  isMine ? "text-white/70" : "text-muted",
+                )}
+                title="Friend request pending"
+              >
+                <Clock className="w-3.5 h-3.5" /> Pending
+              </span>
+            ) : requestIncoming ? (
+              <span
+                className={cn(
+                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
+                  isMine ? "text-white/70" : "text-cta",
+                )}
+                title="They sent you a friend request — open their profile to accept"
+              >
+                <UserPlus className="w-3.5 h-3.5" /> Respond
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleAdd}
+                disabled={sendRequest.isPending}
+                className={cn(
+                  "inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold border transition cursor-pointer disabled:opacity-60",
+                  isMine
+                    ? "border-white/30 text-white hover:bg-white/15"
+                    : "border-border text-text hover:bg-surface-secondary",
+                )}
+              >
+                {sendRequest.isPending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserPlus className="w-3.5 h-3.5" />
+                )}
+                <span>Add</span>
+              </button>
+            )}
           </div>
         )}
-        <div className="min-w-0 flex-1">
-          <p className="font-semibold truncate">{name}</p>
-          <p className={cn("text-xs truncate", isMine ? "text-white/70" : "text-muted")}>
-            @{user?.username ?? contactUserId ?? "unknown"}
-          </p>
-        </div>
       </div>
     </div>
   );

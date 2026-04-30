@@ -355,7 +355,33 @@ export async function createPoll(
   payload: CreatePollPayload,
 ): Promise<Poll> {
   const res = await apiClient.post(`/conversations/${conversationId}/polls`, payload);
-  const raw = (res.data.data ?? res.data) as RawPoll;
+  // Server response can come back in several shapes:
+  //   { data: { ...poll } }
+  //   { data: { poll: { ...poll } } }
+  //   { ...poll }                          (legacy)
+  //   { poll: { ...poll } }                (legacy)
+  // Walk through them and pick the first one that has an id.
+  const body = res.data ?? {};
+  const candidates: unknown[] = [
+    body?.data?.poll,
+    body?.data,
+    body?.poll,
+    body,
+  ];
+  let raw: RawPoll = {};
+  for (const c of candidates) {
+    if (c && typeof c === "object") {
+      const r = c as RawPoll;
+      if (r.id ?? r.pollId ?? r._id) {
+        raw = r;
+        break;
+      }
+      // Fall back to the first non-empty object even if no id found, so we at
+      // least surface the poll details. The id check below will catch a truly
+      // empty payload.
+      if (Object.keys(r).length > 0 && Object.keys(raw).length === 0) raw = r;
+    }
+  }
   const pollId = raw.id ?? raw.pollId ?? raw._id;
   return normalizePoll({
     ...payload,
