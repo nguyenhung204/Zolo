@@ -360,7 +360,7 @@ export async function createPoll(
 }
 
 export async function votePoll(pollId: string, optionIds: string[]): Promise<Poll> {
-  const res = await apiClient.post(`/polls/${pollId}/vote`, { optionIds });
+  const res = await apiClient.patch(`/polls/${pollId}/vote`, { optionIds });
   return normalizePoll((res.data.data ?? res.data) as RawPoll);
 }
 

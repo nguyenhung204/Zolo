@@ -6,7 +6,7 @@ import { BarChart3, Lock, Clock, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
-import { votePoll, getPoll, hasMinRole } from "@/lib/api/group";
+import { votePoll, hasMinRole } from "@/lib/api/group";
 import type { Poll, PollOption } from "@/lib/api/group";
 import type { MemberRole } from "@/lib/api/conversations";
 import type { ApiError } from "@/lib/api/errors";
@@ -84,10 +84,15 @@ export function PollUI({
   const myId = useAuthStore((s) => s.user?.id);
 
   // ── Poll query ─────────────────────────────────────────────────────────────
+  // There is no documented GET /polls/:id endpoint. This query only observes
+  // React Query cache populated by createPoll / poll.created / poll.voted.
   const { data: poll, isLoading } = useQuery<Poll>({
     queryKey: queryKeys.polls.detail(pollId),
-    queryFn: () => getPoll(pollId),
+    queryFn: () => Promise.resolve(
+      qc.getQueryData<Poll>(queryKeys.polls.detail(pollId)) ?? initialData!,
+    ),
     initialData,
+    enabled: false,
     staleTime: Infinity, // Socket events (`poll.voted`, `poll.closed`) handle updates.
   });
 
