@@ -235,14 +235,14 @@ function NotificationControl({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-text">
-            {isMuted ? "Notifications muted" : "Notifications on"}
+            {isMuted ? "Notifications off" : "Notifications on"}
           </p>
           <p className="text-xs text-muted mt-0.5 leading-snug">
             {isMuted
               ? muteUntilLabel
                 ? `Muted until ${muteUntilLabel}`
                 : "Muted until you turn them back on"
-              : "You'll get a sound and badge for new messages"}
+              : "Toggle off to mute this conversation"}
           </p>
         </div>
         <Toggle
@@ -256,7 +256,7 @@ function NotificationControl({
       {(pickingDuration || isMuted) && (
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted">
-            {isMuted ? "Change mute duration" : "Mute for…"}
+            {isMuted ? "Change mute duration" : "Turn notifications off for…"}
           </p>
           <div className="flex flex-wrap gap-1.5">
             {MUTE_DURATION_OPTIONS.map((option) => (

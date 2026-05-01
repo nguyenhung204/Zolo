@@ -13,16 +13,16 @@ export interface RegisterDeviceDto {
 export interface NotificationPreferenceEntry {
   conversationId: string | null;
   muteUntil: string | null;
-  notifyOnMention: boolean;
-  notifyOnMessage: boolean;
-  quietHoursEnabled: boolean;
-  quietHoursStart: string | null;
-  quietHoursEnd: string | null;
-  timezone: string | null;
+  notifyOnMention?: boolean;
+  notifyOnMessage?: boolean;
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string | null;
+  quietHoursEnd?: string | null;
+  timezone?: string | null;
 }
 
 export interface NotificationPreferences {
-  global: NotificationPreferenceEntry;
+  global: NotificationPreferenceEntry | null;
   conversation?: NotificationPreferenceEntry | null;
 }
 
@@ -43,8 +43,8 @@ export interface ConversationMutePreference {
   userId: string;
   conversationId: string;
   muteUntil: string | null;
-  notifyOnMessage: boolean;
-  notifyOnMention: boolean;
+  notifyOnMessage?: boolean;
+  notifyOnMention?: boolean;
   updatedAt: string;
 }
 
@@ -88,7 +88,11 @@ export async function getNotificationPreferences(
   const res = await apiClient.get("/notifications/preferences", {
     params: conversationId ? { conversationId } : undefined,
   });
-  return res.data.data as NotificationPreferences;
+  const data = res.data.data ?? {};
+  return {
+    global: data.global ?? data.globalPref ?? null,
+    conversation: data.conversation ?? data.conversationPref ?? null,
+  };
 }
 
 /** Toggle per-conversation mute using backend duration tokens. */
