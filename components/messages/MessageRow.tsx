@@ -5,7 +5,7 @@ import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatTime } from "@/lib/utils/date";
 import type { Message } from "@/lib/api/messages";
 import {
-  CheckCheck, Check, Clock, AlertCircle, Reply, MoreHorizontal, CornerUpLeft, Ban, RotateCcw,
+  Check, Clock, AlertCircle, Reply, MoreHorizontal, CornerUpLeft, Ban, RotateCcw,
   Contact, MessageCircle, UserPlus, UserCheck, Loader2, Mail,
 } from "lucide-react";
 import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
@@ -726,13 +726,8 @@ function MessageStatusIcon({
     );
   }
 
-  if (status === "read" || status === "delivered") {
-    return (
-      <span title={label} aria-label={label}>
-        <CheckCheck className="w-3 h-3 text-cta shrink-0" />
-      </span>
-    );
-  }
+  if (status === "read" || status === "delivered") return null;
+
   return (
     <span title={label} aria-label={label}>
       <Check className="w-3 h-3 text-muted shrink-0" />
