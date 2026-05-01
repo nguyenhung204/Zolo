@@ -15,9 +15,11 @@ interface Props {
 export function MediaImage({ message, isMine }: Props) {
   const isUploading = typeof message._uploadProgress === "number" && message._uploadProgress < 100;
   const isMediaReady = !message.mediaStatus || message.mediaStatus === "ready";
+  const seededWidth = message.metadata?.width ?? null;
+  const seededHeight = message.metadata?.height ?? null;
   const seededRatio =
-    message.metadata?.width && message.metadata?.height
-      ? message.metadata.width / message.metadata.height
+    seededWidth && seededHeight
+      ? seededWidth / seededHeight
       : null;
   const [imageSrc, setImageSrc] = useState<string | null>(
     isMine ? (message._localPreviewUrl ?? null) : null
@@ -62,6 +64,11 @@ export function MediaImage({ message, isMine }: Props) {
 
   const previewSrc = imageSrc ?? (isMine ? message._localPreviewUrl : undefined);
   const displayAspectRatio = aspectRatio ?? seededRatio;
+  const displayWidth = seededWidth
+    ? Math.min(420, seededWidth)
+    : displayAspectRatio
+      ? 420
+      : null;
 
   if (previewSrc) {
     return (
@@ -71,6 +78,7 @@ export function MediaImage({ message, isMine }: Props) {
           className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in inline-block"
           style={{
             aspectRatio: displayAspectRatio ?? undefined,
+            width: displayWidth ? `min(${displayWidth}px, 100%)` : "min(420px, 100%)",
             maxWidth: "min(420px, 100%)",
             maxHeight: "70vh",
           }}

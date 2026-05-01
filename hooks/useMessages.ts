@@ -98,7 +98,17 @@ export function upsertMessage(
             return true;
           })
         ) as Partial<Message>;
-        next[existingIdx] = { ...next[existingIdx], ...safeFields, _pending: false, _failed: false };
+        const current = next[existingIdx];
+        next[existingIdx] = {
+          ...current,
+          ...safeFields,
+          attachments: safeFields.attachments ?? current.attachments,
+          metadata: current.metadata || safeFields.metadata
+            ? { ...current.metadata, ...safeFields.metadata }
+            : undefined,
+          _pending: false,
+          _failed: false,
+        };
         pages[pages.length - 1] = {
           ...last,
           data: next,

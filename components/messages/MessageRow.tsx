@@ -167,6 +167,7 @@ export function MessageRow({
 
   const hasCaption = message.content.trim().length > 0;
   const isPureMedia = (message.type === "image" || message.type === "video") && !replyMsg && !hasCaption;
+  const isSingleImage = isPureMedia && message.type === "image";
   const isMediaGroup = message.type === "media" && !isRevoked && !isDeleted;
 
   return (
@@ -182,7 +183,13 @@ export function MessageRow({
           <span className="text-[11px] font-semibold text-cta ml-1 mb-0.5 select-none">{senderName}</span>
         )}
 
-        <div className={cn("flex items-center gap-1", isMine ? "flex-row-reverse" : "flex-row")}>
+        <div
+          className={cn(
+            "flex items-center gap-1",
+            isMine ? "flex-row-reverse" : "flex-row",
+            isSingleImage && "max-w-full min-w-0"
+          )}
+        >
           {/* ── Message bubble ── */}
           {isMediaGroup ? (
             /* ── Media album: no outer bubble border ── */
@@ -260,7 +267,7 @@ export function MessageRow({
               bubbleShape,
               "text-sm leading-relaxed break-words max-w-full",
               isPureMedia
-                ? "overflow-hidden"
+                ? "overflow-hidden flex"
                 : isContactCard
                   ? "p-0 bg-transparent border-0 shadow-none"
                 : isMine
