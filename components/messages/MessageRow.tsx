@@ -6,7 +6,7 @@ import { formatTime } from "@/lib/utils/date";
 import type { Message } from "@/lib/api/messages";
 import {
   CheckCheck, Check, Clock, AlertCircle, Reply, MoreHorizontal, CornerUpLeft, Ban, RotateCcw,
-  Contact, MessageCircle, UserPlus, UserCheck, Loader2,
+  Contact, MessageCircle, UserPlus, UserCheck, Loader2, Mail,
 } from "lucide-react";
 import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -32,6 +32,7 @@ import { useRouter } from "next/navigation";
 import { useFriendshipStatus, useSendFriendRequest } from "@/hooks/useFriends";
 import { useCreateConversation } from "@/hooks/useConversations";
 import { encodeId } from "@/lib/utils/obfuscateId";
+import { getMediaSignedUrl } from "@/lib/api/media";
 
 interface OtherMember {
   userId: string;
@@ -74,6 +75,7 @@ export function MessageRow({
   const isSystem = message.type === "system";
   const isCallSummary = message.type === "call_summary";
   const isSticker = message.type === "sticker";
+  const isContactCard = message.type === "contact_card";
   const isEdited = !!message.editedAt;
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -259,6 +261,8 @@ export function MessageRow({
               "text-sm leading-relaxed break-words max-w-full",
               isPureMedia
                 ? "overflow-hidden"
+                : isContactCard
+                  ? "p-0 bg-transparent border-0 shadow-none"
                 : isMine
                   ? "bg-cta text-white px-3.5 py-2.5"
                   : "bg-surface border border-border/60 text-text px-3.5 py-2.5 shadow-sm"
@@ -477,6 +481,7 @@ function ContactCardContent({ message, isMine }: { message: Message; isMine: boo
   return (
     <ContactCardInner
       contactUserId={message.metadata?.contactUserId}
+      metadata={message.metadata}
       content={message.content}
       isMine={isMine}
     />
@@ -485,20 +490,29 @@ function ContactCardContent({ message, isMine }: { message: Message; isMine: boo
 
 function ContactCardInner({
   contactUserId,
+  metadata,
   content,
   isMine,
 }: {
   contactUserId: string | undefined;
+  metadata?: Message["metadata"];
   content: string;
   isMine: boolean;
 }) {
   const myId = useAuthStore((s) => s.user?.id);
   const router = useRouter();
+  const hasSnapshot = !!(metadata?.contactUsername || metadata?.contactEmail || metadata?.contactAvatarId);
   const { data: user } = useQuery({
     queryKey: queryKeys.users.detail(contactUserId ?? ""),
     queryFn: () => getUserById(contactUserId!),
-    enabled: !!contactUserId,
+    enabled: !!contactUserId && !hasSnapshot,
     staleTime: 5 * 60_000,
+  });
+  const { data: avatarUrl } = useQuery({
+    queryKey: queryKeys.media.detail(metadata?.contactAvatarId ?? ""),
+    queryFn: () => getMediaSignedUrl(metadata!.contactAvatarId!, "OPTIMIZED"),
+    enabled: !!metadata?.contactAvatarId,
+    staleTime: 30 * 60_000,
   });
   const isSelf = !!contactUserId && contactUserId === myId;
   const { data: friendship } = useFriendshipStatus(
@@ -508,9 +522,12 @@ function ContactCardInner({
   const createConv = useCreateConversation();
   const [opening, setOpening] = useState(false);
 
-  const name = user
+  const name = metadata?.contactUsername || (user
     ? [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username
-    : "Contact";
+    : "Contact");
+  const email = metadata?.contactEmail ?? user?.email;
+  const username = user?.username ?? metadata?.contactUsername ?? contactUserId ?? "unknown";
+  const displayAvatarUrl = avatarUrl ?? user?.avatarUrl;
 
   const handleMessage = useCallback(async () => {
     if (!contactUserId || isSelf) return;
@@ -545,119 +562,97 @@ function ContactCardInner({
   const requestIncoming = status === "PENDING_IN";
 
   return (
-    <div className="space-y-2 min-w-64 max-w-72">
+    <div className="space-y-2 min-w-64 max-w-80">
       {content.trim() && (
-        <p className="whitespace-pre-wrap break-words">{content.trim()}</p>
+        <p className={cn("whitespace-pre-wrap break-words px-1", isMine ? "text-white" : "text-text")}>{content.trim()}</p>
       )}
       <div
         className={cn(
-          "rounded-2xl p-3 border space-y-3",
-          isMine ? "bg-white/10 border-white/20" : "bg-bg border-border/70",
+          "overflow-hidden rounded-2xl border shadow-sm",
+          isMine ? "bg-white text-primary border-white/20" : "bg-surface border-border/70",
         )}
       >
-        <div className="flex items-center gap-3">
-          {user?.avatarUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={user.avatarUrl}
-              alt={name}
-              className="w-11 h-11 rounded-full object-cover shrink-0"
-            />
-          ) : (
-            <div
-              className={cn(
-                "w-11 h-11 rounded-full flex items-center justify-center shrink-0",
-                isMine ? "bg-white/20 text-white" : "bg-cta/10 text-cta",
-              )}
-            >
-              <Contact className="w-5 h-5" />
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold truncate">{name}</p>
-            <p
-              className={cn(
-                "text-xs truncate",
-                isMine ? "text-white/70" : "text-muted",
-              )}
-            >
-              @{user?.username ?? contactUserId ?? "unknown"}
-            </p>
-          </div>
-        </div>
-
-        {!isSelf && contactUserId && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleMessage}
-              disabled={opening}
-              className={cn(
-                "flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60",
-                isMine
-                  ? "bg-white/20 hover:bg-white/30 text-white"
-                  : "bg-cta text-white hover:bg-cta-hover",
-              )}
-            >
-              {opening ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <MessageCircle className="w-3.5 h-3.5" />
-              )}
-              <span>Message</span>
-            </button>
-            {isFriend ? (
-              <span
-                className={cn(
-                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
-                  isMine ? "text-white/80" : "text-success",
-                )}
-                title="Already friends"
-              >
-                <UserCheck className="w-3.5 h-3.5" /> Friend
-              </span>
-            ) : requestPending ? (
-              <span
-                className={cn(
-                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
-                  isMine ? "text-white/70" : "text-muted",
-                )}
-                title="Friend request pending"
-              >
-                <Clock className="w-3.5 h-3.5" /> Pending
-              </span>
-            ) : requestIncoming ? (
-              <span
-                className={cn(
-                  "inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium",
-                  isMine ? "text-white/70" : "text-cta",
-                )}
-                title="They sent you a friend request — open their profile to accept"
-              >
-                <UserPlus className="w-3.5 h-3.5" /> Respond
-              </span>
+        <div className="h-1.5 bg-gradient-to-r from-cta via-secondary to-success" />
+        <div className="p-3.5 space-y-3">
+          <div className="flex items-center gap-3">
+            {displayAvatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={displayAvatarUrl}
+                alt={name}
+                className="w-12 h-12 rounded-2xl object-cover shrink-0"
+              />
             ) : (
+              <div className="w-12 h-12 rounded-2xl bg-cta/10 text-cta flex items-center justify-center shrink-0">
+                <Contact className="w-5 h-5" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold truncate text-primary">{name}</p>
+              <p className="text-xs truncate text-muted">@{username}</p>
+              {email && (
+                <p className="text-xs truncate text-muted flex items-center gap-1 mt-0.5">
+                  <Mail className="w-3 h-3 shrink-0" />
+                  {email}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {!isSelf && contactUserId && (
+            <div className="flex items-center gap-2 pt-1">
               <button
                 type="button"
-                onClick={handleAdd}
-                disabled={sendRequest.isPending}
-                className={cn(
-                  "inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold border transition cursor-pointer disabled:opacity-60",
-                  isMine
-                    ? "border-white/30 text-white hover:bg-white/15"
-                    : "border-border text-text hover:bg-surface-secondary",
-                )}
+                onClick={handleMessage}
+                disabled={opening}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 h-8 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60 bg-cta text-white hover:bg-cta-hover"
               >
-                {sendRequest.isPending ? (
+                {opening ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
-                  <UserPlus className="w-3.5 h-3.5" />
+                  <MessageCircle className="w-3.5 h-3.5" />
                 )}
-                <span>Add</span>
+                <span>Message</span>
               </button>
-            )}
-          </div>
-        )}
+              {isFriend ? (
+                <span
+                  className="inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium text-success"
+                  title="Already friends"
+                >
+                  <UserCheck className="w-3.5 h-3.5" /> Friend
+                </span>
+              ) : requestPending ? (
+                <span
+                  className="inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium text-muted"
+                  title="Friend request pending"
+                >
+                  <Clock className="w-3.5 h-3.5" /> Pending
+                </span>
+              ) : requestIncoming ? (
+                <span
+                  className="inline-flex items-center justify-center gap-1 h-8 px-3 rounded-lg text-xs font-medium text-cta"
+                  title="They sent you a friend request — open their profile to accept"
+                >
+                  <UserPlus className="w-3.5 h-3.5" /> Respond
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={sendRequest.isPending}
+                  className="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold border border-border text-text hover:bg-surface-secondary transition cursor-pointer disabled:opacity-60"
+                >
+                  {sendRequest.isPending ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <UserPlus className="w-3.5 h-3.5" />
+                  )}
+                  <span>Add</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

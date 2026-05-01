@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 interface ReplyMeta {
   filename?: string;
   durationMs?: number;
+  contactUsername?: string;
   [key: string]: unknown;
 }
 
@@ -35,7 +36,7 @@ export function replyLabel(
     return { icon: <Video className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "Video" };
   }
   if (t === "contact_card") {
-    return { icon: <Contact className="w-3.5 h-3.5 shrink-0" />, label: content || "Contact" };
+    return { icon: <Contact className="w-3.5 h-3.5 shrink-0" />, label: content || metadata?.contactUsername || "Contact" };
   }
   if (t === "file") {
     return { icon: <FileText className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "File" };

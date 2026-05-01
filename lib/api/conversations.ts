@@ -3,7 +3,7 @@ import { apiClient } from "@/lib/api/client";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type ConversationKind = "direct" | "group" | "community";
-export type MemberRole = "owner" | "admin" | "member";
+export type MemberRole = "owner" | "admin" | "moderator" | "member";
 
 /** @deprecated Use ConversationKind */
 export type ConversationType = ConversationKind;

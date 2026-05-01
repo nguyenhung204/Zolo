@@ -10,8 +10,8 @@ export type ConversationMemberRemovedSource = "member_left" | "member_removed";
 export interface WsMessage {
   messageId: string;
   conversationId: string;
-  senderId: string;
-  content: string;
+  senderId?: string | null;
+  content?: string | null;
   type: MessageType;
   offset: number;
   mediaId?: string;
@@ -39,6 +39,10 @@ export interface WsMessage {
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
     contactUserId?: string;
+    cardType?: "friend_contact";
+    contactUsername?: string;
+    contactEmail?: string;
+    contactAvatarId?: string;
   };
 }
 

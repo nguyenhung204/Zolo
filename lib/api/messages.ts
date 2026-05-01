@@ -54,8 +54,8 @@ interface RawMessage {
   id: string;
   messageId?: string;
   conversationId: string;
-  senderId: string;
-  content: string;
+  senderId?: string | null;
+  content?: string | null;
   type: string;
   offset: number;
   mediaId?: string;
@@ -88,6 +88,10 @@ interface RawMessage {
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
     contactUserId?: string;
+    cardType?: "friend_contact";
+    contactUsername?: string;
+    contactEmail?: string;
+    contactAvatarId?: string;
   };
   createdAt: string;
   updatedAt?: string;
@@ -142,6 +146,10 @@ export interface Message {
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
     contactUserId?: string;
+    cardType?: "friend_contact";
+    contactUsername?: string;
+    contactEmail?: string;
+    contactAvatarId?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -165,6 +173,7 @@ export interface MessagePage {
     oldestOffset: number;
     newestOffset: number;
   };
+  memberCursors?: Record<string, { seen: number; delivered: number }>;
 }
 
 export interface SendMessagePayload {
@@ -289,6 +298,7 @@ function normalizeRawMessage(m: RawMessage): Message {
   return {
     ...m,
     messageId: m.messageId ?? m.id,
+    senderId: m.senderId ?? "SYSTEM",
     type: normalizedType,
     content: typeof m.content === "string" ? m.content : "",
     offset: Number(m.offset ?? 0),
@@ -322,14 +332,18 @@ export async function getMessages(params: {
   const res = await apiClient.get(
     `/conversations/${conversationId}/messages?${query}`
   );
-  // API returns { statusCode, message, data: Message[], metadata: { hasMore, oldestOffset, newestOffset } }
+  // API returns either the legacy flat payload or the newer nested payload:
+  // { data: Message[], metadata/meta } or { data: { data: Message[], meta, memberCursors } }.
   const response = res.data ?? {};
-  const rawMessages: RawMessage[] = Array.isArray(response.data)
-    ? response.data
+  const payload = response.data ?? {};
+  const rawMessages: RawMessage[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload.data)
+      ? payload.data
     : [];
   // Support both "metadata" (actual API) and "meta" (legacy/future shape)
   const meta: { hasMore?: boolean; oldestOffset?: number | string; newestOffset?: number | string } =
-    response.metadata ?? response.meta ?? {};
+    payload.metadata ?? payload.meta ?? response.metadata ?? response.meta ?? {};
   return {
     data: rawMessages.map(normalizeRawMessage),
     meta: {
@@ -337,6 +351,9 @@ export async function getMessages(params: {
       oldestOffset: Number(meta.oldestOffset ?? 0),
       newestOffset: Number(meta.newestOffset ?? 0),
     },
+    memberCursors: !Array.isArray(payload) && payload.memberCursors && typeof payload.memberCursors === "object"
+      ? payload.memberCursors as Record<string, { seen: number; delivered: number }>
+      : undefined,
   };
 }
 
