@@ -33,6 +33,8 @@ export interface UploadFileItem {
   filename?: string;
   localPreviewUrl?: string;
   thumbPreviewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 interface SendOptions {
@@ -55,6 +57,8 @@ interface SendOptions {
     waveform?: number[];
     durationMs?: number;
     thumbMediaId?: string;
+    width?: number;
+    height?: number;
     fileSize?: number;
     filename?: string;
     contactUserId?: string;
@@ -240,6 +244,8 @@ export function useSendMessage() {
         waveform?: number[];
         durationMs?: number;
         thumbMediaId?: string;
+        width?: number;
+        height?: number;
         fileSize?: number;
         filename?: string;
         contactUserId?: string;
@@ -303,6 +309,8 @@ export function useSendMessage() {
               thumbPreviewUrl: item.thumbPreviewUrl,
               mediaType: item.mediaType,
               filename: item.filename,
+              width: item.width,
+              height: item.height,
             }))
           : undefined;
 
@@ -372,6 +380,8 @@ export function useSendMessage() {
               mediaId: mediaId!,
               type: item.mediaType,
               filename: item.filename,
+              width: item.width,
+              height: item.height,
             }));
 
             // Store resolved attachments on optimistic msg so retry can skip re-upload

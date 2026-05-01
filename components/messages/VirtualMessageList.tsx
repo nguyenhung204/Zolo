@@ -83,6 +83,10 @@ function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
   return items;
 }
 
+function isOwnPendingMedia(message: Message, userId: string): boolean {
+  return message.senderId === userId && !!message._pending && (message.type === "image" || message.type === "video" || message.type === "media");
+}
+
 // ─── Row props ────────────────────────────────────────────────────────────────
 
 interface RowData {
@@ -363,7 +367,8 @@ export function VirtualMessageList({
     ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
     : [];
   const items = buildItems(messages, visiblePolls);
-  const timelineCount = messages.length + visiblePolls.length;
+  const stableTimelineCount =
+    messages.filter((message) => !isOwnPendingMedia(message, userId)).length + visiblePolls.length;
   itemsLengthRef.current = items.length;
   const messageById = new Map(messages.map((m) => [m.messageId, m]));
 
@@ -512,18 +517,18 @@ export function VirtualMessageList({
   useEffect(() => {
     if (initialScrollDoneRef.current) return;
     if (targetOffset !== null && targetOffset !== undefined) return;
-    if (timelineCount === 0) return;
+    if (messages.length === 0 && visiblePolls.length === 0) return;
     initialScrollDoneRef.current = true;
-    prevCountRef.current = timelineCount;
+    prevCountRef.current = stableTimelineCount;
     domScrollToBottom();
   // conversationId ensures re-run when switching conversations even if cache already has data
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, timelineCount]);
+  }, [conversationId, stableTimelineCount]);
 
   // Handle new messages arriving + history prepend scroll restoration
   useEffect(() => {
     if (!initialScrollDoneRef.current) return;
-    const newCount = timelineCount;
+    const newCount = stableTimelineCount;
     const oldCount = prevCountRef.current;
     if (newCount === oldCount) return;
 
@@ -556,7 +561,7 @@ export function VirtualMessageList({
 
     prevCountRef.current = newCount;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, timelineCount, userId, items]);
+  }, [conversationId, stableTimelineCount, userId, items]);
   // Native scroll handler — drives atBottom tracking and reverse-infinite-scroll trigger.
   // Using react-window's onScroll pass-through (HTMLAttributes spread) gives us a single,
   // reliable event source without manual addEventListener/removeEventListener.

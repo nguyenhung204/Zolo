@@ -3,18 +3,16 @@
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
-import { startInstantCall, acceptInstantCall, getInstantCallById, getInstantCallToken } from "@/lib/api/calls";
+import { startInstantCall } from "@/lib/api/calls";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
-import { ArrowLeft, BarChart3, Hash, Megaphone, MoreHorizontal, Phone, PhoneForwarded, Search, Users } from "lucide-react";
+import { ArrowLeft, Hash, Megaphone, MoreHorizontal, Phone, Search } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConversationSettingsModal } from "./ConversationSettingsModal";
-import { PollPanel } from "./PollPanel";
-import { CallHistoryPanel } from "@/components/calls/CallHistoryPanel";
 import { getCallSocket } from "@/lib/socket/socket";
 
 const kindLabel: Record<ConversationKind, string> = {
@@ -31,17 +29,14 @@ const kindColor: Record<ConversationKind, string> = {
 
 interface ConversationHeaderProps {
   conversationId: string;
-  onMembersClick: () => void;
 }
 
-export function ConversationHeader({ conversationId, onMembersClick }: ConversationHeaderProps) {
+export function ConversationHeader({ conversationId }: ConversationHeaderProps) {
   const { data: conv } = useConversation(conversationId);
   const { setOutgoingCall, setGroupCall } = useCallStore();
   const { setUserProfile } = usePresenceStore();
   const isBusyRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [pollsOpen, setPollsOpen] = useState(false);
   const currentUserId = useAuthStore((s) => s.user?.id ?? "");
 
   if (!conv) {
@@ -187,28 +182,6 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
             <Phone className="w-4 h-4" />
           </ActionButton>
         )}
-        {!isCommunity && (
-          <ActionButton
-            onClick={() => setHistoryOpen(true)}
-            title="Call history"
-            hideOnMobile
-          >
-            <PhoneForwarded className="w-4 h-4" />
-          </ActionButton>
-        )}
-        <ActionButton onClick={onMembersClick} title="Members">
-          <Users className="w-4 h-4" />
-          <span className="hidden sm:inline text-xs font-medium">{conv.memberCount}</span>
-        </ActionButton>
-        {!isDirect && (
-          <ActionButton
-            onClick={() => setPollsOpen(true)}
-            title="Polls"
-            hideOnMobile
-          >
-            <BarChart3 className="w-4 h-4" />
-          </ActionButton>
-        )}
         <ActionButton
           onClick={() => {}}
           title="Search in conversation"
@@ -225,16 +198,6 @@ export function ConversationHeader({ conversationId, onMembersClick }: Conversat
         conversationId={conversationId}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-      />
-      <CallHistoryPanel
-        conversationId={conversationId}
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-      />
-      <PollPanel
-        conversationId={conversationId}
-        open={pollsOpen}
-        onClose={() => setPollsOpen(false)}
       />
     </div>
   );

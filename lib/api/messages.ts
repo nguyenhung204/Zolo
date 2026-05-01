@@ -36,6 +36,8 @@ export interface AttachmentRef {
   variantsReady?: boolean;
   filename?: string;
   thumbMediaId?: string; // per-attachment thumbnail for videos in media groups
+  width?: number;
+  height?: number;
 }
 
 export interface LocalAttachmentPreview {
@@ -43,6 +45,8 @@ export interface LocalAttachmentPreview {
   thumbPreviewUrl?: string;  // captured first-frame blob URL (videos)
   mediaType: "image" | "video" | "audio" | "file";
   filename?: string;
+  width?: number;
+  height?: number;
 }
 
 // Raw shape returned by the REST endpoint (field names differ from our internal type)
@@ -68,6 +72,8 @@ interface RawMessage {
     waveform?: number[];
     durationMs?: number;
     thumbMediaId?: string;
+    width?: number;
+    height?: number;
     fileSize?: number;
     filename?: string;
     // system message fields (present when type === "system")
@@ -117,6 +123,8 @@ export interface Message {
     waveform?: number[];
     durationMs?: number;
     thumbMediaId?: string;
+    width?: number;
+    height?: number;
     fileSize?: number;
     filename?: string;
     // call_summary fields
@@ -178,6 +186,8 @@ export interface SendMessagePayload {
     waveform?: number[];
     durationMs?: number;
     thumbMediaId?: string;
+    width?: number;
+    height?: number;
     fileSize?: number;
     filename?: string;
     contactUserId?: string;
@@ -257,6 +267,9 @@ function normalizeRawMessage(m: RawMessage): Message {
     prefer: attachment.prefer,
     variantsReady: attachment.variantsReady,
     filename: attachment.filename,
+    thumbMediaId: attachment.thumbMediaId,
+    width: attachment.width,
+    height: attachment.height,
   })) ?? null;
   const firstAttachment = attachments?.[0];
   const derivedMediaId = m.mediaId ?? firstAttachment?.mediaId;

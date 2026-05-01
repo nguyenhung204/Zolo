@@ -20,8 +20,16 @@ import {
   ChevronDown,
   LogOut,
   AlertOctagon,
+  PhoneOutgoing,
+  PhoneIncoming,
+  PhoneMissed,
+  Phone,
+  ChevronUp,
+  BarChart3,
+  Plus,
+  ChevronRight,
 } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -48,9 +56,22 @@ import { JoinRequestsPanel } from "./JoinRequestsPanel";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
 import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
+import { usePolls, useCreatePoll } from "@/hooks/useGroup";
 import type { ConversationMuteDuration } from "@/lib/api/notifications";
 import type { MemberRole, Conversation } from "@/lib/api/conversations";
 import type { UserSearchResult } from "@/lib/api/friends";
+import {
+  getCallHistory,
+  getCallSummary,
+  startInstantCall,
+  type CallDto,
+  type CallSummaryDto,
+} from "@/lib/api/calls";
+import { useCallStore } from "@/stores/callStore";
+import { usePresenceStore } from "@/stores/presenceStore";
+import { getCallSocket } from "@/lib/socket/socket";
+import { formatDistanceToNowStrict } from "@/lib/utils/date";
+import { PollUI } from "./PollUI";
 
 // ─── Role helpers ─────────────────────────────────────────────────────────────
 
@@ -127,6 +148,17 @@ function SettingRow({
   );
 }
 
+function SectionHeader({ title, description }: { title: string; description?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-xs font-bold text-secondary uppercase tracking-wider">{title}</p>
+        {description && <p className="text-[11px] text-muted mt-0.5">{description}</p>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Notification control ────────────────────────────────────────────────────
 
 const MUTE_DURATION_OPTIONS: Array<{ value: ConversationMuteDuration; label: string }> = [
@@ -164,7 +196,10 @@ function NotificationControl({
     setPickingDuration(false);
   };
 
-  const muteUntilLabel = muteUntil
+  const isForeverMuted = muteUntil
+    ? new Date(muteUntil).getTime() - Date.now() > 365 * 24 * 60 * 60 * 1000
+    : false;
+  const muteUntilLabel = muteUntil && !isForeverMuted
     ? new Date(muteUntil).toLocaleString(undefined, {
         month: "short",
         day: "numeric",
@@ -323,6 +358,366 @@ function DangerRow({
   );
 }
 
+function formatCallDuration(ms: number | undefined): string {
+  if (!ms || ms <= 0) return "No answer";
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
+const END_REASON_LABEL: Record<string, string> = {
+  user_ended: "Ended by participant",
+  declined: "Declined",
+  caller_cancelled: "Cancelled by caller",
+  ringing_timeout: "No answer",
+  ghost_call_cleanup: "Cleaned up",
+  stale_call_cleanup: "Expired",
+  membership_revoked: "Membership revoked",
+};
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-xs text-muted">{label}</span>
+      <span className="text-xs font-medium text-text">{value}</span>
+    </div>
+  );
+}
+
+function CompactCallRow({
+  call,
+  myId,
+  conversationId,
+}: {
+  call: CallDto;
+  myId: string;
+  conversationId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [recalling, setRecalling] = useState(false);
+  const profileMap = usePresenceStore((s) => s.profileMap);
+  const { setOutgoingCall } = useCallStore();
+
+  const { data: summary, isLoading: summaryLoading } = useQuery<CallSummaryDto | null>({
+    queryKey: queryKeys.calls.summary(call.id),
+    queryFn: () => getCallSummary(call.id),
+    enabled: expanded,
+    staleTime: Infinity,
+  });
+
+  const isOutgoing = call.callerId === myId;
+  const isMissed = call.status === "MISSED" || call.status === "REJECTED";
+  const callerProfile = profileMap[call.callerId];
+  const callerName = callerProfile?.displayName ?? call.callerId.slice(0, 8);
+  const Icon = isMissed ? PhoneMissed : isOutgoing ? PhoneOutgoing : PhoneIncoming;
+  const iconColor = isMissed ? "text-error" : isOutgoing ? "text-cta" : "text-success";
+  const statusLabel = isMissed ? "Missed" : call.status === "ENDED" ? "Ended" : call.status;
+  const otherParticipantIds = call.participants.map((p) => p.userId).filter((id) => id !== myId);
+
+  const handleRecall = async () => {
+    if (recalling) return;
+    setRecalling(true);
+    try {
+      const callDto = await startInstantCall({ conversationId, calleeIds: otherParticipantIds });
+      setOutgoingCall(callDto);
+      getCallSocket().emit("call:join_room", { callId: callDto.id });
+    } catch {
+      toast.error("Could not start the call.");
+    } finally {
+      setRecalling(false);
+    }
+  };
+
+  return (
+    <div className="border border-border rounded-xl overflow-hidden bg-surface">
+      <div className="flex items-center gap-2.5 px-3 py-2">
+        <Icon className={cn("w-4 h-4 shrink-0", iconColor)} />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-text truncate">
+            {isOutgoing ? "Outgoing" : `From ${callerName}`}
+          </p>
+          <p className="text-xs text-muted">
+            {statusLabel} · {formatDistanceToNowStrict(call.createdAt)} ago
+          </p>
+        </div>
+        {!isMissed && <span className="text-xs text-muted">{formatCallDuration(summary?.durationMs)}</span>}
+        <button
+          onClick={handleRecall}
+          disabled={recalling}
+          title="Call back"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-cta hover:bg-cta/10 transition cursor-pointer disabled:opacity-40"
+        >
+          {recalling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+        </button>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-border/50 transition cursor-pointer"
+        >
+          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border px-3 py-2.5 bg-bg space-y-1.5">
+          {summaryLoading ? (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading summary…
+            </div>
+          ) : summary ? (
+            <>
+              <SummaryRow label="Duration" value={formatCallDuration(summary.durationMs)} />
+              <SummaryRow label="End reason" value={END_REASON_LABEL[summary.endReason] ?? summary.endReason} />
+              <SummaryRow label="Participants" value={String(summary.participantCount)} />
+              {summary.endedAt && <SummaryRow label="Ended at" value={new Date(summary.endedAt).toLocaleTimeString()} />}
+            </>
+          ) : (
+            <p className="text-xs text-muted">No summary available.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompactCallHistory({ conversationId, enabled }: { conversationId: string; enabled: boolean }) {
+  const myId = useAuthStore((s) => s.user?.id ?? "");
+  const { data: calls = [], isLoading } = useQuery<CallDto[]>({
+    queryKey: queryKeys.calls.history(conversationId),
+    queryFn: () => getCallHistory(conversationId, 1, 5),
+    enabled,
+    staleTime: 1000 * 60,
+  });
+
+  return (
+    <div className="space-y-2">
+      <SectionHeader title="Call History" description={calls.length ? `${calls.length} recent calls` : undefined} />
+      {isLoading ? (
+        <div className="flex items-center justify-center py-6 rounded-xl border border-border">
+          <Loader2 className="w-4 h-4 text-muted animate-spin" />
+        </div>
+      ) : calls.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 py-6 text-center rounded-xl border border-dashed border-border text-muted">
+          <PhoneMissed className="w-6 h-6 text-border" />
+          <p className="text-sm">No calls yet</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {calls.map((call) => (
+            <CompactCallRow key={call.id} call={call} myId={myId} conversationId={conversationId} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type PollInfoView = "list" | "create";
+
+function CompactPolls({
+  conversation,
+  conversationId,
+  myRole,
+  enabled,
+}: {
+  conversation: Conversation;
+  conversationId: string;
+  myRole: MemberRole | null;
+  enabled: boolean;
+}) {
+  const [view, setView] = useState<PollInfoView>("list");
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", ""]);
+  const [multipleChoice, setMultipleChoice] = useState(false);
+  const [deadline, setDeadline] = useState("");
+  const { data: polls = [] } = usePolls(conversationId, enabled);
+  const supportsPolls = conversation.kind === "group";
+  const allowMemberMessage = conversation.allowMemberMessage !== false;
+  const createPoll = useCreatePoll(conversationId);
+
+  const cleanOptions = options.map((option) => option.trim()).filter(Boolean);
+  const uniqueOptions = Array.from(new Set(cleanOptions));
+  const deadlineDate = deadline ? new Date(deadline) : null;
+  const isDeadlineValid = !deadlineDate || Number.isFinite(deadlineDate.getTime());
+  const canCreate = question.trim().length > 0 && uniqueOptions.length >= 2 && uniqueOptions.length <= 10 && isDeadlineValid;
+
+  const resetForm = () => {
+    setQuestion("");
+    setOptions(["", ""]);
+    setMultipleChoice(false);
+    setDeadline("");
+  };
+
+  const handleCreate = () => {
+    if (!supportsPolls) {
+      toast.error("Polls are only available in groups.");
+      return;
+    }
+    if (cleanOptions.length !== uniqueOptions.length) {
+      toast.error("Poll options must be unique.");
+      return;
+    }
+    if (deadlineDate && deadlineDate.getTime() <= Date.now()) {
+      toast.error("Poll deadline must be in the future.");
+      return;
+    }
+    if (!canCreate) {
+      toast.error("Polls need a question and 2–10 options.");
+      return;
+    }
+    createPoll.mutate(
+      {
+        question: question.trim(),
+        options: uniqueOptions,
+        multipleChoice,
+        ...(deadlineDate ? { deadline: deadlineDate.toISOString() } : {}),
+      },
+      {
+        onSuccess: () => {
+          toast.success("Poll created.");
+          resetForm();
+          setView("list");
+        },
+      },
+    );
+  };
+
+  if (!supportsPolls) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <SectionHeader title="Polls" description={`${polls.length} poll${polls.length !== 1 ? "s" : ""} in this group`} />
+        {view === "list" && (
+          <button
+            onClick={() => setView("create")}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-cta bg-cta/10 rounded-lg hover:bg-cta/15 transition cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New
+          </button>
+        )}
+      </div>
+
+      {view === "list" ? (
+        polls.length === 0 ? (
+          <button
+            onClick={() => setView("create")}
+            className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-cta/5 border border-cta/20 hover:bg-cta/10 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              <BarChart3 className="w-4 h-4 text-cta" />
+              <span className="text-sm font-semibold text-cta">Create new poll</span>
+            </div>
+            <ChevronRight className="w-4 h-4 text-cta/60" />
+          </button>
+        ) : (
+          <div className="space-y-3">
+            {polls.map((poll) => (
+              <PollUI
+                key={poll.id}
+                pollId={poll.id}
+                myRole={myRole}
+                allowMemberMessage={allowMemberMessage}
+                initialData={poll}
+              />
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="rounded-2xl border border-border bg-bg p-3 space-y-3">
+          <div>
+            <label className="text-[11px] font-semibold text-secondary uppercase tracking-wide mb-1.5 block">Question</label>
+            <input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Ask something..."
+              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 placeholder:text-muted/60 text-text transition"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-secondary uppercase tracking-wide mb-1.5 block">Options</label>
+            <div className="space-y-2">
+              {options.map((option, index) => (
+                <div key={index} className="flex gap-2">
+                  <input
+                    value={option}
+                    onChange={(e) => setOptions((prev) => prev.map((item, i) => (i === index ? e.target.value : item)))}
+                    placeholder={`Option ${index + 1}`}
+                    className="flex-1 px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 placeholder:text-muted/60 text-text transition"
+                  />
+                  {options.length > 2 && (
+                    <button
+                      type="button"
+                      onClick={() => setOptions((prev) => prev.filter((_, i) => i !== index))}
+                      className="w-10 rounded-xl text-muted hover:text-error hover:bg-error/10 transition flex items-center justify-center cursor-pointer"
+                      title="Remove option"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={options.length >= 10}
+              onClick={() => setOptions((prev) => [...prev, ""])}
+              className="flex items-center gap-1.5 mt-2 text-xs font-semibold text-cta hover:text-cta/80 disabled:text-muted disabled:cursor-not-allowed cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add option ({options.length}/10)
+            </button>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-text cursor-pointer">
+            <input
+              type="checkbox"
+              checked={multipleChoice}
+              onChange={(e) => setMultipleChoice(e.target.checked)}
+              className="accent-[var(--color-cta)] w-3.5 h-3.5"
+            />
+            Multiple choices
+          </label>
+          <div>
+            <label className="text-[11px] font-semibold text-secondary uppercase tracking-wide mb-1.5 block">Deadline (optional)</label>
+            <input
+              type="datetime-local"
+              value={deadline}
+              onChange={(e) => setDeadline(e.target.value)}
+              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 text-text transition"
+            />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                resetForm();
+                setView("list");
+              }}
+              className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-text bg-surface hover:bg-border/50 transition cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={!canCreate || createPoll.isPending}
+              className={cn(
+                "flex-1 py-2.5 rounded-xl text-sm font-semibold transition cursor-pointer",
+                canCreate ? "bg-cta text-white hover:opacity-90 active:scale-[0.98]" : "bg-border text-muted cursor-not-allowed",
+              )}
+            >
+              {createPoll.isPending ? "Creating…" : "Create Poll"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -331,7 +726,7 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "info" | "members" | "settings" | "invite" | "requests";
+type Tab = "info" | "settings" | "invite" | "requests";
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -385,8 +780,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
   const convNotification = notificationPreferences?.conversation;
   const isConversationMuted =
-    convNotification?.notifyOnMessage === false ||
-    (!!convNotification?.muteUntil && new Date(convNotification.muteUntil).getTime() > Date.now());
+    !!convNotification?.muteUntil && new Date(convNotification.muteUntil).getTime() > Date.now();
   const isUploading =
     avatarUpload.status === "uploading" || avatarUpload.status === "finalizing";
 
@@ -580,7 +974,6 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   // Tabs visible to this user
   const tabs: { id: Tab; label: string }[] = [
     { id: "info", label: "Info" },
-    { id: "members", label: `Members (${membersLoading ? "…" : members.length})` },
     ...(!isDirect
       ? [
           { id: "settings" as Tab, label: "Settings" },
@@ -752,9 +1145,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
               {isDirect && (
                 <div className="pt-2 space-y-4">
                   <div className="space-y-2">
-                    <p className="text-xs font-bold text-secondary uppercase tracking-wider">
-                      Notifications
-                    </p>
+                    <SectionHeader title="Notifications" />
                     <NotificationControl
                       isMuted={isConversationMuted}
                       muteUntil={convNotification?.muteUntil}
@@ -837,207 +1228,182 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                   )}
                 </>
               )}
-            </div>
-          )}
 
-          {/* ══ MEMBERS TAB ══ */}
-          {activeTab === "members" && (
-            <div className="flex flex-col">
-              {/* Add members (admin+, non-direct) */}
-              {canEdit && !isDirect && (
-                <div className="p-4 border-b border-border space-y-2">
-                  <label className="text-xs font-semibold text-secondary">Add members</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Search users…"
-                      value={addQuery}
-                      onChange={(e) => setAddQuery(e.target.value)}
-                      className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
-                    />
-                    {addQuery.length >= 2 &&
-                      searchResults.filter(
-                        (u) => !members.some((m) => m.userId === u.id),
-                      ).length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 z-10 bg-surface border border-border rounded-xl shadow-lg max-h-44 overflow-y-auto">
-                          {searchResults
-                            .filter((u) => !members.some((m) => m.userId === u.id))
-                            .slice(0, 6)
-                            .map((user) => {
-                              const isPending = pendingAdd.some((u) => u.id === user.id);
-                              return (
-                                <button
-                                  key={user.id}
-                                  onClick={() => {
-                                    togglePending(user);
-                                    setAddQuery("");
-                                  }}
-                                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
-                                >
-                                  {user.avatarUrl ? (
-                                    // eslint-disable-next-line @next/next/no-img-element
-                                    <img
-                                      src={user.avatarUrl}
-                                      alt=""
-                                      className="w-7 h-7 rounded-full object-cover shrink-0"
-                                    />
-                                  ) : (
-                                    <div className="w-7 h-7 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
-                                      {(user.firstName?.[0] ?? user.username[0]).toUpperCase()}
-                                    </div>
-                                  )}
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-text truncate">
-                                      {user.firstName} {user.lastName}
-                                    </p>
-                                    <p className="text-xs text-muted">@{user.username}</p>
-                                  </div>
-                                  {isPending && (
-                                    <Check className="w-4 h-4 text-cta shrink-0" />
-                                  )}
+              {!isDirect && (
+                <>
+                  <div className="pt-2 space-y-3 border-t border-border">
+                    <SectionHeader title={`Members (${membersLoading ? "…" : members.length})`} />
+                    {canEdit && (
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-secondary">Add members</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Search users…"
+                            value={addQuery}
+                            onChange={(e) => setAddQuery(e.target.value)}
+                            className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
+                          />
+                          {addQuery.length >= 2 &&
+                            searchResults.filter((u) => !members.some((m) => m.userId === u.id)).length > 0 && (
+                              <div className="absolute top-full left-0 right-0 mt-1 z-10 bg-surface border border-border rounded-xl shadow-lg max-h-44 overflow-y-auto">
+                                {searchResults
+                                  .filter((u) => !members.some((m) => m.userId === u.id))
+                                  .slice(0, 6)
+                                  .map((user) => {
+                                    const isPending = pendingAdd.some((u) => u.id === user.id);
+                                    return (
+                                      <button
+                                        key={user.id}
+                                        onClick={() => {
+                                          togglePending(user);
+                                          setAddQuery("");
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
+                                      >
+                                        {user.avatarUrl ? (
+                                          // eslint-disable-next-line @next/next/no-img-element
+                                          <img src={user.avatarUrl} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
+                                        ) : (
+                                          <div className="w-7 h-7 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
+                                            {(user.firstName?.[0] ?? user.username[0]).toUpperCase()}
+                                          </div>
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-sm font-medium text-text truncate">
+                                            {user.firstName} {user.lastName}
+                                          </p>
+                                          <p className="text-xs text-muted">@{user.username}</p>
+                                        </div>
+                                        {isPending && <Check className="w-4 h-4 text-cta shrink-0" />}
+                                      </button>
+                                    );
+                                  })}
+                              </div>
+                            )}
+                        </div>
+
+                        {pendingAdd.length > 0 && (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {pendingAdd.map((u) => (
+                              <span key={u.id} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-cta/10 text-cta text-xs font-medium rounded-full">
+                                {u.firstName || u.username}
+                                <button onClick={() => togglePending(u)} className="hover:text-red-500 transition cursor-pointer">
+                                  <X className="w-3 h-3" />
                                 </button>
-                              );
-                            })}
+                              </span>
+                            ))}
+                            <button
+                              onClick={handleAddMembers}
+                              disabled={addMembers.isPending}
+                              className="flex items-center gap-1.5 px-3 py-1 bg-cta text-white text-xs font-semibold rounded-full hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
+                            >
+                              <UserPlus className="w-3 h-3" />
+                              {addMembers.isPending ? "Adding…" : "Add"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="space-y-0.5">
+                      {membersLoading &&
+                        Array.from({ length: 4 }).map((_, i) => (
+                          <div key={i} className="flex items-center gap-3 px-3 py-2.5">
+                            <div className="w-9 h-9 rounded-full bg-border animate-pulse shrink-0" />
+                            <div className="space-y-1.5 flex-1">
+                              <div className="h-3 bg-border animate-pulse rounded w-3/4" />
+                              <div className="h-2.5 bg-border animate-pulse rounded w-1/3" />
+                            </div>
+                          </div>
+                        ))}
+
+                      {!membersLoading && members.length === 0 && (
+                        <div className="flex flex-col items-center py-8 text-muted gap-2">
+                          <Users className="w-8 h-8 opacity-40" />
+                          <p className="text-sm">No members found</p>
                         </div>
                       )}
+
+                      {!membersLoading &&
+                        members.map((member) => {
+                          const mRole = member.role as MemberRole;
+                          const isSelf = member.userId === currentUserId;
+                          const isLastOwner = mRole === "owner" && ownerCount <= 1;
+                          const canRemove = canEdit && !isSelf && !isLastOwner && mRole !== "owner";
+                          const canChangeRole = isOwner && !isSelf && mRole !== "owner";
+                          const displayName =
+                            (member as { displayName?: string }).displayName ??
+                            (member as { username?: string }).username ??
+                            member.userId;
+                          const memberAvatarUrl = (member as { avatarUrl?: string | null }).avatarUrl;
+
+                          return (
+                            <div key={member.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/20 transition group">
+                              {memberAvatarUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={memberAvatarUrl} alt={displayName} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                              ) : (
+                                <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
+                                  {displayName[0]?.toUpperCase()}
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-text truncate">
+                                  {displayName}
+                                  {isSelf && <span className="text-muted font-normal ml-1">(you)</span>}
+                                </p>
+                              </div>
+                              {canChangeRole ? (
+                                <select
+                                  value={mRole}
+                                  onChange={(e) =>
+                                    setRole.mutate({
+                                      conversationId,
+                                      userId: member.userId,
+                                      role: e.target.value as MemberRole,
+                                    })
+                                  }
+                                  className="text-xs border border-border rounded-lg px-2 py-1 bg-surface text-secondary cursor-pointer focus:outline-none focus:border-cta transition"
+                                >
+                                  {ASSIGNABLE_ROLES.map((r) => (
+                                    <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div className="flex items-center gap-1 text-xs text-muted shrink-0">
+                                  {ROLE_ICON[mRole]}
+                                  <span>{ROLE_LABEL[mRole]}</span>
+                                </div>
+                              )}
+                              {canRemove ? (
+                                <button
+                                  onClick={() => setPendingRemoveMemberId(member.userId)}
+                                  disabled={removeMember.isPending}
+                                  className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-error hover:bg-error/10 transition cursor-pointer md:opacity-0 md:group-hover:opacity-100 disabled:opacity-40 shrink-0"
+                                  title="Remove member"
+                                  aria-label="Remove member"
+                                >
+                                  <UserX className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <div className="w-7 h-7 shrink-0" />
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
                   </div>
 
-                  {pendingAdd.length > 0 && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {pendingAdd.map((u) => (
-                        <span
-                          key={u.id}
-                          className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-cta/10 text-cta text-xs font-medium rounded-full"
-                        >
-                          {u.firstName || u.username}
-                          <button
-                            onClick={() => togglePending(u)}
-                            className="hover:text-red-500 transition cursor-pointer"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                      <button
-                        onClick={handleAddMembers}
-                        disabled={addMembers.isPending}
-                        className="flex items-center gap-1.5 px-3 py-1 bg-cta text-white text-xs font-semibold rounded-full hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
-                      >
-                        <UserPlus className="w-3 h-3" />
-                        {addMembers.isPending ? "Adding…" : "Add"}
-                      </button>
-                    </div>
-                  )}
-                </div>
+                  <div className="pt-2 border-t border-border">
+                    <CompactCallHistory conversationId={conversationId} enabled={open && activeTab === "info"} />
+                  </div>
+
+                  <div className="pt-2 border-t border-border">
+                    <CompactPolls conversation={conv} conversationId={conversationId} myRole={myRole} enabled={open && activeTab === "info"} />
+                  </div>
+                </>
               )}
-
-              {/* Member list */}
-              <div className="p-3 space-y-0.5">
-                {/* Loading skeletons */}
-                {membersLoading &&
-                  Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-3 px-3 py-2.5">
-                      <div className="w-9 h-9 rounded-full bg-border animate-pulse shrink-0" />
-                      <div className="space-y-1.5 flex-1">
-                        <div className="h-3 bg-border animate-pulse rounded w-3/4" />
-                        <div className="h-2.5 bg-border animate-pulse rounded w-1/3" />
-                      </div>
-                    </div>
-                  ))}
-
-                {/* Empty state */}
-                {!membersLoading && members.length === 0 && (
-                  <div className="flex flex-col items-center py-10 text-muted gap-2">
-                    <Users className="w-8 h-8 opacity-40" />
-                    <p className="text-sm">No members found</p>
-                  </div>
-                )}
-
-                {/* Member rows */}
-                {!membersLoading &&
-                  members.map((member) => {
-                    const mRole = member.role as MemberRole;
-                    const isSelf = member.userId === currentUserId;
-                    const isLastOwner = mRole === "owner" && ownerCount <= 1;
-                    const canRemove =
-                      canEdit && !isSelf && !isLastOwner && mRole !== "owner";
-                    const canChangeRole = isOwner && !isSelf && mRole !== "owner";
-
-                    const displayName =
-                      (member as { displayName?: string }).displayName ??
-                      (member as { username?: string }).username ??
-                      member.userId;
-                    const memberAvatarUrl = (member as { avatarUrl?: string | null }).avatarUrl;
-
-                    return (
-                      <div
-                        key={member.id}
-                        className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/20 transition group"
-                      >
-                        {memberAvatarUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={memberAvatarUrl}
-                            alt={displayName}
-                            className="w-9 h-9 rounded-full object-cover shrink-0"
-                          />
-                        ) : (
-                          <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
-                            {displayName[0]?.toUpperCase()}
-                          </div>
-                        )}
-
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-text truncate">
-                            {displayName}
-                            {isSelf && (
-                              <span className="text-muted font-normal ml-1">(you)</span>
-                            )}
-                          </p>
-                        </div>
-
-                        {canChangeRole ? (
-                          <select
-                            value={mRole}
-                            onChange={(e) =>
-                              setRole.mutate({
-                                conversationId,
-                                userId: member.userId,
-                                role: e.target.value as MemberRole,
-                              })
-                            }
-                            className="text-xs border border-border rounded-lg px-2 py-1 bg-surface text-secondary cursor-pointer focus:outline-none focus:border-cta transition"
-                          >
-                            {ASSIGNABLE_ROLES.map((r) => (
-                              <option key={r} value={r}>
-                                {ROLE_LABEL[r]}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="flex items-center gap-1 text-xs text-muted shrink-0">
-                            {ROLE_ICON[mRole]}
-                            <span>{ROLE_LABEL[mRole]}</span>
-                          </div>
-                        )}
-
-                        {canRemove ? (
-                          <button
-                            onClick={() => setPendingRemoveMemberId(member.userId)}
-                            disabled={removeMember.isPending}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted hover:text-error hover:bg-error/10 transition cursor-pointer md:opacity-0 md:group-hover:opacity-100 disabled:opacity-40 shrink-0"
-                            title="Remove member"
-                            aria-label={`Remove member`}
-                          >
-                            <UserX className="w-3.5 h-3.5" />
-                          </button>
-                        ) : (
-                          <div className="w-7 h-7 shrink-0" />
-                        )}
-                      </div>
-                    );
-                  })}
-              </div>
             </div>
           )}
 

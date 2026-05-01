@@ -61,6 +61,8 @@ interface StagedFile {
   previewUrl?: string;      // blob URL for image/video preview chip
   thumbPreviewUrl?: string; // local blob URL of captured frame — chip display only, NOT sent
   mediaType: AttachmentMediaType;
+  width?: number;
+  height?: number;
 }
 
 function detectMediaType(mimeType: string): AttachmentMediaType {
@@ -79,6 +81,24 @@ function formatBytes(bytes: number): string {
 }
 
 const MAX_CONTENT_LENGTH = 10_000;
+
+async function getImageSize(file: File): Promise<{ width: number; height: number } | null> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    const loaded = new Promise<{ width: number; height: number }>((resolve, reject) => {
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      img.onerror = () => reject(new Error("Image load failed"));
+    });
+    img.src = url;
+    const size = await loaded;
+    return size.width && size.height ? size : null;
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 function splitContent(content: string): string[] {
   if (content.length <= MAX_CONTENT_LENGTH) return [content];
@@ -472,7 +492,7 @@ export function MessageComposer({
    * Validate and stage files from File[] array.
    * Reused by both file input change and paste events.
    */
-  const stageFilesFromList = useCallback((files: File[]) => {
+  const stageFilesFromList = useCallback(async (files: File[]) => {
     const toProcess = files.slice(0, 50);
     if (toProcess.length === 0) return;
 
@@ -494,14 +514,24 @@ export function MessageComposer({
     }
     if (allowed.length === 0) return;
 
-    const newStaged: StagedFile[] = allowed.map((file) => {
-      const mediaType = detectMediaType(file.type);
-      const previewUrl =
-        mediaType === "image" || mediaType === "video"
-          ? URL.createObjectURL(file)
-          : undefined;
-      return { id: crypto.randomUUID(), file, previewUrl, mediaType };
-    });
+    const newStaged: StagedFile[] = await Promise.all(
+      allowed.map(async (file) => {
+        const mediaType = detectMediaType(file.type);
+        const previewUrl =
+          mediaType === "image" || mediaType === "video"
+            ? URL.createObjectURL(file)
+            : undefined;
+        const imageSize = mediaType === "image" ? await getImageSize(file) : null;
+        return {
+          id: crypto.randomUUID(),
+          file,
+          previewUrl,
+          mediaType,
+          width: imageSize?.width,
+          height: imageSize?.height,
+        };
+      })
+    );
     setStagedFiles((prev) => [...prev, ...newStaged].slice(0, 50));
 
     // For video files: capture frame immediately for the chip preview,
@@ -633,6 +663,9 @@ export function MessageComposer({
           localPreviewUrl: stagedFile.previewUrl,
           metadata: {
             ...(thumbMediaId ? { thumbMediaId } : {}),
+            ...(stagedFile.width && stagedFile.height
+              ? { width: stagedFile.width, height: stagedFile.height }
+              : {}),
             fileSize: stagedFile.file.size,
             filename: fileName,
           },
@@ -676,6 +709,8 @@ export function MessageComposer({
                 filename: sf.file.name,
                 localPreviewUrl: sf.previewUrl,
                 thumbPreviewUrl: sf.thumbPreviewUrl,
+                width: sf.width,
+                height: sf.height,
                 thumbMediaId,
               };
             })
@@ -726,6 +761,7 @@ export function MessageComposer({
             localPreviewUrl: sf.previewUrl,
             metadata: {
               ...(thumbMediaId ? { thumbMediaId } : {}),
+              ...(sf.width && sf.height ? { width: sf.width, height: sf.height } : {}),
               fileSize: sf.file.size,
               filename: fileName,
             },

@@ -1,6 +1,6 @@
 "use client";
 
-import { X, CornerUpLeft, FileText, Image, Video, Mic } from "lucide-react";
+import { X, CornerUpLeft, FileText, Image, Video, Mic, Contact } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ReplyMeta {
@@ -33,6 +33,9 @@ export function replyLabel(
   }
   if (t === "video") {
     return { icon: <Video className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "Video" };
+  }
+  if (t === "contact_card") {
+    return { icon: <Contact className="w-3.5 h-3.5 shrink-0" />, label: content || "Contact" };
   }
   if (t === "file") {
     return { icon: <FileText className="w-3.5 h-3.5 shrink-0" />, label: (metadata?.filename ?? content) || "File" };
