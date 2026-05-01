@@ -267,7 +267,7 @@ export function MessageRow({
               bubbleShape,
               "text-sm leading-relaxed break-words max-w-full",
               isPureMedia
-                ? "overflow-hidden flex"
+                ? "overflow-hidden"
                 : isContactCard
                   ? "p-0 bg-transparent border-0 shadow-none"
                 : isMine

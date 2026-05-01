@@ -269,6 +269,7 @@ export interface GroupJoinRejectedEvent {
 
 export const ROLE_INDEX: Record<string, number> = {
   member: 0,
+  moderator: 0.5,
   admin: 1,
   owner: 2,
 };
