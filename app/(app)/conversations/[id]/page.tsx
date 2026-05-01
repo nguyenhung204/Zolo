@@ -9,11 +9,11 @@ import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
 import { AddFriendBanner } from "@/components/conversations/AddFriendBanner";
 import { GroupCallBanner } from "@/components/calls/GroupCallBanner";
-import { MemberList } from "@/components/conversations/MemberList";
 import { useConversationMembers, useConversation } from "@/hooks/useConversations";
 import { useGroupSocketEvents } from "@/hooks/useGroupSocketEvents";
 import { useConversationCallStatus } from "@/hooks/useConversationCallStatus";
 import { useConversationStore } from "@/stores/conversationStore";
+import { useMentionStore } from "@/stores/mentionStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { useMessages } from "@/hooks/useMessages";
 import { useAuthStore } from "@/stores/authStore";
@@ -49,7 +49,6 @@ export default function ConversationPage({ params }: Props) {
     }
   }, [convError, router]);
 
-  const [membersOpen, setMembersOpen] = useState(false);
   const [detailsTarget, setDetailsTarget] = useState<Message | null>(null);
 
   // Mount all group management socket listeners for this conversation
@@ -69,7 +68,6 @@ export default function ConversationPage({ params }: Props) {
     qc.removeQueries({ queryKey: queryKeys.messages.list(id) });
 
     // Clear mention badge when viewing the conversation
-    const { useMentionStore } = require("@/stores/mentionStore");
     useMentionStore.getState().clearMention(id);
 
     // Immediately mark all messages as seen so the unread badge clears without
@@ -134,7 +132,6 @@ export default function ConversationPage({ params }: Props) {
     <div className="flex flex-col h-full min-h-0">
       <ConversationHeader
         conversationId={id}
-        onMembersClick={() => setMembersOpen(true)}
       />
       <AddFriendBanner conversationId={id} />
       <PinnedMessageBanner
@@ -157,12 +154,6 @@ export default function ConversationPage({ params }: Props) {
       </div>
 
       <MessageComposer conversationId={id} />
-
-      <MemberList
-        conversationId={id}
-        open={membersOpen}
-        onClose={() => setMembersOpen(false)}
-      />
     </div>
   );
 }

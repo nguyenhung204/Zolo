@@ -15,10 +15,15 @@ interface Props {
 export function MediaImage({ message, isMine }: Props) {
   const isUploading = typeof message._uploadProgress === "number" && message._uploadProgress < 100;
   const isMediaReady = !message.mediaStatus || message.mediaStatus === "ready";
+  const seededRatio =
+    message.metadata?.width && message.metadata?.height
+      ? message.metadata.width / message.metadata.height
+      : null;
   const [imageSrc, setImageSrc] = useState<string | null>(
     isMine ? (message._localPreviewUrl ?? null) : null
   );
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(seededRatio);
   const isLoadingRef = useRef(false);
   const hasOptimizedRef = useRef(false);
   const imgRef = useRef<HTMLDivElement>(null);
@@ -56,7 +61,7 @@ export function MediaImage({ message, isMine }: Props) {
   }, [isMediaReady, message.mediaId, message.conversationId, imageSrc]);
 
   const previewSrc = imageSrc ?? (isMine ? message._localPreviewUrl : undefined);
-  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  const displayAspectRatio = aspectRatio ?? seededRatio;
 
   if (previewSrc) {
     return (
@@ -65,10 +70,7 @@ export function MediaImage({ message, isMine }: Props) {
           ref={imgRef}
           className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in inline-block"
           style={{
-            // Use natural aspect ratio when known so the layout doesn't jump
-            // and the displayed image keeps its real proportions instead of
-            // being cropped into a square.
-            aspectRatio: aspectRatio ?? undefined,
+            aspectRatio: displayAspectRatio ?? undefined,
             maxWidth: "min(420px, 100%)",
             maxHeight: "70vh",
           }}
