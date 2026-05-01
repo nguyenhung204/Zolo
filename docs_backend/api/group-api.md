@@ -777,12 +777,12 @@ socket.on('group:join_rejected', (data) => {
 
 ## Phân quyền theo role
 
-| Action | OWNER | ADMIN | MODERATOR | MEMBER |
+| Action | OWNER | ADMIN  | MEMBER |
 |---|:---:|:---:|:---:|:---:|
 | Cập nhật cài đặt nhóm | ✅ | ❌ | ❌ | ❌ |
 | Giải tán nhóm | ✅ | ❌ | ❌ | ❌ |
 | Rời nhóm | ❌* | ✅ | ✅ | ✅ |
-| Kick MEMBER/MODERATOR | ✅ | ✅ | ❌ | ❌ |
+| Kick MEMBER | ✅ | ✅ | ❌ | ❌ |
 | Kick ADMIN | ✅ | ❌ | ❌ | ❌ |
 | Tạo/thu hồi invite link | ✅ | ✅ | ❌ | ❌ |
 | Duyệt/từ chối join request | ✅ | ✅ | ❌ | ❌ |

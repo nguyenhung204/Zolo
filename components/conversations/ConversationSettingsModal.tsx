@@ -78,18 +78,16 @@ import { PollUI } from "./PollUI";
 const ROLE_ICON: Record<MemberRole, React.ReactNode> = {
   owner: <Crown className="w-3 h-3 text-warning" />,
   admin: <Shield className="w-3 h-3 text-cta" />,
-  moderator: <Shield className="w-3 h-3 text-secondary" />,
   member: <User className="w-3 h-3 text-muted" />,
 };
 
 const ROLE_LABEL: Record<MemberRole, string> = {
   owner: "Owner",
   admin: "Admin",
-  moderator: "Moderator",
   member: "Member",
 };
 
-const ASSIGNABLE_ROLES: MemberRole[] = ["admin", "moderator", "member"];
+const ASSIGNABLE_ROLES: MemberRole[] = ["admin", "member"];
 
 // ─── Toggle switch ────────────────────────────────────────────────────────────
 
