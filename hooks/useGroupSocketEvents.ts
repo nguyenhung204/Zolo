@@ -152,11 +152,12 @@ export function useGroupSocketEvents(conversationId: string) {
     // consuming component re-evaluates UI visibility from the updated cache.
     const onMemberRoleChanged = (payload: GroupMemberRoleChangedEvent) => {
       if (payload.conversationId !== conversationId) return;
+      const nextRole = payload.newRole.toLowerCase() as ConversationMember["role"];
       qc.setQueryData<ConversationMember[]>(
         queryKeys.conversations.members(conversationId),
         (old) =>
           old?.map((m) =>
-            m.userId === payload.userId ? { ...m, role: payload.newRole } : m,
+            m.userId === payload.userId ? { ...m, role: nextRole } : m,
           ),
       );
       // Also patch the participants array stored in the conversation detail so
@@ -168,7 +169,7 @@ export function useGroupSocketEvents(conversationId: string) {
           return {
             ...old,
             participants: old.participants.map((p) =>
-              p.userId === payload.userId ? { ...p, role: payload.newRole } : p,
+              p.userId === payload.userId ? { ...p, role: nextRole } : p,
             ),
           };
         },
@@ -182,7 +183,7 @@ export function useGroupSocketEvents(conversationId: string) {
           member: "Member",
         };
         toast.info(
-          `Your role in this group has been changed to ${roleLabel[payload.newRole] ?? payload.newRole}.`,
+          `Your role in this group has been changed to ${roleLabel[nextRole] ?? nextRole}.`,
         );
       }
     };

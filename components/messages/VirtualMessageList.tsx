@@ -374,16 +374,39 @@ export function VirtualMessageList({
 
   const memberMap = new Map(members.map((m) => [m.userId, m as ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }]));
 
+  const memberCursors = new Map<string, { seen: number; delivered: number }>();
+  for (const page of data?.pages ?? []) {
+    for (const [cursorUserId, cursor] of Object.entries(page.memberCursors ?? {})) {
+      const prev = memberCursors.get(cursorUserId);
+      memberCursors.set(cursorUserId, {
+        seen: Math.max(prev?.seen ?? 0, Number(cursor.seen ?? 0)),
+        delivered: Math.max(prev?.delivered ?? 0, Number(cursor.delivered ?? 0)),
+      });
+    }
+  }
+
   const otherMembers = members
     .filter((m) => m.userId !== userId)
     .map((m) => ({
       userId: m.userId,
-      lastSeenOffset: m.lastSeenOffset,
-      lastDeliveredOffset: m.lastDeliveredOffset,
+      lastSeenOffset: Math.max(Number(m.lastSeenOffset ?? 0), memberCursors.get(m.userId)?.seen ?? 0),
+      lastDeliveredOffset: Math.max(Number(m.lastDeliveredOffset ?? 0), memberCursors.get(m.userId)?.delivered ?? 0),
       avatarUrl: (m as { avatarUrl?: string | null }).avatarUrl ?? null,
       displayName: (m as { displayName?: string }).displayName,
       username: (m as { username?: string }).username,
     }));
+  const memberIds = new Set(otherMembers.map((m) => m.userId));
+  for (const [cursorUserId, cursor] of memberCursors) {
+    if (cursorUserId === userId || memberIds.has(cursorUserId)) continue;
+    otherMembers.push({
+      userId: cursorUserId,
+      lastSeenOffset: cursor.seen,
+      lastDeliveredOffset: cursor.delivered,
+      avatarUrl: null,
+      displayName: undefined,
+      username: undefined,
+    });
+  }
 
   // ─── Populate profiles for message senders ────────────────────────────────
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);

@@ -341,6 +341,8 @@ export function useSocket() {
           type: attachment.type ?? attachment.kind,
         })) ?? null,
         offset: Number(msg.offset ?? 0),
+        senderId: msg.senderId ?? "SYSTEM",
+        content: typeof msg.content === "string" ? msg.content : "",
         updatedAt: msg.editedAt ?? msg.createdAt,
       } as Message;
       // Track mentions if the current user is mentioned
@@ -357,7 +359,7 @@ export function useSocket() {
         upsertMessage(qc, msg.conversationId, normalized);
       }
       // Throttle-emit delivered cursor for incoming messages from others (1s per conversation)
-      if (msg.senderId !== myId && msg.offset > 0) {
+      if (msg.senderId && msg.senderId !== myId && msg.offset > 0) {
         const existing = deliveredThrottleRef.current.get(msg.conversationId);
         if (existing) clearTimeout(existing);
         const timer = setTimeout(() => {
@@ -380,8 +382,8 @@ export function useSocket() {
               ? {
                   ...c,
                   lastMessage: {
-                    content: msg.content,
-                    senderId: msg.senderId,
+                    content: msg.content ?? "",
+                    senderId: msg.senderId ?? "SYSTEM",
                     type: msg.type,
                     createdAt: msg.createdAt,
                   },
