@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Phone, PhoneCall, Users } from "lucide-react";
+import { Phone, PhoneCall } from "lucide-react";
 import { toast } from "sonner";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
@@ -27,7 +27,6 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
   const { setActiveCall, setLiveKitCredentials, setGroupCall, setDeclinedGroupCall } =
     useCallStore();
   const profileMap = usePresenceStore((s) => s.profileMap);
-  const myId = useAuthStore((s) => s.user?.id);
   const isBusyRef = useRef(false);
   const [joining, setJoining] = useState(false);
 
