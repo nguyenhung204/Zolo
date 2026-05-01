@@ -36,8 +36,6 @@ interface ChatInputProps {
  *    403 the input rolls back, the error is surfaced, and any optimistic
  *    message is discarded.
  *
- * 3. FORMULA — from §4.3:
- *      canInteract = allowMemberMessage || role >= moderator
  */
 export function ChatInput({ conversationId, onMessageSent }: ChatInputProps) {
   const myId = useAuthStore((s) => s.user?.id);

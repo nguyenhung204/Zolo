@@ -179,7 +179,6 @@ export function useGroupSocketEvents(conversationId: string) {
         const roleLabel: Record<string, string> = {
           owner: "Owner",
           admin: "Admin",
-          moderator: "Moderator",
           member: "Member",
         };
         toast.info(
