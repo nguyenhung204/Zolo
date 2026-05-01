@@ -196,7 +196,10 @@ function NotificationControl({
     setPickingDuration(false);
   };
 
-  const muteUntilLabel = muteUntil
+  const isForeverMuted = muteUntil
+    ? new Date(muteUntil).getTime() - Date.now() > 365 * 24 * 60 * 60 * 1000
+    : false;
+  const muteUntilLabel = muteUntil && !isForeverMuted
     ? new Date(muteUntil).toLocaleString(undefined, {
         month: "short",
         day: "numeric",
@@ -777,8 +780,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
   const convNotification = notificationPreferences?.conversation;
   const isConversationMuted =
-    convNotification?.notifyOnMessage === false ||
-    (!!convNotification?.muteUntil && new Date(convNotification.muteUntil).getTime() > Date.now());
+    !!convNotification?.muteUntil && new Date(convNotification.muteUntil).getTime() > Date.now();
   const isUploading =
     avatarUpload.status === "uploading" || avatarUpload.status === "finalizing";
 
