@@ -84,7 +84,7 @@ function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
 }
 
 function isOwnPendingMedia(message: Message, userId: string): boolean {
-  return message.senderId === userId && !!message._pending && (message.type === "image" || message.type === "video" || message.type === "media");
+  return (message._mine || message.senderId === userId) && !!message._pending && (message.type === "image" || message.type === "video" || message.type === "media");
 }
 
 // ─── Row props ────────────────────────────────────────────────────────────────
@@ -164,7 +164,7 @@ function MessageRowComponent({
 
   // item.kind === "message"
   const { msg, prev, next } = item;
-  const isMine = msg.senderId === userId;
+  const isMine = msg._mine || msg.senderId === userId;
   const GROUP_GAP_MS = 5 * 60 * 1000; // 5-minute gap breaks a group
   const samePrev =
     prev?.senderId === msg.senderId &&

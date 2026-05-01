@@ -337,6 +337,7 @@ export function useSendMessage() {
         _localPreviewUrl: localPreviewUrl,
         _uploadProgress: (uploadFile || (uploadFileItems && uploadFileItems.length > 0)) ? 0 : undefined,
         _localAttachments: localAttachments,
+        _mine: true,
       };
 
       qc.setQueryData<MessagesInfiniteData>(

@@ -164,6 +164,7 @@ export interface Message {
   _localPreviewUrl?: string;
   _uploadProgress?: number;
   _localAttachments?: LocalAttachmentPreview[]; // for media group optimistic preview
+  _mine?: boolean;
 }
 
 export interface MessagePage {
