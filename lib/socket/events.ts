@@ -526,7 +526,7 @@ export interface CallServerEvents {
   "meeting:participant_moderated": (data: {
     meetingId: string;
     targetUserId: string;
-    moderatorId: string;
+
     action: ModerationAction;
   }) => void;
 
