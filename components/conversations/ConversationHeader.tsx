@@ -3,7 +3,7 @@
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
-import { startInstantCall, acceptInstantCall, getInstantCallById, getInstantCallToken } from "@/lib/api/calls";
+import { startInstantCall } from "@/lib/api/calls";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
