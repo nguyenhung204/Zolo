@@ -232,33 +232,31 @@ function CameraButton() {
 
 function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }) {
   const { clearCallState, setDeclinedGroupCall } = useCallStore();
+  const groupCallsByConversation = useCallStore((s) => s.groupCallsByConversation);
   const room = useRoomContext();
   const isBusyRef = useRef(false);
+
+  // For a group call with only 2 participants left, leaving = ending the call.
+  const conversationId = useCallStore.getState().activeCall?.conversationId ?? "";
+  const groupEntry = conversationId ? groupCallsByConversation[conversationId] : undefined;
+  const participantCount = groupEntry?.participantIds.length ?? 0;
+  const shouldEndGroupCall = isGroup && participantCount <= 2;
 
   const handleAction = useCallback(() => {
     if (isBusyRef.current) return;
     isBusyRef.current = true;
 
-    if (isGroup) {
-      // Group call: "Leave" — disconnect from LiveKit but keep the call alive
-      // for other participants. Stay in the WS call room so call:ended can
-      // still clear the GroupCallBanner automatically.
-      // Do NOT call endInstantCall — the call continues for everyone else.
-
-      // Capture conversationId BEFORE clearing state.
-      const conversationId = useCallStore.getState().activeCall?.conversationId ?? "";
-
+    if (isGroup && !shouldEndGroupCall) {
+      // Group call with 3+ participants: just leave, call stays alive for others.
       void room.disconnect();
-      clearCallState(); // sets declinedGroupCall = null
+      clearCallState();
 
-      // Re-set declinedGroupCall so ConversationHeader shows a "Join" button
-      // even if call:ended arrives and wipes groupCallsByConversation.
       if (conversationId) {
         setDeclinedGroupCall({ callId, conversationId });
       }
       // isBusyRef intentionally left true — component unmounts
     } else {
-      // Direct call: end the call for both sides.
+      // 1:1 call OR group call down to 2 people: end for everyone.
       void room.disconnect();
       getCallSocket().emit("call:leave_room", { callId });
       clearCallState();
@@ -266,21 +264,23 @@ function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }
         if (!is409(err)) toast.error("Failed to end the call.");
       });
     }
-  }, [callId, isGroup, clearCallState, setDeclinedGroupCall, room]);
+  }, [callId, isGroup, shouldEndGroupCall, conversationId, clearCallState, setDeclinedGroupCall, room]);
+
+  const label = isGroup && !shouldEndGroupCall ? "Leave" : "End";
 
   return (
     <div className="flex flex-col items-center gap-1">
       <button
         onClick={handleAction}
-        aria-label={isGroup ? "Leave call" : "End call"}
-        title={isGroup ? "Leave call (others stay connected)" : "End call for everyone"}
+        aria-label={label}
+        title={isGroup && !shouldEndGroupCall ? "Leave call (others stay connected)" : "End call for everyone"}
         className="w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer hover:brightness-90"
         style={{ background: "#DC2626" }}
       >
         <PhoneOff className="w-6 h-6 text-white" />
       </button>
       <span className="text-[10px] text-white/40 select-none">
-        {isGroup ? "Leave" : "End"}
+        {label}
       </span>
     </div>
   );
