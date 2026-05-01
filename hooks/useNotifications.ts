@@ -98,7 +98,6 @@ export function useMuteConversation(conversationId: string) {
                     60 *
                     1000,
               ).toISOString();
-      const notifyOnMessage = duration === "off";
       const next: NotificationPreferences = {
         global: prev?.global ?? {
           conversationId: null,
@@ -114,7 +113,7 @@ export function useMuteConversation(conversationId: string) {
           conversationId,
           muteUntil,
           notifyOnMention: prev?.conversation?.notifyOnMention ?? true,
-          notifyOnMessage,
+          notifyOnMessage: duration === "off",
           quietHoursEnabled: prev?.conversation?.quietHoursEnabled ?? false,
           quietHoursStart: prev?.conversation?.quietHoursStart ?? null,
           quietHoursEnd: prev?.conversation?.quietHoursEnd ?? null,
