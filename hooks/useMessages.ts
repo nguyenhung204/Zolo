@@ -99,9 +99,16 @@ export function upsertMessage(
           })
         ) as Partial<Message>;
         const current = next[existingIdx];
+        const shouldKeepOptimisticSender =
+          !!current._pending &&
+          !!current.clientMessageId &&
+          (!safeFields.senderId || safeFields.senderId === "SYSTEM");
         next[existingIdx] = {
           ...current,
           ...safeFields,
+          senderId: shouldKeepOptimisticSender
+            ? current.senderId
+            : safeFields.senderId ?? current.senderId,
           attachments: safeFields.attachments ?? current.attachments,
           metadata: current.metadata || safeFields.metadata
             ? { ...current.metadata, ...safeFields.metadata }

@@ -298,7 +298,7 @@ function normalizeRawMessage(m: RawMessage): Message {
   return {
     ...m,
     messageId: m.messageId ?? m.id,
-    senderId: m.senderId ?? "SYSTEM",
+    senderId: normalizedType === "system" ? "SYSTEM" : m.senderId ?? "",
     type: normalizedType,
     content: typeof m.content === "string" ? m.content : "",
     offset: Number(m.offset ?? 0),

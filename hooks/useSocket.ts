@@ -341,7 +341,7 @@ export function useSocket() {
           type: attachment.type ?? attachment.kind,
         })) ?? null,
         offset: Number(msg.offset ?? 0),
-        senderId: msg.senderId ?? "SYSTEM",
+        senderId: msg.type === "system" ? "SYSTEM" : msg.senderId ?? "",
         content: typeof msg.content === "string" ? msg.content : "",
         updatedAt: msg.editedAt ?? msg.createdAt,
       } as Message;
