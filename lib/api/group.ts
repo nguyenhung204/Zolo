@@ -85,7 +85,7 @@ export interface GroupMemberRoleChangedEvent {
   conversationId: string;
   userId: string;
   userName?: string;
-  newRole: MemberRole;
+  newRole: MemberRole | Uppercase<MemberRole>;
   changedBy?: string;
   changedByName?: string;
   timestamp: string;
@@ -269,6 +269,7 @@ export interface GroupJoinRejectedEvent {
 
 export const ROLE_INDEX: Record<string, number> = {
   member: 0,
+  moderator: 0.5,
   admin: 1,
   owner: 2,
 };

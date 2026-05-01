@@ -56,7 +56,7 @@ function buildSystemText(
     case "ROLE_CHANGED": {
       const role = metadata?.newRole ?? "member";
       const roleFmt = role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
-      return `${actor} made ${targetList} ${roleFmt}`;
+      return `${actor} đã bổ nhiệm ${targetList} làm ${roleFmt}`;
     }
 
     case "GROUP_INFO_UPDATED": {
