@@ -316,6 +316,21 @@ function normalizeRawMessage(m: RawMessage): Message {
   };
 }
 
+function normalizeMemberCursors(value: unknown): Record<string, { seen: number; delivered: number }> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+
+  const entries = Object.entries(value as Record<string, { seen?: unknown; delivered?: unknown }>)
+    .map(([userId, cursor]) => [
+      userId,
+      {
+        seen: Number(cursor?.seen ?? 0),
+        delivered: Number(cursor?.delivered ?? 0),
+      },
+    ] as const);
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 // ─── GET messages ─────────────────────────────────────────────────────────────
 
 export async function getMessages(params: {
@@ -332,8 +347,9 @@ export async function getMessages(params: {
   const res = await apiClient.get(
     `/conversations/${conversationId}/messages?${query}`
   );
-  // API returns either the legacy flat payload or the newer nested payload:
-  // { data: Message[], metadata/meta } or { data: { data: Message[], meta, memberCursors } }.
+  // API returns either a flat payload or a nested payload:
+  // { data: Message[], metadata: { ..., memberCursors } } or
+  // { data: { data: Message[], meta, memberCursors } }.
   const response = res.data ?? {};
   const payload = response.data ?? {};
   const rawMessages: RawMessage[] = Array.isArray(payload)
@@ -342,8 +358,16 @@ export async function getMessages(params: {
       ? payload.data
     : [];
   // Support both "metadata" (actual API) and "meta" (legacy/future shape)
-  const meta: { hasMore?: boolean; oldestOffset?: number | string; newestOffset?: number | string } =
+  const meta: {
+    hasMore?: boolean;
+    oldestOffset?: number | string;
+    newestOffset?: number | string;
+    memberCursors?: unknown;
+  } =
     payload.metadata ?? payload.meta ?? response.metadata ?? response.meta ?? {};
+  const memberCursors = normalizeMemberCursors(
+    (!Array.isArray(payload) ? payload.memberCursors : undefined) ?? meta.memberCursors
+  );
   return {
     data: rawMessages.map(normalizeRawMessage),
     meta: {
@@ -351,9 +375,7 @@ export async function getMessages(params: {
       oldestOffset: Number(meta.oldestOffset ?? 0),
       newestOffset: Number(meta.newestOffset ?? 0),
     },
-    memberCursors: !Array.isArray(payload) && payload.memberCursors && typeof payload.memberCursors === "object"
-      ? payload.memberCursors as Record<string, { seen: number; delivered: number }>
-      : undefined,
+    memberCursors,
   };
 }
 
