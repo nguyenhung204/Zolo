@@ -33,18 +33,20 @@ import {
   useBlockUser,
   useUnblockUser,
 } from "@/hooks/useFriends";
-import { useConversations } from "@/hooks/useConversations";
+import { useConversations, useCreateConversation } from "@/hooks/useConversations";
 import { useUserById } from "@/hooks/useUser";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 import type { Friendship, FriendshipStatus, UserSearchResult } from "@/lib/api/friends";
 import { encodeId } from "@/lib/utils/obfuscateId";
+import { toast } from "sonner";
 
 type Tab = "friends" | "requests" | "search";
 
 type ActionKey =
   | "send"
+  | "message"
   | "accept"
   | "reject"
   | "unfriend"
@@ -184,6 +186,7 @@ function FriendRow({
   const { data: user, isLoading } = useUserById(friendship.friendId);
   const { mutateAsync: unfriend } = useUnfriend();
   const { mutateAsync: blockUser } = useBlockUser();
+  const { mutateAsync: createConversation } = useCreateConversation();
   const { data: conversations = [] } = useConversations();
   const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
   const status = usePresenceStore((s) => s.presenceMap[friendship.friendId] ?? "offline");
@@ -201,9 +204,24 @@ function FriendRow({
     [conversations, friendship.friendId]
   );
 
-  function handleMessage() {
+  async function handleMessage() {
+    if (pendingAction === "message") return;
     if (dmConversation) {
       router.push(`/conversations/${encodeId(dmConversation.id)}`);
+      return;
+    }
+
+    setPendingAction("message");
+    try {
+      const conversation = await createConversation({
+        kind: "direct",
+        memberIds: [friendship.friendId],
+      });
+      router.push(`/conversations/${encodeId(conversation.id)}`);
+    } catch {
+      toast.error("Could not start the conversation.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -244,16 +262,15 @@ function FriendRow({
         </p>
       </div>
       <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-        {dmConversation && (
-          <button
-            onClick={handleMessage}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta/10 text-cta text-xs font-semibold hover:bg-cta/20 transition-colors cursor-pointer"
-            title="Send message"
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            Message
-          </button>
-        )}
+        <button
+          onClick={handleMessage}
+          disabled={actionDisabled}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta/10 text-cta text-xs font-semibold hover:bg-cta/20 transition-colors cursor-pointer disabled:opacity-60"
+          title="Send message"
+        >
+          {pendingAction === "message" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
+          Message
+        </button>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button
