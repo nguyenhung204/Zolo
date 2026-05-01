@@ -209,6 +209,7 @@ export function useCallWebSocketListeners(): void {
       acceptedAt: string;
     }) => {
       stopAllAudio();
+      addGroupCallParticipant(data.conversationId, data.calleeId);
 
       // Only the caller needs to fetch a token here; the callee already got one
       // from POST /calls/:callId/accept
@@ -225,7 +226,7 @@ export function useCallWebSocketListeners(): void {
         clearCallState();
       }
     },
-    [stopAllAudio, setActiveCall, setOutgoingCall, setLiveKitCredentials, clearCallState]
+    [stopAllAudio, addGroupCallParticipant, setActiveCall, setOutgoingCall, setLiveKitCredentials, clearCallState]
   );
 
   // ─── call:declined ───────────────────────────────────────────────────────────

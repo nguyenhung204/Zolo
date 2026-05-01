@@ -17,7 +17,7 @@ interface GroupCallBannerProps {
 const MAX_VISIBLE_AVATARS = 5;
 
 /**
- * Centered system-message card shown when a group call is ringing or active.
+ * Centered system-message card shown when a group call is active.
  * Styled like a chat system event (e.g. Telegram/Messenger call card).
  * Hidden when the current user is already in the call.
  */
@@ -32,11 +32,11 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
   const [joining, setJoining] = useState(false);
 
   if (!groupCall) return null;
+  if (groupCall.status !== "ACTIVE") return null;
 
   // Don't show the banner if the user is already in this call
   if (activeCall?.id === groupCall.callId) return null;
 
-  const isRinging = groupCall.status === "RINGING";
   const participantIds = groupCall.participantIds;
   const visible = participantIds.slice(0, MAX_VISIBLE_AVATARS);
   const overflow = participantIds.length - MAX_VISIBLE_AVATARS;
@@ -76,7 +76,7 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
     }
   };
 
-  const statusLabel = isRinging ? "Cuộc gọi nhóm đang đổ chuông…" : "Cuộc gọi nhóm đang diễn ra";
+  const statusLabel = "Cuộc gọi nhóm đang diễn ra";
   const participantCount = participantIds.length;
 
   return (
@@ -94,11 +94,11 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
         <div className="flex flex-col items-center gap-1.5">
           <div
             className="w-10 h-10 rounded-full flex items-center justify-center"
-            style={{ background: isRinging ? "rgba(250,204,21,0.15)" : "rgba(34,197,94,0.15)" }}
+            style={{ background: "rgba(34,197,94,0.15)" }}
           >
             <PhoneCall
               className="w-5 h-5"
-              style={{ color: isRinging ? "#fbbf24" : "#22c55e" }}
+              style={{ color: "#22c55e" }}
             />
           </div>
           <div className="flex items-center gap-1.5">
@@ -107,16 +107,16 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
             >
               <span
                 className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
-                style={{ background: isRinging ? "#fbbf24" : "#22c55e" }}
+                style={{ background: "#22c55e" }}
               />
               <span
                 className="relative inline-flex rounded-full h-2 w-2"
-                style={{ background: isRinging ? "#fbbf24" : "#22c55e" }}
+                style={{ background: "#22c55e" }}
               />
             </span>
             <span
               className="text-xs font-semibold"
-              style={{ color: isRinging ? "#fde68a" : "#86efac" }}
+              style={{ color: "#86efac" }}
             >
               {statusLabel}
             </span>
@@ -191,5 +191,3 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
     </div>
   );
 }
-
-
