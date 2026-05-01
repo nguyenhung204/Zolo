@@ -24,6 +24,7 @@ const MAX_VISIBLE_AVATARS = 5;
 export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
   const groupCall = useCallStore((s) => s.groupCallsByConversation[conversationId]);
   const activeCall = useCallStore((s) => s.activeCall);
+  const outgoingCall = useCallStore((s) => s.outgoingCall);
   const { setActiveCall, setLiveKitCredentials, setGroupCall, setDeclinedGroupCall } =
     useCallStore();
   const profileMap = usePresenceStore((s) => s.profileMap);
@@ -33,8 +34,9 @@ export function GroupCallBanner({ conversationId }: GroupCallBannerProps) {
 
   if (!groupCall) return null;
 
-  // Don't show the banner if the user is already in this call
+  // Don't show the banner if the user is already in this call (active or outgoing)
   if (activeCall?.id === groupCall.callId) return null;
+  if (outgoingCall?.id === groupCall.callId) return null;
 
   const isRinging = groupCall.status === "RINGING";
   const participantIds = groupCall.participantIds;
