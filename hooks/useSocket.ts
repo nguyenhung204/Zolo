@@ -196,6 +196,38 @@ export function useSocket() {
         }
       );
     };
+    const updateDirectMemberCursorFromMessageStatus = (
+      messageId: string,
+      status: "delivered" | "read"
+    ) => {
+      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
+      for (const query of listKeys) {
+        const data = query.state.data as MessagesInfiniteData | undefined;
+        if (!data || !Array.isArray(data.pages)) continue;
+
+        for (const page of data.pages) {
+          const message = page.data.find((m) => m.messageId === messageId);
+          if (!message || message.senderId !== myId || Number(message.offset ?? 0) <= 0) continue;
+
+          qc.setQueryData(
+            queryKeys.conversations.members(message.conversationId),
+            (old: import("@/lib/api/conversations").ConversationMember[] | undefined) => {
+              if (!old) return old;
+              const otherMembers = old.filter((m) => m.userId !== myId);
+              if (otherMembers.length !== 1) return old;
+              const targetUserId = otherMembers[0].userId;
+              return old.map((m) => {
+                if (m.userId !== targetUserId) return m;
+                return status === "read"
+                  ? { ...m, lastSeenOffset: Math.max(Number(m.lastSeenOffset ?? 0), Number(message.offset)) }
+                  : { ...m, lastDeliveredOffset: Math.max(Number(m.lastDeliveredOffset ?? 0), Number(message.offset)) };
+              });
+            }
+          );
+          return;
+        }
+      }
+    };
     const handleMediaMutation = ({ messageId, attachment, mediaStatus: legacyStatus, metadata }: {
       messageId: string;
       attachment?: {
@@ -894,6 +926,9 @@ export function useSocket() {
           : (delivered?.count ?? deliveredToCount ?? 0) > 0
             ? "delivered"
             : "sent");
+      if (resolvedStatus === "read" || resolvedStatus === "delivered") {
+        updateDirectMemberCursorFromMessageStatus(messageId, resolvedStatus);
+      }
       patchCachedMessages((m) =>
         m.messageId === messageId ? { ...m, deliveryStatus: resolvedStatus } : m
       );

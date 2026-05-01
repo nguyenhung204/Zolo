@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { X, Reply, Pencil, Clock3, ShieldAlert, User, MessageSquareText, Image, Video, Mic, Sticker, ClipboardList, Hash, Eye, CheckCheck } from "lucide-react";
+import { X, Reply, Pencil, Clock3, User, MessageSquareText, Image, Video, Mic, Sticker, ClipboardList, Hash, Eye, CheckCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/api/messages";
 import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
@@ -81,6 +81,21 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
 
   const isEdited = !!message.editedAt;
   const deliveryStatus = resolveMessageDeliveryStatus(message, otherMembers);
+  const seenMembers = message.offset > 0
+    ? otherMembers.filter((m) => m.lastSeenOffset >= message.offset)
+    : [];
+  const deliveredMembers = message.offset > 0
+    ? otherMembers.filter((m) => m.lastDeliveredOffset >= message.offset && m.lastSeenOffset < message.offset)
+    : [];
+  const statusLabel = message.isRevoked
+    ? "Revoked"
+    : message.deletedAt
+      ? "Deleted"
+      : seenMembers.length > 0
+        ? `Seen (${seenMembers.length})`
+        : deliveredMembers.length > 0
+          ? `Delivered (${deliveredMembers.length})`
+          : messageDeliveryLabel(deliveryStatus);
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -109,11 +124,13 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
 
           <Field icon={<User className="w-4 h-4" />} label="Sender" value={senderName} />
           <Field icon={<Clock3 className="w-4 h-4" />} label="Sent at" value={formatDate(message.createdAt)} />
-          <Field
-            icon={<ShieldAlert className="w-4 h-4" />}
-            label="Status"
-            value={message.isRevoked ? "Revoked" : message.deletedAt ? "Deleted" : messageDeliveryLabel(deliveryStatus)}
-          />
+          {seenMembers.length === 0 && deliveredMembers.length === 0 && (
+            <Field
+              icon={<CheckCheck className="w-4 h-4" />}
+              label="Status"
+              value={statusLabel}
+            />
+          )}
           {isEdited && (
             <Field icon={<Pencil className="w-4 h-4" />} label="Edited at" value={formatDate(message.editedAt)} />
           )}
@@ -132,9 +149,7 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
           )}
 
           {/* Seen / Delivered sections — only shown when offset is valid */}
-          {message.offset > 0 && otherMembers.length > 0 && (() => {
-            const seenMembers = otherMembers.filter((m) => m.lastSeenOffset >= message.offset);
-            const deliveredMembers = otherMembers.filter((m) => m.lastDeliveredOffset >= message.offset && m.lastSeenOffset < message.offset);
+          {otherMembers.length > 0 && (() => {
             return (
               <>
                 {seenMembers.length > 0 && (
