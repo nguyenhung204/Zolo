@@ -59,6 +59,7 @@ export interface CreateConversationPayload {
   memberIds: string[];
   name?: string;
   description?: string;
+  avatarMediaId?: string;
 }
 
 export interface UpdateConversationInfoPayload {
