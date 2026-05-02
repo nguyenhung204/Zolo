@@ -150,6 +150,13 @@ export interface Message {
     contactUsername?: string;
     contactEmail?: string;
     contactAvatarId?: string;
+    // system_call fields (present when type === "system" && systemType === "system_call")
+    systemType?: "system_call";
+    callerId?: string;
+    callerName?: string;
+    isMissed?: boolean;
+    reason?: string;
+    action?: SystemMessageAction | "CALL_MISSED" | "CALL_MISSED_BUSY" | "CALL_REJECTED" | "CALL_ENDED";
   };
   createdAt: string;
   updatedAt: string;

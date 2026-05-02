@@ -24,8 +24,12 @@ const typeIconMap: Record<string, React.ElementType | null> = {
 function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
   if (!msg) return null;
   if (msg.type === "system") {
-    // Don't show empty system message content; use a generic label
-    return { icon: null, label: "Group activity" };
+    // system_call: content is already human-readable; show with phone icon
+    if (msg.metadata?.systemType === "system_call") {
+      return { icon: Phone, label: msg.content };
+    }
+    // Other system messages: show content if available, else generic label
+    return { icon: null, label: msg.content || "Group activity" };
   }
   const prefix = isMe ? "Bạn: " : "";
   switch (msg.type) {

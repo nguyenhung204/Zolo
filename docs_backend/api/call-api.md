@@ -121,10 +121,26 @@ Initiate a new call. The caller's device starts ringing on the callee's side.
 | Status | Code | Reason |
 |---|---|---|
 | 403 | `FORBIDDEN_NOT_MEMBER` | Caller not a member of the conversation |
-| 409 | `CALL_CALLEE_BUSY` | A callee is already in an active or ringing call |
+| 409 | `CALL_CALLEE_BUSY` | A callee is already in an active or ringing call. Backend records a `MISSED` call with `endReason: callee_busy` and injects a system message: `Cuộc gọi nhỡ (Đường dây bận)` |
 | 409 | `CALL_CALLER_BUSY` | Caller is already in an active or ringing call |
 
-**Side effects**: `call.event.ringing` published to Kafka → Realtime Gateway broadcasts `call:ringing` to each callee's personal WS room → Notification Service sends a push notification.
+**Side effects**: Call Service fetches the caller profile, writes enriched `call.event.ringing` to Kafka, publishes the same enriched event to Redis fast-track for Socket.IO, and Notification Service sends data-only VoIP/FCM pushes to every callee.
+
+`call.event.ringing` / `call:ringing` payload:
+
+```typescript
+{
+  callId: string;
+  conversationId: string;
+  caller: {
+    id: string;
+    name: string;
+    avatar: string;
+  };
+  calleeIds: string[];
+  startedAt: string; // ISO-8601
+}
+```
 
 ---
 
@@ -308,6 +324,7 @@ Fetch the post-call aggregate summary. Available once a call reaches a terminal 
 | `ghost_call_cleanup` | System ended an ACTIVE call with no live participants |
 | `stale_call_cleanup` | System ended an ACTIVE call that exceeded the maximum active duration |
 | `membership_revoked` | A participant was removed from the conversation |
+| `callee_busy` | Start request failed because a callee was already in another live call |
 
 ---
 
@@ -393,10 +410,25 @@ interface CallTokenDto {
 4. When done: POST /calls/:callId/end
 ```
 
+If `POST /calls/start` returns `409 CALL_CALLEE_BUSY`, do not create a local outgoing-call UI. The backend has already persisted a `MISSED` call record and emitted the conversation system message:
+
+```typescript
+{
+  type: 'system',
+  content: 'Cuộc gọi nhỡ (Đường dây bận)',
+  metadata: {
+    systemType: 'system_call',
+    callId: '<missed-call-id>',
+    isMissed: true,
+    reason: 'callee_busy',
+  },
+}
+```
+
 ### Callee flow
 
 ```
-1. Receive WS call:ringing { callId, callerId, conversationId, ... }
+1. Receive WS call:ringing { callId, conversationId, caller: { id, name, avatar }, calleeIds, startedAt }
         → show incoming call UI with ringtone
 
 2a. User accepts:
@@ -408,6 +440,100 @@ interface CallTokenDto {
         → dismiss UI
 
 3. When done: POST /calls/:callId/end
+```
+
+### Mobile Push Integration
+
+Incoming calls and ringing cancellations are data-only pushes. There is no FCM/APNs `notification` alert object for these call pushes; the app owns all native UI via CallKit / Android ConnectionService.
+
+FCM data payloads use string values:
+
+```typescript
+type IncomingCallPushData = {
+  type: 'CALL_INCOMING';
+  callId: string;
+  conversationId: string;
+  caller: string;    // JSON.stringify({ id, name, avatar })
+  calleeIds: string; // JSON.stringify(string[])
+  startedAt: string;
+};
+
+type CallCancelledPushData = {
+  type: 'CALL_CANCELLED';
+  callId: string;
+  reason: 'caller_cancelled' | 'ringing_timeout' | 'declined' | string;
+};
+```
+
+Frontend parsing code:
+
+```typescript
+type IncomingCallPayload = {
+  callId: string;
+  conversationId: string;
+  caller: { id: string; name: string; avatar: string };
+  calleeIds: string[];
+  startedAt: string;
+};
+
+export function parseCallPush(data: Record<string, string>) {
+  if (data.type === 'CALL_INCOMING') {
+    const payload: IncomingCallPayload = {
+      callId: data.callId,
+      conversationId: data.conversationId,
+      caller: JSON.parse(data.caller),
+      calleeIds: JSON.parse(data.calleeIds),
+      startedAt: data.startedAt,
+    };
+    return { type: 'CALL_INCOMING' as const, payload };
+  }
+
+  if (data.type === 'CALL_CANCELLED') {
+    return {
+      type: 'CALL_CANCELLED' as const,
+      payload: { callId: data.callId, reason: data.reason },
+    };
+  }
+
+  return null;
+}
+```
+
+React Native Firebase background handler:
+
+```typescript
+import messaging from '@react-native-firebase/messaging';
+import { parseCallPush } from './parseCallPush';
+import { NativeCallUi } from './NativeCallUi';
+
+messaging().setBackgroundMessageHandler(async (message) => {
+  const call = parseCallPush(message.data ?? {});
+  if (!call) return;
+
+  if (call.type === 'CALL_INCOMING') {
+    await NativeCallUi.showIncomingCall({
+      callId: call.payload.callId,
+      callerName: call.payload.caller.name,
+      callerAvatar: call.payload.caller.avatar,
+    });
+    return;
+  }
+
+  await NativeCallUi.endIncomingCall(call.payload.callId, call.payload.reason);
+});
+```
+
+Socket.IO handler should use the same UI path as push:
+
+```typescript
+callSocket.on('call:ringing', (payload: IncomingCallPayload) => {
+  NativeCallUi.showIncomingCall({
+    callId: payload.callId,
+    callerName: payload.caller.name,
+    callerAvatar: payload.caller.avatar,
+  });
+  callSocket.emit('call:join_room', { callId: payload.callId });
+});
 ```
 
 ### Reconnection flow

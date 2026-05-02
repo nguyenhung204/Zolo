@@ -71,8 +71,15 @@ export function CallSummaryBubble({
       });
       useCallStore.getState().setOutgoingCall(callDto);
       getCallSocket().emit("call:join_room", { callId: callDto.id });
-    } catch {
-      toast.error("Could not start the call.");
+    } catch (err: unknown) {
+      const code =
+        typeof err === "object" && err !== null && "response" in err
+          ? (err as { response?: { data?: { code?: string } } }).response?.data?.code
+          : undefined;
+      if (code !== "CALL_CALLEE_BUSY") {
+        // CALL_CALLEE_BUSY: backend sends system message — no local toast needed
+        toast.error("Could not start the call.");
+      }
     } finally {
       setIsCalling(false);
     }

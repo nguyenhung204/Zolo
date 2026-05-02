@@ -220,36 +220,55 @@ curl -H "Authorization: Bearer $TOKEN" \
 {
   "statusCode": 200,
   "message": "Data retrieved successfully",
-  "data": {
-    "data": [
-      {
-        "id": "5a6a514a-8fd9-45da-a802-2a78bab50c4b",
-        "conversationId": "95782059-71f1-4489-97ec-d3a7b1e25553",
-        "senderId": "e8394128-9259-4374-bbd6-28f0e37dac1c",
-        "content": "Xin chào!",
-        "type": "text",
-        "offset": 1,
-        "isDeleted": false,
-        "isRevoked": false,
-        "isEdited": false,
-        "metadata": null,
-        "mediaId": null,
-        "attachments": null,
-        "replyToId": null,
-        "createdAt": "2026-04-16T10:00:00.000Z",
-        "updatedAt": "2026-04-16T10:00:00.000Z"
+  "data": [
+    {
+      "id": "5a6a514a-8fd9-45da-a802-2a78bab50c4b",
+      "conversationId": "95782059-71f1-4489-97ec-d3a7b1e25553",
+      "senderId": "e8394128-9259-4374-bbd6-28f0e37dac1c",
+      "content": "Xin chào!",
+      "type": "text",
+      "offset": 1,
+      "isDeleted": false,
+      "isRevoked": false,
+      "isEdited": false,
+      "metadata": null,
+      "mediaId": null,
+      "attachments": null,
+      "replyToId": null,
+      "createdAt": "2026-04-16T10:00:00.000Z",
+      "updatedAt": "2026-04-16T10:00:00.000Z"
+    }
+  ],
+  "metadata": {
+    "hasMore": false,
+    "oldestOffset": 1,
+    "newestOffset": 10,
+    "memberCursors": {
+      "other-user-uuid": {
+        "seen": 10,
+        "delivered": 10
       }
-    ],
-    "meta": {
-      "hasMore": false,
-      "oldestOffset": 1,
-      "newestOffset": 10
     }
   }
 }
 ```
 
-> `hasMore: true` → còn tin cũ hơn, dùng `meta.oldestOffset` làm `before` cho request tiếp theo.
+> `hasMore: true` → còn tin cũ hơn, dùng `metadata.oldestOffset` làm `before` cho request tiếp theo.
+
+#### `metadata.memberCursors` — Trạng thái đọc của các thành viên
+
+`metadata.memberCursors` là map `{ [userId]: { seen: number, delivered: number } }` chứa cursor đọc/nhận của **tất cả thành viên khác** (không bao gồm user hiện tại).
+
+**FE tính toán trạng thái tin nhắn khi reload:**
+
+| Điều kiện | Trạng thái hiển thị |
+|---|---|
+| Bất kỳ recipient nào có `seen >= message.offset` | ✅ Đã xem |
+| Bất kỳ recipient nào có `delivered >= message.offset` (chưa có seen) | 📬 Đã nhận |
+| Không có điều kiện nào khớp | ✉️ Đã gửi |
+
+> Chỉ áp dụng cho tin nhắn do user hiện tại gửi (`senderId === currentUser`).
+> WebSocket event `message:status` vẫn cập nhật real-time — `metadata.memberCursors` chỉ dùng khi load/reload.
 
 ---
 

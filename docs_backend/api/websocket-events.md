@@ -1073,7 +1073,7 @@ callSocket.emit('call:leave_room', { callId: 'call-uuid' });
 
 **Target**: each callee's **personal room** `user:{calleeId}` (one push per callee).
 
-Delivered by the Realtime Gateway when it consumes the `call.event.ringing` Kafka event produced by Call Service. Because it is delivered to personal rooms (not a shared room), each callee receives it independently regardless of whether they have joined any call room.
+Delivered by the Realtime Gateway from the call-service fast-track signaling event. The durable Kafka `call.event.ringing` event carries the same payload. Because it is delivered to personal rooms (not a shared room), each callee receives it independently regardless of whether they have joined any call room.
 
 ```typescript
 callSocket.on(
@@ -1081,7 +1081,11 @@ callSocket.on(
   (payload: {
     callId: string;
     conversationId: string;
-    callerId: string;
+    caller: {
+      id: string;
+      name: string;
+      avatar: string;
+    };
     calleeIds: string[];
     startedAt: string; // ISO-8601
   }) => {

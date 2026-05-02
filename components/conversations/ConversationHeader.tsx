@@ -114,7 +114,7 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
           ? (err as { response?: { data?: { code?: string } } }).response?.data?.code
           : undefined;
       if (code === "CALL_CALLEE_BUSY") {
-        toast.error("The other person is already in a call.");
+        // Backend already persisted a missed-call system message — do nothing locally.
       } else if (code === "CALL_CALLER_BUSY") {
         toast.error("You are already in a call.");
       } else {

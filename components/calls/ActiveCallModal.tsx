@@ -231,7 +231,7 @@ function CameraButton() {
 }
 
 function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }) {
-  const { clearCallState, setDeclinedGroupCall } = useCallStore();
+  const { clearCallState, setDeclinedGroupCall, setGroupCall } = useCallStore();
   const groupCallsByConversation = useCallStore((s) => s.groupCallsByConversation);
   const room = useRoomContext();
   const isBusyRef = useRef(false);
@@ -259,12 +259,15 @@ function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }
       // 1:1 call OR group call down to 2 people: end for everyone.
       void room.disconnect();
       getCallSocket().emit("call:leave_room", { callId });
+      // Clear the group call banner synchronously before clearCallState() so
+      // GroupCallBanner never flashes (activeCall→null would otherwise unhide it).
+      if (conversationId) setGroupCall(conversationId, null);
       clearCallState();
       endInstantCall(callId).catch((err) => {
         if (!is409(err)) toast.error("Failed to end the call.");
       });
     }
-  }, [callId, isGroup, shouldEndGroupCall, conversationId, clearCallState, setDeclinedGroupCall, room]);
+  }, [callId, isGroup, shouldEndGroupCall, conversationId, clearCallState, setDeclinedGroupCall, setGroupCall, room]);
 
   const label = isGroup && !shouldEndGroupCall ? "Leave" : "End";
 

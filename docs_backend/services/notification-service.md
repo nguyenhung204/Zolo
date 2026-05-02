@@ -60,19 +60,25 @@ Implemented in `apps/notification-service/src/services/notification-dispatch.ser
 
 Dispatch order for each job:
 
-1. Presence check via Redis key `REDIS_KEYS.PRESENCE.USER_STATUS(userId)`.
+1. **Presence check** via Redis key `REDIS_KEYS.PRESENCE.USER_STATUS(userId)`.
+   - **Exception:** `notificationType === 'call'` bypasses this check entirely.
+     A VoIP push must reach the device OS even when the app is active so that
+     CallKit (iOS) / ConnectionService (Android) can display the native call
+     screen. A WebSocket `call.event.ringing` message alone cannot wake a
+     locked screen or trigger the system call UI.
 2. Preference check via `NotificationPreferenceService.isAllowed(...)`.
-3. Dedup check when `messageId` exists:
-   - key: `push:dedup:{userId}:{messageId}`
-   - TTL: 30 seconds
+3. Dedup check when `messageId` or `dedupId` exists:
+   - key: `push:dedup:{userId}:{messageId|dedupId}`
+   - TTL: 300 seconds
 4. Load active tokens via `DeviceTokenRepository.findActiveByUserId(...)`.
 5. Group by platform and send through `PushProviderFactory`.
-6. If at least one send succeeds and `messageId` exists, set dedup key (`EX 30`).
+6. If at least one send succeeds and a dedup key was acquired, keep the lock
+   so retries don't double-push to already-reached tokens.
 
 Notes:
 
-- High priority events bypass mute and quiet-hours checks in `NotificationPreferenceService`.
-- If user is online, dispatch is skipped.
+- Call notifications bypass presence check AND all preference gates.
+- If user is online (non-call), dispatch is skipped.
 
 ## Kafka Consumers And Produced Push Payloads
 
@@ -170,7 +176,17 @@ Source: `apps/notification-service/src/consumers/auth-event.consumer.ts`
 ### FCM (`FcmProvider`)
 
 - Uses `firebase-admin`
-- Maps high priority to Android high priority
+- Maps high priority to Android `priority: 'high'` (always, so messages are not
+  subject to Doze mode throttling).
+- **Call notifications** (`data.type === 'incoming_call'`) receive additional
+  Android configuration:
+  - `notification.channelId = 'incoming_calls'` (client must pre-register with
+    `IMPORTANCE_MAX` and `fullScreenIntent` permission)
+  - `notification.priority = 'max'`, `visibility = 'public'`
+  - Sound/vibration managed by the client-side call stack (ConnectionService)
+- **APNs call header** (`apns-push-type: voip`, `apns-priority: 10`,
+  `content-available: 1`) is set on call messages so PushKit wakes the
+  iOS app even from the suspended state.
 - Deactivates token on:
   - `messaging/registration-token-not-registered`
   - `messaging/invalid-registration-token`
@@ -201,29 +217,62 @@ Repositories under `apps/notification-service/src/infrastructure/repositories`:
   - fetch global preference (`conversationId IS NULL`)
   - upsert by `(userId, conversationId)`
 
+### DeviceToken — FCM one-token-per-user policy
+
+When `upsert()` is called with `platform = 'FCM'`, ALL active FCM tokens for
+that `userId` are deactivated **before** the new token is saved. This guarantees
+that `findActiveByUserId()` returns at most one FCM row per user, preventing
+duplicate push notifications when:
+
+- a user reinstalls the app (new FCM registration token);
+- a user logs in on a different Android device.
+
+APNS and WEB tokens are **not** affected — each platform/deviceId combination
+can independently be active (multi-device support for iOS / Web Push).
+
 ## Preference Resolution Rules
 
-From `NotificationPreferenceService`:
+From `NotificationPreferenceService.isAllowed()`:
 
-| `notificationType` | `priority` | `muteUntil` | quiet hours | `notifyOnX` toggle |
-|--------------------|------------|-------------|-------------|---------------------|
-| `call`             | `high`     | bypass      | bypass      | bypass (always urgent) |
-| `mention`          | `high`     | bypass      | bypass      | respected (`notifyOnMention`) |
-| `message`          | `normal`   | respected   | respected   | respected (`notifyOnMessage`) |
+### Decision Matrix
 
-Resolution order:
+| `notificationType` | `priority` | Global `notifyFor` | Global `muteUntil` | Conv mute / `notifyOnMessage=false` | `notifyOnMention` | Result |
+|--------------------|------------|--------------------|--------------------|--------------------------------------|-------------------|--------|
+| `call`             | `high`     | any                | any                | any                                  | any               | **ALLOW** (always urgent) |
+| `mention`          | `high`     | `NOTHING`          | any                | any                                  | any               | **BLOCK** |
+| `mention`          | `high`     | other              | active             | any                                  | `true`            | **ALLOW** (mention bypasses mute) |
+| `mention`          | `high`     | other              | any                | any                                  | `false`           | **BLOCK** (explicit toggle) |
+| `message`          | `normal`   | `NOTHING`          | any                | any                                  | any               | **BLOCK** |
+| `message`          | `normal`   | `MENTIONS_ONLY`    | any                | any                                  | any               | **BLOCK** |
+| `message`          | `normal`   | other              | active             | any                                  | any               | **BLOCK** |
+| `message`          | `normal`   | other              | inactive/null      | muted                                | any               | **BLOCK** |
+| `message`          | `normal`   | other              | inactive/null      | not muted                            | any               | **ALLOW** |
 
-1. If `notificationType === 'call'` and `priority === 'high'` → always allowed.
-2. Else, if a per-conversation preference row exists, evaluate it (and stop —
-   the conversation row overrides the global row even if it allows the push).
-3. Else, evaluate the global preference (`conversationId IS NULL`).
-4. If neither row exists → allowed.
+### Gate order (first matching gate wins):
 
-Checks include `notifyOnMessage`, `muteUntil`, and the quiet-hours window
-(`quietHoursStart`, `quietHoursEnd`, `timezone`). Quiet hours support
-overnight windows (e.g. 22:00 → 07:00).
+1. **Call short-circuit** — `notificationType === 'call' && priority === 'high'` → always ALLOW.
+2. **Global user settings** (from `users.settings.notifications`, cached at
+   `REDIS_KEYS.NOTIFICATION.USER_GLOBAL(userId)`, TTL 24 h):
+   - `notifyFor === 'NOTHING'` → BLOCK (all non-call events)
+   - `notifyFor === 'MENTIONS_ONLY'` → BLOCK for `message` type
+   - Global `muteUntil` active → BLOCK for `message` type (mentions bypass)
+   - Fail-open on cache miss (cold Redis never silences a user)
+3. **Per-conversation preference** (`notification_preferences` row where
+   `conversationId` matches) — if row exists, apply and stop.
+4. **Global notification_preferences row** (`conversationId IS NULL`).
+5. Default → **ALLOW**.
 
-The product policy is "tuân theo setting; chỉ bypass nếu độ ưu tiên cao":
-only HIGH-priority pushes may bypass mute / quiet hours. Even high-priority
-mentions still respect the explicit `notifyOnMention` toggle, so a user who
-turned mention notifications off will not be paged.
+### Mute duration tokens (`PUT /notifications/conversations/:id/mute`)
+
+| Token    | `muteUntil`       | `notifyOnMessage` | Effect |
+|----------|-------------------|-------------------|--------|
+| `1h`     | now + 1h          | `true`            | Message pushes blocked until `muteUntil`; @mentions unaffected. |
+| `4h`     | now + 4h          | `true`            | Same, 4-hour window. |
+| `8h`     | now + 8h          | `true`            | Same, 8-hour window. |
+| `24h`    | now + 24h         | `true`            | Same, 24-hour window. |
+| `forever`| `null`            | `false`           | Message pushes off indefinitely; @mentions unaffected. |
+| `off`    | `null`            | `true`            | Clears mute; message pushes restored. |
+
+**Design rule:** `notifyOnMention` is **never** included in the mute patch.
+It is an orthogonal, explicit user toggle that muting must never modify.
+@mention and call notifications are always governed independently of mute state.

@@ -24,7 +24,11 @@ import { MediaFile, AttachmentGrid } from "./media/MediaFile";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { CallSummaryBubble } from "./CallSummaryBubble";
 import { SystemMessageChip } from "./SystemMessageChip";
+import { CallSystemMessage } from "./CallSystemMessage";
+import { GroupInviteCard } from "./GroupInviteCard";
 import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
+
+const INVITE_LINK_RE = /^Join "(.+)" on Zolo:\n(https?:\/\/\S+)$/;
 import { useQuery } from "@tanstack/react-query";
 import { getUserById } from "@/lib/api/users";
 import { queryKeys } from "@/lib/query/keys";
@@ -137,7 +141,25 @@ export function MessageRow({
   }, [menuOpen]);
 
   if (isSystem) {
+    if (message.metadata?.systemType === "system_call") {
+      return <CallSystemMessage message={message} />;
+    }
     return <SystemMessageChip message={message} />;
+  }
+
+  const inviteMatch = message.type === "text" && INVITE_LINK_RE.exec(message.content.trim());
+  if (inviteMatch) {
+    const [, groupName, joinUrl] = inviteMatch;
+    return (
+      <div className={cn("flex px-3 mb-1", isMine ? "justify-end" : "justify-start")}>
+        <GroupInviteCard
+          groupName={groupName}
+          joinUrl={joinUrl}
+          createdAt={message.createdAt}
+          isMine={isMine}
+        />
+      </div>
+    );
   }
 
   if (isCallSummary) {

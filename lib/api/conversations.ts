@@ -35,6 +35,10 @@ export interface Conversation {
     senderId: string;
     type: string;
     createdAt: string;
+    metadata?: {
+      systemType?: "system_call";
+      [key: string]: unknown;
+    };
   };
   // Group management settings (only present for group conversations)
   isPublic?: boolean;

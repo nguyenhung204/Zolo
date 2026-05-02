@@ -543,10 +543,32 @@ text/media messages.
 
 **FE rendering tip:**
 
-The `MESSAGE_SAVED` event for a contact-card message carries the same metadata
-shape on the realtime side. After receiving it, the FE should call the Users
-service (or use a cached `getUsersByIds` result) to resolve the contact's
-display name + avatar; do not embed PII in the message itself beyond the UUID.
+The `MESSAGE_SAVED` event and `GET /conversations/:id/messages` response for a
+contact-card message carry enriched metadata — no need to call the Users service
+again for the shared contact's info:
+
+```json
+{
+  "metadata": {
+    "contactUserId": "friend-uuid",
+    "cardType": "friend_contact",
+    "contactUsername": "friend_user",
+    "contactEmail": "friend@example.com",
+    "contactAvatarId": "media-uuid-for-avatar"
+  }
+}
+```
+
+| Metadata field | Description |
+|---|---|
+| `contactUserId` | UUID of the shared contact |
+| `cardType` | Always `"friend_contact"` |
+| `contactUsername` | Display name of the contact at send time |
+| `contactEmail` | Email of the contact at send time |
+| `contactAvatarId` | `mediaId` of the contact's avatar (pass to `/media/:id` to get URL) |
+
+> `contactEmail`, `contactAvatarId`, and `contactUsername` are snapshots taken at send time.
+> If the contact later changes their profile, the card still shows the original data.
 
 ---
 

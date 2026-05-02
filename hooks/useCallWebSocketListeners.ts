@@ -6,7 +6,6 @@ import { useAuthStore } from "@/stores/authStore";
 import { useCallStore } from "@/stores/callStore";
 import { getCallSocket } from "@/lib/socket/socket";
 import { getInstantCallToken, getInstantCallById } from "@/lib/api/calls";
-import { getUserById } from "@/lib/api/users";
 import { usePresenceStore } from "@/stores/presenceStore";
 
 // ─── Audio helpers ────────────────────────────────────────────────────────────
@@ -125,12 +124,12 @@ export function useCallWebSocketListeners(): void {
     (data: {
       callId: string;
       conversationId: string;
-      callerId: string;
+      caller: { id: string; name: string; avatar: string };
       calleeIds: string[];
       startedAt: string;
     }) => {
       // Ignore calls we initiated ourselves
-      if (data.callerId === myId) return;
+      if (data.caller.id === myId) return;
 
       const socket = getCallSocket();
       socket.emit("call:join_room", { callId: data.callId });
@@ -138,7 +137,7 @@ export function useCallWebSocketListeners(): void {
       setIncomingCall({
         id: data.callId,
         conversationId: data.conversationId,
-        callerId: data.callerId,
+        callerId: data.caller.id,
         calleeIds: data.calleeIds ?? [],
         status: "RINGING",
         createdAt: data.startedAt,
@@ -153,26 +152,18 @@ export function useCallWebSocketListeners(): void {
       setGroupCall(data.conversationId, {
         callId: data.callId,
         conversationId: data.conversationId,
-        callerId: data.callerId,
+        callerId: data.caller.id,
         status: "RINGING",
-        participantIds: [data.callerId],
+        participantIds: [data.caller.id],
         startedAt: data.startedAt,
       });
 
-      // Fetch caller profile so overlay shows name/avatar immediately
-      getUserById(data.callerId)
-        .then((profile) => {
-          const displayName =
-            [profile.firstName, profile.lastName].filter(Boolean).join(" ") ||
-            profile.username ||
-            null;
-          usePresenceStore.getState().setUserProfile(data.callerId, {
-            displayName,
-            avatarMediaId: profile.avatarMediaId ?? null,
-            avatarUrl: profile.avatarUrl ?? null,
-          });
-        })
-        .catch(() => {}); // non-fatal — overlay falls back to initials
+      // Seed caller profile from the enriched payload — no extra fetch needed.
+      usePresenceStore.getState().setUserProfile(data.caller.id, {
+        displayName: data.caller.name,
+        avatarMediaId: null,
+        avatarUrl: data.caller.avatar,
+      });
     },
     [myId, setIncomingCall, setGroupCall]
   );
@@ -252,7 +243,8 @@ export function useCallWebSocketListeners(): void {
       if (convId) useCallStore.getState().setGroupCall(convId, null);
       useCallStore.getState().setDeclinedGroupCall(null);
       clearCallState();
-      toast.info("Call declined");
+      // Do not show a local toast — the backend emits a system message via
+      // message:new which is the authoritative record shown in the conversation.
     },
     [stopAllAudio, clearCallState]
   );
@@ -282,7 +274,8 @@ export function useCallWebSocketListeners(): void {
       socket.emit("call:leave_room", { callId: data.callId });
 
       clearCallState();
-      toast.info("Call ended");
+      // Do not show a local toast — the backend emits a system message via
+      // message:new which is the authoritative record shown in the conversation.
     },
     [stopAllAudio, clearCallState]
   );

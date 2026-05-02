@@ -907,6 +907,7 @@ curl -X POST http://localhost:3000/conversations \
 | `memberIds` | `string[]` | ✓ | User IDs to add (the creator is added automatically as `OWNER`) |
 | `name` | `string` | | Required for `group` / `announcement` |
 | `description` | `string` | | |
+| `avatarMediaId` | `string` | | UUID of an uploaded media record; ignored for `direct` conversations |
 
 ---
 

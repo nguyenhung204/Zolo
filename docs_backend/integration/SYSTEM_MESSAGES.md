@@ -159,7 +159,8 @@ recipient is an admin/owner.
   "actorName": "Admin Name",
   "targetIds": ["uuid"],
   "targetNames": ["Promoted User"],
-  "newRole": "ADMIN"                   // "ADMIN" | "MEMBER"
+  "newRole": "ADMIN"                   // "ADMIN" | "MEMBER" | "MODERATOR"
+}
 ```
 **Render:** *"[actorName] made [targetNames[0]] an [newRole]"*
 

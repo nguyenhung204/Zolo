@@ -447,6 +447,11 @@ export function useSocket() {
                         senderId: c.lastMessage?.senderId ?? "",
                         type,
                         createdAt: new Date().toISOString(),
+                        // Preserve metadata from a prior message:new update for
+                        // the same message type (e.g. system_call preview icon)
+                        ...(c.lastMessage?.type === type && c.lastMessage?.metadata
+                          ? { metadata: c.lastMessage.metadata }
+                          : {}),
                       }
                     : c.lastMessage,
                   maxOffset: Math.max(Number(c.maxOffset ?? 0), latestOffset),

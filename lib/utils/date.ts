@@ -2,9 +2,11 @@
  * Lightweight date formatter — avoids the full date-fns bundle.
  * Returns strings like "2m", "1h", "3d", "Jan 5"
  */
-export function formatDistanceToNowStrict(isoString: string): string {
+export function formatDistanceToNowStrict(isoString: string | null | undefined): string {
+  if (!isoString) return "";
   const now = Date.now();
   const then = new Date(isoString).getTime();
+  if (Number.isNaN(then)) return "";
   const diff = Math.max(0, now - then);
 
   const seconds = Math.floor(diff / 1000);
@@ -26,8 +28,11 @@ export function formatDistanceToNowStrict(isoString: string): string {
 }
 
 /** Returns HH:mm — e.g. "09:41" */
-export function formatTime(isoString: string): string {
-  return new Date(isoString).toLocaleTimeString("en-US", {
+export function formatTime(isoString: string | null | undefined): string {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -38,6 +43,7 @@ export function formatTime(isoString: string): string {
 export function formatDateDivider(isoString: string): string {
   const now = new Date();
   const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "";
   const diffDays = Math.floor(
     (new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() -
       new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) /

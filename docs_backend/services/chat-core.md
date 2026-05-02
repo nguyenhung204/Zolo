@@ -128,16 +128,24 @@ setInterval(500ms) → processKafkaOutbox()
 
 ## Redis Keys Used
 
-| Key | Operation | Purpose |
+| Redis Key | Operation | Purpose |
 |-----|-----------|---------|
 | `chat:conv:meta:{id}` | GET/SET | Conversation metadata L0 cache |
-| `chat:conversation:{id}:members` | SISMEMBER | Membership check |
+| `chat:conversation:{id}:members` | SMEMBERS | Member ID list (L2 cache) |
+| `chat:conversation:{id}:members:{uid}:role` | MGET | Per-member role (L2 cache) |
 | `{chat:rel:{lo}:{hi}}:block:{A}:{B}` | MGET | Block status A→B |
 | `{chat:rel:{lo}:{hi}}:block:{B}:{A}` | MGET | Block status B→A |
 | `{chat:rel:{lo}:{hi}}:friends` | MGET | Friend status (LWW) |
 | `{chat:rel:{lo}:{hi}}:proof` | MGET | Race-condition bridge |
 | `chat:kafka:outbox` | RPUSH/LPOP | Kafka retry outbox |
 | Rate limit keys | INCR/EXPIRE | Per-sender rate limiting |
+
+> **RBAC correctness note:** `InteractionValidatorService.fetchMembers` uses the
+> SMEMBERS + per-member role key fast path **only when all role keys are present
+> in Redis**. If any role key is missing (cold cache or expired), it falls through
+> to the authoritative TCP fetch. This prevents a cold-cache scenario from silently
+> downgrading OWNER/ADMIN members to `MEMBER`, which would cause incorrect
+> `FORBIDDEN_MEMBER_MESSAGE_RESTRICTED` errors on `allowMemberMessage=false` groups.
 
 ## Kafka Events Published
 

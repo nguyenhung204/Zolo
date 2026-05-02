@@ -43,6 +43,14 @@ export interface WsMessage {
     contactUsername?: string;
     contactEmail?: string;
     contactAvatarId?: string;
+    // system_call fields (present when type === "system" && systemType === "system_call")
+    systemType?: "system_call";
+    callId?: string;
+    callerId?: string;
+    callerName?: string;
+    durationMs?: number;
+    isMissed?: boolean;
+    reason?: string;
   };
 }
 
