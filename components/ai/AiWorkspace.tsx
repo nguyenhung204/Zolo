@@ -35,9 +35,9 @@ const SESSION_KEY = "zolo-ai-session-id";
 const HISTORY_KEY = "zolo-ai-history";
 const ALLOWED_EXTENSIONS = new Set(["pdf", "docx", "xlsx", "png", "jpg", "jpeg"]);
 const SAMPLE_PROMPTS = [
-  "Tóm tắt tài liệu này trong 5 ý chính",
-  "Những rủi ro hoặc điểm cần chú ý là gì?",
-  "Doanh thu quý 2 là bao nhiêu?",
+  "Summarize this document in 5 key points",
+  "What are the risks or things to watch out for?",
+  "What was the revenue in Q2?",
 ];
 
 function newMessage(role: UiMessage["role"], content: string, intent: AiIntent | null = null): UiMessage {
@@ -68,12 +68,12 @@ function getFileExtension(file: File) {
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
 function validateFiles(files: File[]) {
-  if (files.length === 0) return "Vui lòng chọn ít nhất 1 file.";
-  if (files.length > 2) return "Chỉ được phép tải lên tối đa 2 file trong một lần.";
-  if (files.some((file) => file.size === 0)) return "File rỗng không thể được tải lên.";
-  if (files.some((file) => file.size > MAX_FILE_SIZE)) return "Mỗi file không được vượt quá 50 MB.";
+  if (files.length === 0) return "Please select at least 1 file.";
+  if (files.length > 2) return "You can upload a maximum of 2 files at a time.";
+  if (files.some((file) => file.size === 0)) return "Empty files cannot be uploaded.";
+  if (files.some((file) => file.size > MAX_FILE_SIZE)) return "Each file must not exceed 50 MB.";
   if (files.some((file) => !ALLOWED_EXTENSIONS.has(getFileExtension(file)))) {
-    return "Chỉ hỗ trợ PDF, DOCX, XLSX, PNG, JPG.";
+    return "Only PDF, DOCX, XLSX, PNG, JPG files are supported.";
   }
   return null;
 }
@@ -124,7 +124,7 @@ export function AiWorkspace() {
           }
         })
         .catch(() => {
-          toast.warning("Không thể tải lịch sử AI, có thể session đã hết hạn.");
+          toast.warning("Could not load AI history. The session may have expired.");
         })
         .finally(() => setIsLoadingHistory(false));
     }
@@ -187,9 +187,9 @@ export function AiWorkspace() {
       setSessionId(res.session_id);
       setMessages([]);
       setActiveIntent(null);
-      toast.success(res.message || "Đã nạp tài liệu cho AI.");
+      toast.success(res.message || "Documents ingested successfully.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Không thể tải tài liệu.");
+      toast.error(error instanceof Error ? error.message : "Failed to upload documents.");
     } finally {
       setIsIngesting(false);
       abortRef.current = null;
@@ -209,9 +209,9 @@ export function AiWorkspace() {
 
     try {
       await deleteAiSession(currentSession);
-      toast.success("Đã xoá session AI.");
+      toast.success("AI session ended.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Không thể xoá session.");
+      toast.error(error instanceof Error ? error.message : "Failed to end session.");
     }
   };
 
@@ -265,7 +265,7 @@ export function AiWorkspace() {
 
       if (sessionId) {
         await saveAiSessionHistory(sessionId, toHistory(finalMessages)).catch(() => {
-          toast.warning("AI đã trả lời nhưng chưa đồng bộ được lịch sử.");
+          toast.warning("AI responded but history could not be synced.");
         });
       }
     } catch (error) {
@@ -273,17 +273,17 @@ export function AiWorkspace() {
         setMessages((current) =>
           current.map((item) =>
             item.id === assistantMessage.id
-              ? { ...item, content: "Đã dừng phản hồi.", intent: assistantIntent }
+              ? { ...item, content: "Response stopped.", intent: assistantIntent }
               : item
           )
         );
         return;
       }
-      const message = error instanceof Error ? error.message : "Không thể nhận phản hồi từ AI.";
+      const message = error instanceof Error ? error.message : "Could not receive a response from AI.";
       setMessages((current) =>
         current.map((item) =>
           item.id === assistantMessage.id
-            ? { ...item, content: `Không thể trả lời lúc này: ${message}`, intent: "out_of_scope" }
+            ? { ...item, content: `Unable to respond right now: ${message}`, intent: "out_of_scope" }
             : item
         )
       );
@@ -309,7 +309,7 @@ export function AiWorkspace() {
             </div>
             <div>
               <h1 className="text-lg font-semibold text-text">Zolo AI Enterprise</h1>
-              <p className="text-sm text-muted">Chat thường hoặc hỏi đáp theo tài liệu nội bộ.</p>
+              <p className="text-sm text-muted">General chat or Q&A over internal documents.</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -324,35 +324,35 @@ export function AiWorkspace() {
               {health === "ok" ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
               {health === "down" ? <WifiOff className="h-3.5 w-3.5" /> : null}
               {health === "checking" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              {health === "ok" ? "AI online" : health === "down" ? "AI offline" : "Đang kiểm tra"}
+              {health === "ok" ? "AI online" : health === "down" ? "AI offline" : "Checking"}
             </span>
 
           </div>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="border-b border-border bg-surface p-4 md:border-b-0 md:border-r md:p-5">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="min-h-0 overflow-y-auto border-b border-border bg-surface p-4 md:border-b-0 md:border-r md:p-5">
           <div className="rounded-3xl border border-border bg-surface-secondary p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-text">Tài liệu nội bộ</p>
+                <p className="text-sm font-semibold text-text">Internal Documents</p>
                 <div className="mt-2 space-y-1">
                   <table className="w-full text-xs text-muted">
                     <thead>
                       <tr>
-                        <th className="pb-1 pr-3 text-left font-medium text-text">Loại</th>
-                        <th className="pb-1 text-left font-medium text-text">Định dạng</th>
+                        <th className="pb-1 pr-3 text-left font-medium text-text">Type</th>
+                        <th className="pb-1 text-left font-medium text-text">Format</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       <tr><td className="py-0.5 pr-3">PDF</td><td>.pdf</td></tr>
                       <tr><td className="py-0.5 pr-3">Word</td><td>.docx</td></tr>
                       <tr><td className="py-0.5 pr-3">Excel</td><td>.xlsx</td></tr>
-                      <tr><td className="py-0.5 pr-3">Ảnh</td><td>.png, .jpg, .jpeg</td></tr>
+                      <tr><td className="py-0.5 pr-3">Image</td><td>.png, .jpg, .jpeg</td></tr>
                     </tbody>
                   </table>
-                  <p className="pt-1 text-xs text-muted">Mỗi file tối đa 50 MB · Tối đa 2 file</p>
+                  <p className="pt-1 text-xs text-muted">Max 50 MB per file · Up to 2 files</p>
                 </div>
               </div>
               <UploadCloud className="h-5 w-5 text-cta" />
@@ -360,8 +360,8 @@ export function AiWorkspace() {
 
             <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface px-4 py-6 text-center transition hover:border-cta/60 hover:bg-bg">
               <Paperclip className="h-6 w-6 text-muted" />
-              <span className="mt-2 text-sm font-medium text-text">Chọn file để nạp RAG</span>
-              <span className="mt-1 text-xs text-muted">Có thể hỏi general mà không cần file.</span>
+              <span className="mt-2 text-sm font-medium text-text">Select files to ingest</span>
+              <span className="mt-1 text-xs text-muted">You can ask general questions without uploading files.</span>
               <input
                 type="file"
                 multiple
@@ -401,15 +401,15 @@ export function AiWorkspace() {
               title={selectedFileNames}
             >
               {isIngesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-              {isIngesting ? "Đang nạp tài liệu..." : sessionId ? "Nạp phiên tài liệu mới" : "Nạp tài liệu"}
+              {isIngesting ? "Ingesting..." : sessionId ? "Ingest new documents" : "Ingest documents"}
             </button>
           </div>
 
           <div className="mt-4 rounded-3xl border border-border bg-surface p-4">
-            <p className="text-sm font-semibold text-text">Phiên AI</p>
+            <p className="text-sm font-semibold text-text">AI Session</p>
             <div className="mt-3 rounded-2xl bg-surface-secondary p-3">
               <p className="text-xs uppercase tracking-wide text-muted">Session ID</p>
-              <p className="mt-1 break-all font-mono text-xs text-secondary">{sessionId ?? "Chưa có tài liệu"}</p>
+              <p className="mt-1 break-all font-mono text-xs text-secondary">{sessionId ?? "No documents ingested"}</p>
             </div>
             <button
               type="button"
@@ -418,7 +418,7 @@ export function AiWorkspace() {
               className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border px-4 py-2 text-sm font-semibold text-secondary transition hover:border-error/50 hover:bg-error/10 hover:text-error disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Trash2 className="h-4 w-4" />
-              Kết thúc phiên
+              End Session
             </button>
           </div>
         </aside>
@@ -428,16 +428,16 @@ export function AiWorkspace() {
             {isLoadingHistory ? (
               <div className="flex h-full items-center justify-center text-sm text-muted">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Đang tải lịch sử...
+                Loading history...
               </div>
             ) : messages.length === 0 ? (
               <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center text-center">
                 <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-surface-secondary text-cta">
                   <Bot className="h-8 w-8" />
                 </div>
-                <h2 className="mt-5 text-2xl font-semibold text-text">Hỏi nhanh, trả lời theo ngữ cảnh</h2>
+                <h2 className="mt-5 text-2xl font-semibold text-text">Ask anything, get context-aware answers</h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-                  Upload tài liệu để hỏi dữ liệu enterprise, hoặc nhập câu hỏi thông thường để AI trả lời ngay.
+                  Upload documents to query enterprise data, or type a general question for an instant AI response.
                 </p>
                 <div className="mt-6 grid w-full gap-2 md:grid-cols-3">
                   {SAMPLE_PROMPTS.map((prompt) => (
@@ -482,7 +482,7 @@ export function AiWorkspace() {
                         ) : (
                           <span className="inline-flex items-center gap-2 text-muted">
                             <Loader2 className="h-4 w-4 animate-spin" />
-                            AI đang suy nghĩ...
+                            AI is thinking...
                           </span>
                         )}
                       </div>
@@ -499,7 +499,7 @@ export function AiWorkspace() {
               <textarea
                 value={input}
                 rows={1}
-                placeholder={sessionId ? "Hỏi về tài liệu hoặc trò chuyện với AI..." : "Hỏi câu general, hoặc upload file để hỏi tài liệu..."}
+                placeholder={sessionId ? "Ask about your documents or chat with AI..." : "Ask a general question, or upload files to query documents..."}
                 className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-3 py-3 text-sm text-text outline-none placeholder:text-muted"
                 maxLength={1500}
                 onChange={(event) => setInput(event.target.value)}
@@ -531,7 +531,7 @@ export function AiWorkspace() {
               )}
             </div>
             <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between gap-2 px-2 text-xs text-muted">
-              <span>{activeIntent ? `Intent: ${activeIntent}` : "Enter để gửi, Shift+Enter để xuống dòng."}</span>
+              <span>{activeIntent ? `Intent: ${activeIntent}` : "Enter to send, Shift+Enter for new line."}</span>
               <span className={input.length >= 1500 ? "text-error" : ""}>{input.length}/1500</span>
             </div>
           </form>
