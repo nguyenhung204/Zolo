@@ -4,10 +4,13 @@ import { UserAvatar } from "@/components/presence/UserAvatar";
 import { useConversation } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
 import { startInstantCall } from "@/lib/api/calls";
+import { getUserById } from "@/lib/api/users";
 import { useCallStore } from "@/stores/callStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
+import { useQuery } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/query/keys";
 import { ArrowLeft, Hash, Megaphone, MoreHorizontal, Phone, Search } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
@@ -39,6 +42,24 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const currentUserId = useAuthStore((s) => s.user?.id ?? "");
 
+  // We need otherUserId for the profile query — derive it from conv so the query
+  // is always called (hooks can't be called conditionally) but enabled only when valid.
+  const convKind = conv?.kind;
+  const rawOtherUser = conv?.otherUser;
+  const rawParticipants = conv?.participants;
+  const derivedOtherUserId =
+    convKind === "direct"
+      ? (rawOtherUser?.id ?? rawParticipants?.find((p) => p.userId !== currentUserId)?.userId)
+      : undefined;
+
+  // Fetch other user's profile to show their statusMessage (direct chats only)
+  const { data: otherProfile } = useQuery({
+    queryKey: queryKeys.users.detail(derivedOtherUserId ?? ""),
+    queryFn: () => getUserById(derivedOtherUserId!),
+    enabled: !!derivedOtherUserId,
+    staleTime: 5 * 60_000,
+  });
+
   if (!conv) {
     return (
       <div className="h-14 border-b border-border px-4 flex items-center gap-3">
@@ -69,6 +90,8 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
     isDirect
       ? resolvedOtherUser?.displayName || resolvedOtherUser?.username || "Direct Message"
       : conv.name ?? "Unnamed";
+
+  const statusMessage = isDirect ? otherProfile?.settings?.statusMessage : undefined;
 
   const handleStartCall = async () => {
     if (!conv || isBusyRef.current) return;
@@ -165,16 +188,21 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
       )}
 
       {/* Name + badge */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <h1 className="text-sm font-semibold text-text truncate">{displayName}</h1>
-        <span
-          className={cn(
-            "text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0",
-            kindColor[conv.kind]
-          )}
-        >
-          {kindLabel[conv.kind]}
-        </span>
+      <div className="flex flex-col justify-center flex-1 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-sm font-semibold text-text truncate">{displayName}</h1>
+          <span
+            className={cn(
+              "text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0",
+              kindColor[conv.kind]
+            )}
+          >
+            {kindLabel[conv.kind]}
+          </span>
+        </div>
+        {statusMessage && (
+          <p className="text-[11px] text-muted truncate leading-tight">{statusMessage}</p>
+        )}
       </div>
 
       {/* Actions */}

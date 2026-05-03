@@ -36,6 +36,7 @@ export function UserSettingsSection() {
   const updateSettings = useUpdateSettings();
   const setThemeStore = usePreferencesStore((s) => s.setTheme);
   const setDensityStore = usePreferencesStore((s) => s.setMessageDensity);
+  const setEnterToSendStore = usePreferencesStore((s) => s.setEnterToSend);
 
   const [statusMessage, setStatusMessage] = useState("");
   const [theme, setTheme] = useState<"LIGHT" | "DARK" | "SYSTEM">("SYSTEM");
@@ -190,7 +191,7 @@ export function UserSettingsSection() {
       {/* ── Messaging ────────────────────────────────────────── */}
       <SettingGroup label="Messaging">
         <SettingRow label="Enter to send" description="Press Enter to send; Shift+Enter for new line">
-          <Toggle checked={enterToSend} onChange={() => { setEnterToSend((v) => !v); mark(); }} />
+          <Toggle checked={enterToSend} onChange={() => { setEnterToSend((v) => !v); setEnterToSendStore(!enterToSend); mark(); }} />
         </SettingRow>
       </SettingGroup>
 

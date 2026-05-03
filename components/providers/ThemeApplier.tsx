@@ -10,6 +10,7 @@ export function ThemeApplier() {
   const messageDensity = usePreferencesStore((s) => s.messageDensity);
   const setTheme = usePreferencesStore((s) => s.setTheme);
   const setMessageDensity = usePreferencesStore((s) => s.setMessageDensity);
+  const setEnterToSend = usePreferencesStore((s) => s.setEnterToSend);
 
   const { data: profile } = useMyProfile();
 
@@ -19,6 +20,7 @@ export function ThemeApplier() {
     if (!s) return;
     if (s.theme) setTheme(s.theme as Theme);
     if (s.messageDensity) setMessageDensity(s.messageDensity as MessageDensity);
+    if (s.enterToSend !== undefined) setEnterToSend(s.enterToSend);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 

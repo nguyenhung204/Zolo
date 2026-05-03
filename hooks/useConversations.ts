@@ -71,11 +71,23 @@ export function useConversations() {
 export function useConversation(id: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const qc = useQueryClient();
+
   const result = useQuery({
     queryKey: queryKeys.conversations.detail(id),
     queryFn: () => getConversation(id),
     enabled: isAuthenticated && !!id,
     staleTime: 5 * 60 * 1000, // conversation metadata changes rarely; WS events handle real-time updates
+    // Seed from list cache so components like AddFriendBanner have otherUser
+    // immediately, before the detail API responds.
+    initialData: () => {
+      const list = qc.getQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list()
+      );
+      return list?.find((c) => c.id === id);
+    },
+    initialDataUpdatedAt: () => {
+      return qc.getQueryState(queryKeys.conversations.list())?.dataUpdatedAt;
+    },
     retry: (failureCount, error) => {
       // Never retry 403/404 — the user is not a member (or it doesn't exist).
       const status = (error as { status?: number })?.status;

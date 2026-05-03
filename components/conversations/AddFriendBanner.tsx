@@ -24,7 +24,21 @@ interface AddFriendBannerProps {
 export function AddFriendBanner({ conversationId }: AddFriendBannerProps) {
   const myId = useAuthStore((s) => s.user?.id);
   const { data: conv } = useConversation(conversationId);
-  const otherId = conv?.otherUser?.id;
+
+  // otherUser comes from the list cache (seeded via initialData in useConversation).
+  // Fall back to participants from the detail response when list cache is cold.
+  const otherId =
+    conv?.otherUser?.id ??
+    (conv?.kind === "direct"
+      ? conv.participants?.find((p) => p.userId !== myId)?.userId
+      : undefined);
+
+  const otherName =
+    conv?.otherUser?.displayName ??
+    conv?.otherUser?.username ??
+    conv?.participants?.find((p) => p.userId === otherId)?.displayName ??
+    conv?.participants?.find((p) => p.userId === otherId)?.username ??
+    "this user";
 
   const { data: friendshipData } = useFriendshipStatus(
     conv?.kind === "direct" && otherId && otherId !== myId ? otherId : undefined,
@@ -48,8 +62,6 @@ export function AddFriendBanner({ conversationId }: AddFriendBannerProps) {
   ) {
     return null;
   }
-
-  const otherName = conv.otherUser?.displayName ?? conv.otherUser?.username ?? "this user";
 
   // ── PENDING_OUT ─────────────────────────────────────────────────────────
   if (status === "PENDING_OUT") {

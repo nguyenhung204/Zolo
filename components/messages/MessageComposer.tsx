@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
 import { useConversation, useConversationMembers, useMyConversationRole } from "@/hooks/useConversations";
 import { useAuthStore } from "@/stores/authStore";
+import { usePreferencesStore } from "@/stores/preferencesStore";
 import { MentionPicker, type MentionMember } from "./MentionPicker";
 import { useFriendProfiles } from "@/hooks/useFriendProfiles";
 import { hasMinRole } from "@/lib/api/group";
@@ -163,6 +164,7 @@ export function MessageComposer({
   const setReplyTo = useConversationStore((s) => s.setReplyTo);
   const editingMessage = useConversationStore((s) => s.editingMessage);
   const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
+  const enterToSend = usePreferencesStore((s) => s.enterToSend);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // ─── Mention state ────────────────────────────────────────────────────────
@@ -834,7 +836,12 @@ export function MessageComposer({
       mentionStartRef.current = -1;
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // enterToSend=true (default): Enter sends, Shift+Enter = newline
+    // enterToSend=false:          Ctrl+Enter sends, Enter = newline
+    const shouldSend = enterToSend
+      ? e.key === "Enter" && !e.shiftKey
+      : e.key === "Enter" && (e.ctrlKey || e.metaKey);
+    if (shouldSend) {
       // keyCode 229 is the legacy indicator for IME composition on some browsers.
       // e.nativeEvent.isComposing covers macOS autocomplete / CJK input methods.
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -1198,7 +1205,11 @@ export function MessageComposer({
       )}
 
       <p className="text-[10px] text-muted mt-1 ml-1">
-        <kbd className="font-mono">Enter</kbd> to send · <kbd className="font-mono">Shift+Enter</kbd> for new line · <kbd className="font-mono">Ctrl+V</kbd> to paste files
+        {enterToSend ? (
+          <><kbd className="font-mono">Enter</kbd> to send · <kbd className="font-mono">Shift+Enter</kbd> for new line · <kbd className="font-mono">Ctrl+V</kbd> to paste files</>
+        ) : (
+          <><kbd className="font-mono">Ctrl+Enter</kbd> to send · <kbd className="font-mono">Enter</kbd> for new line · <kbd className="font-mono">Ctrl+V</kbd> to paste files</>
+        )}
       </p>
     </div>
   );

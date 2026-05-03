@@ -150,7 +150,10 @@ export function MessageRow({
   // Direct-conversation terminal call messages: type="text" but systemType="system_call"
   if (message.metadata?.systemType === "system_call") {
     return (
-      <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
+      <div
+        className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row")}
+        style={{ marginBottom: isGroupEnd ? "var(--msg-gap-end, 0.75rem)" : "var(--msg-gap-mid, 0.125rem)" }}
+      >
         <div className="w-8 shrink-0 self-end">
           {!isMine && isGroupEnd && (
             <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
@@ -165,7 +168,10 @@ export function MessageRow({
   if (inviteMatch) {
     const [, groupName, joinUrl] = inviteMatch;
     return (
-      <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
+      <div
+        className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row")}
+        style={{ marginBottom: isGroupEnd ? "var(--msg-gap-end, 0.75rem)" : "var(--msg-gap-mid, 0.125rem)" }}
+      >
         <div className="w-8 shrink-0 self-end">
           {!isMine && isGroupEnd && (
             <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
@@ -184,7 +190,7 @@ export function MessageRow({
   if (isCallSummary) {
     const otherMemberIds = otherMembers.map((m) => m.userId);
     return (
-      <div className={cn("flex px-3 mb-3", isMine ? "justify-end" : "justify-start")}>
+      <div className={cn("flex px-3", isMine ? "justify-end" : "justify-start")} style={{ marginBottom: "var(--msg-gap-end, 0.75rem)" }}>
         <div className={cn("flex flex-col", isMine ? "items-end" : "items-start")}>
           <CallSummaryBubble
             message={message}
@@ -212,7 +218,10 @@ export function MessageRow({
   const isMediaGroup = message.type === "media" && !isRevoked && !isDeleted;
 
   return (
-    <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
+    <div
+      className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row")}
+      style={{ marginBottom: isGroupEnd ? "var(--msg-gap-end, 0.75rem)" : "var(--msg-gap-mid, 0.125rem)" }}
+    >
       <div className="w-8 shrink-0 self-end">
         {!isMine && isGroupEnd && (
           <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
