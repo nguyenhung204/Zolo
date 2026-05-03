@@ -149,14 +149,28 @@ export function MessageRow({
 
   // Direct-conversation terminal call messages: type="text" but systemType="system_call"
   if (message.metadata?.systemType === "system_call") {
-    return <CallSystemMessage message={message} />;
+    return (
+      <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
+        <div className="w-8 shrink-0 self-end">
+          {!isMine && isGroupEnd && (
+            <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
+          )}
+        </div>
+        <CallSystemMessage message={message} isMine={isMine} />
+      </div>
+    );
   }
 
   const inviteMatch = message.type === "text" && INVITE_LINK_RE.exec(message.content.trim());
   if (inviteMatch) {
     const [, groupName, joinUrl] = inviteMatch;
     return (
-      <div className={cn("flex px-3 mb-1", isMine ? "justify-end" : "justify-start")}>
+      <div className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row", isGroupEnd ? "mb-3" : "mb-0.5")}>
+        <div className="w-8 shrink-0 self-end">
+          {!isMine && isGroupEnd && (
+            <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
+          )}
+        </div>
         <GroupInviteCard
           groupName={groupName}
           joinUrl={joinUrl}
