@@ -25,17 +25,28 @@ interface Props {
 
 export function CallSystemMessage({ message }: Props) {
   const myId = useAuthStore((s) => s.user?.id);
-  const { metadata, createdAt } = message;
-  const { action, callerId, callerName, durationMs } = metadata ?? {};
+  const { metadata, createdAt, senderId } = message;
+  const { action: rawAction, callerId, callerName, durationMs, isMissed, reason } = metadata ?? {};
 
-  const isCaller = !!myId && myId === callerId;
+  // For direct-conversation terminal call messages, callerId may not be in metadata;
+  // fall back to senderId (the caller's id in direct convs).
+  const resolvedCallerId = callerId ?? senderId;
+  const isCaller = !!myId && myId === resolvedCallerId;
   const other = callerName ?? "Someone";
+
+  // Derive action from reason/isMissed when the explicit action field is absent
+  // (direct-conversation messages from callee_busy / other terminal states).
+  const action: string | undefined = rawAction ?? (
+    reason === "callee_busy" ? "CALL_MISSED_BUSY" :
+    isMissed ? "CALL_MISSED" :
+    undefined
+  );
   const duration = formatDurationMs(durationMs);
 
   type Row = { Icon: React.ElementType; color: string; text: string };
 
   const getRow = (): Row => {
-    switch (action as string | undefined) {
+    switch (action) {
       case "CALL_ENDED":
         return {
           Icon: PhoneCall,

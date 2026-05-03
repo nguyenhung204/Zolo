@@ -1,6 +1,6 @@
 "use client";
 
-import type { Message, SystemMessageAction } from "@/lib/api/messages";
+import type { Message } from "@/lib/api/messages";
 import { formatTime } from "@/lib/utils/date";
 
 interface Props {
@@ -8,7 +8,7 @@ interface Props {
 }
 
 function buildSystemText(
-  action: SystemMessageAction | undefined,
+  action: NonNullable<Message["metadata"]>["action"],
   metadata: Message["metadata"],
 ): string | null {
   if (!action) return null;

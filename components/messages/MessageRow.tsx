@@ -147,6 +147,11 @@ export function MessageRow({
     return <SystemMessageChip message={message} />;
   }
 
+  // Direct-conversation terminal call messages: type="text" but systemType="system_call"
+  if (message.metadata?.systemType === "system_call") {
+    return <CallSystemMessage message={message} />;
+  }
+
   const inviteMatch = message.type === "text" && INVITE_LINK_RE.exec(message.content.trim());
   if (inviteMatch) {
     const [, groupName, joinUrl] = inviteMatch;

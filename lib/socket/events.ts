@@ -552,7 +552,7 @@ export interface CallServerEvents {
   "call:ringing": (data: {
     callId: string;
     conversationId: string;
-    callerId: string;
+    caller: { id: string; name: string; avatar: string };
     calleeIds: string[];
     startedAt: string;
   }) => void;

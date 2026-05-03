@@ -135,7 +135,6 @@ export interface Message {
     callId?: string;
     status?: string;
     // system message fields
-    action?: SystemMessageAction;
     actorId?: string;
     actorName?: string;       // pre-populated by message-store, no lookup needed
     targetIds?: string[];

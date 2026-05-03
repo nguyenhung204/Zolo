@@ -23,12 +23,11 @@ const typeIconMap: Record<string, React.ElementType | null> = {
 
 function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
   if (!msg) return null;
+  // system_call: present on both type="system" (group) and type="text" (direct)
+  if (msg.metadata?.systemType === "system_call") {
+    return { icon: Phone, label: msg.content };
+  }
   if (msg.type === "system") {
-    // system_call: content is already human-readable; show with phone icon
-    if (msg.metadata?.systemType === "system_call") {
-      return { icon: Phone, label: msg.content };
-    }
-    // Other system messages: show content if available, else generic label
     return { icon: null, label: msg.content || "Group activity" };
   }
   const prefix = isMe ? "Bạn: " : "";
