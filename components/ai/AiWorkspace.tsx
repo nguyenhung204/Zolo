@@ -65,10 +65,13 @@ function getFileExtension(file: File) {
   return file.name.split(".").pop()?.toLowerCase() ?? "";
 }
 
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
 function validateFiles(files: File[]) {
   if (files.length === 0) return "Vui lòng chọn ít nhất 1 file.";
   if (files.length > 2) return "Chỉ được phép tải lên tối đa 2 file trong một lần.";
   if (files.some((file) => file.size === 0)) return "File rỗng không thể được tải lên.";
+  if (files.some((file) => file.size > MAX_FILE_SIZE)) return "Mỗi file không được vượt quá 50 MB.";
   if (files.some((file) => !ALLOWED_EXTENSIONS.has(getFileExtension(file)))) {
     return "Chỉ hỗ trợ PDF, DOCX, XLSX, PNG, JPG.";
   }
@@ -334,7 +337,23 @@ export function AiWorkspace() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-text">Tài liệu nội bộ</p>
-                <p className="mt-1 text-xs leading-5 text-muted">Tối đa 2 file: PDF, DOCX, XLSX, PNG, JPG.</p>
+                <div className="mt-2 space-y-1">
+                  <table className="w-full text-xs text-muted">
+                    <thead>
+                      <tr>
+                        <th className="pb-1 pr-3 text-left font-medium text-text">Loại</th>
+                        <th className="pb-1 text-left font-medium text-text">Định dạng</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      <tr><td className="py-0.5 pr-3">PDF</td><td>.pdf</td></tr>
+                      <tr><td className="py-0.5 pr-3">Word</td><td>.docx</td></tr>
+                      <tr><td className="py-0.5 pr-3">Excel</td><td>.xlsx</td></tr>
+                      <tr><td className="py-0.5 pr-3">Ảnh</td><td>.png, .jpg, .jpeg</td></tr>
+                    </tbody>
+                  </table>
+                  <p className="pt-1 text-xs text-muted">Mỗi file tối đa 50 MB · Tối đa 2 file</p>
+                </div>
               </div>
               <UploadCloud className="h-5 w-5 text-cta" />
             </div>
@@ -482,6 +501,7 @@ export function AiWorkspace() {
                 rows={1}
                 placeholder={sessionId ? "Hỏi về tài liệu hoặc trò chuyện với AI..." : "Hỏi câu general, hoặc upload file để hỏi tài liệu..."}
                 className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-3 py-3 text-sm text-text outline-none placeholder:text-muted"
+                maxLength={1500}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -512,7 +532,7 @@ export function AiWorkspace() {
             </div>
             <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between gap-2 px-2 text-xs text-muted">
               <span>{activeIntent ? `Intent: ${activeIntent}` : "Enter để gửi, Shift+Enter để xuống dòng."}</span>
-              <span>{sessionId ? "Enterprise RAG sẵn sàng" : "General chat mode"}</span>
+              <span className={input.length >= 1500 ? "text-error" : ""}>{input.length}/1500</span>
             </div>
           </form>
         </section>
