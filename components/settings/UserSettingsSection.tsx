@@ -45,7 +45,6 @@ export function UserSettingsSection() {
   const [desktopEnabled, setDesktopEnabled] = useState(true);
   const [mobileEnabled, setMobileEnabled] = useState(true);
   const [notifyFor, setNotifyFor] = useState<NotificationSettings["notifyFor"]>("ALL");
-  const [muteUntil, setMuteUntil] = useState<string>("");
   const [allowStrangerMessagesAndCalls, setAllowStrangerMessagesAndCalls] = useState(true);
   const [dirty, setDirty] = useState(false);
 
@@ -59,7 +58,6 @@ export function UserSettingsSection() {
     setDesktopEnabled(s.notifications?.desktopEnabled ?? true);
     setMobileEnabled(s.notifications?.mobileEnabled ?? true);
     setNotifyFor(s.notifications?.notifyFor ?? "ALL");
-    setMuteUntil(s.notifications?.muteUntil ?? "");
     // Default true for backward-compat: field absent on old accounts means allowed
     setAllowStrangerMessagesAndCalls(s.privacy?.allowStrangerMessagesAndCalls ?? true);
   }, [profile]);
@@ -76,7 +74,6 @@ export function UserSettingsSection() {
         desktopEnabled,
         mobileEnabled,
         notifyFor,
-        muteUntil: muteUntil || null,
       },
       privacy: {
         allowStrangerMessagesAndCalls,
@@ -228,32 +225,6 @@ export function UserSettingsSection() {
               </label>
             ))}
           </div>
-        </div>
-
-        {/* Mute until */}
-        <div className="pt-1 space-y-1">
-          <label htmlFor="muteUntil" className="text-xs font-medium text-secondary">
-            Mute all notifications until
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              id="muteUntil"
-              type="datetime-local"
-              value={muteUntil ? muteUntil.slice(0, 16) : ""}
-              onChange={(e) => { setMuteUntil(e.target.value ? new Date(e.target.value).toISOString() : ""); mark(); }}
-              className="flex-1 px-3 py-2 rounded-lg border border-border bg-bg text-sm text-text focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
-            />
-            {muteUntil && (
-              <button
-                type="button"
-                onClick={() => { setMuteUntil(""); mark(); }}
-                className="text-xs text-muted hover:text-error transition"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-          <p className="text-[10px] text-muted">Leave empty to remove mute.</p>
         </div>
       </SettingGroup>
 

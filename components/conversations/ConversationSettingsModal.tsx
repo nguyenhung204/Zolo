@@ -1433,15 +1433,6 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                   <div className="h-px bg-border" />
 
                   <SettingRow
-                    label="Public group"
-                    description="Anyone with the invite link can discover and join"
-                    checked={conv.isPublic ?? false}
-                    onChange={(v) => handleSettingChange("isPublic", v)}
-                    disabled={updateSettingsMutation.isPending}
-                  />
-                  <div className="h-px bg-border" />
-
-                  <SettingRow
                     label="Require join approval"
                     description="New members need admin approval before joining"
                     checked={conv.joinApprovalRequired ?? false}

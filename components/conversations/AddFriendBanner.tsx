@@ -4,6 +4,7 @@ import { UserPlus, Check, Clock, X } from "lucide-react";
 import { useConversation } from "@/hooks/useConversations";
 import {
   useFriendshipStatus,
+  useFriendRequests,
   useSendFriendRequest,
   useAcceptFriendRequest,
   useRejectFriendRequest,
@@ -43,7 +44,17 @@ export function AddFriendBanner({ conversationId }: AddFriendBannerProps) {
   const { data: friendshipData } = useFriendshipStatus(
     conv?.kind === "direct" && otherId && otherId !== myId ? otherId : undefined,
   );
-  const status = friendshipData?.status;
+  // useFriendRequests is the same data source as the friends page — patched in
+  // real-time by the friendship:request_received socket event — so pending states
+  // are always accurate even before the per-user status query initialises.
+  const { data: requests } = useFriendRequests();
+
+  const status: typeof friendshipData.status | undefined = (() => {
+    if (!otherId) return undefined;
+    if (requests?.incoming?.includes(otherId)) return "PENDING_IN";
+    if (requests?.outgoing?.includes(otherId)) return "PENDING_OUT";
+    return friendshipData?.status;
+  })();
 
   const sendReq = useSendFriendRequest();
   const acceptReq = useAcceptFriendRequest();
