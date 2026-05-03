@@ -9,6 +9,9 @@ export interface CallParticipantDto {
   joinedAt: string | null;
   leftAt: string | null;
   createdAt: string;
+  /** Enriched by BE — used to seed profileMap without extra /users fetches */
+  displayName?: string | null;
+  avatarUrl?: string | null;
 }
 
 export interface CallDto {

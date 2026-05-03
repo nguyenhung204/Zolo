@@ -80,6 +80,18 @@ export function useCallWebSocketListeners(): void {
           useCallStore.getState().clearCallState();
           return;
         }
+        // Seed participant profiles from the enriched call response so
+        // GroupVideoLayout can resolve names/avatars without extra fetches.
+        const presenceStore = usePresenceStore.getState();
+        for (const p of call.participants ?? []) {
+          if (p.displayName || p.avatarUrl) {
+            presenceStore.setUserProfile(p.userId, {
+              displayName: p.displayName ?? null,
+              avatarMediaId: null,
+              avatarUrl: p.avatarUrl ?? null,
+            });
+          }
+        }
         // Fetch a fresh token; the persisted one may be expired.
         return getInstantCallToken(activeCall.id)
           .then((creds) => {
@@ -126,6 +138,8 @@ export function useCallWebSocketListeners(): void {
       conversationId: string;
       caller: { id: string; name: string; avatar: string };
       calleeIds: string[];
+      /** Enriched profiles for all callees — added by BE so we don't need extra fetches */
+      calleeProfiles?: Array<{ id: string; name: string; avatar: string }>;
       startedAt: string;
     }) => {
       // Ignore calls we initiated ourselves
@@ -158,12 +172,21 @@ export function useCallWebSocketListeners(): void {
         startedAt: data.startedAt,
       });
 
+      const store = usePresenceStore.getState();
       // Seed caller profile from the enriched payload — no extra fetch needed.
-      usePresenceStore.getState().setUserProfile(data.caller.id, {
+      store.setUserProfile(data.caller.id, {
         displayName: data.caller.name,
         avatarMediaId: null,
         avatarUrl: data.caller.avatar,
       });
+      // Seed all callee profiles so GroupVideoLayout can resolve names/avatars.
+      for (const p of data.calleeProfiles ?? []) {
+        store.setUserProfile(p.id, {
+          displayName: p.name,
+          avatarMediaId: null,
+          avatarUrl: p.avatar,
+        });
+      }
     },
     [myId, setIncomingCall, setGroupCall]
   );
@@ -197,10 +220,21 @@ export function useCallWebSocketListeners(): void {
       callId: string;
       conversationId: string;
       calleeId: string;
+      /** Enriched callee profile — added by BE so we don't need an extra /users fetch */
+      callee?: { id: string; name: string; avatar: string };
       acceptedAt: string;
     }) => {
       stopAllAudio();
       addGroupCallParticipant(data.conversationId, data.calleeId);
+
+      // Seed the accepting callee's profile so GroupVideoLayout shows the right name/avatar.
+      if (data.callee) {
+        usePresenceStore.getState().setUserProfile(data.callee.id, {
+          displayName: data.callee.name,
+          avatarMediaId: null,
+          avatarUrl: data.callee.avatar,
+        });
+      }
 
       // Only the caller needs to fetch a token here; the callee already got one
       // from POST /calls/:callId/accept

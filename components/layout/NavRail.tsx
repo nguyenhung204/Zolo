@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageSquare, Users, Settings, type LucideIcon } from "lucide-react";
+import { MessageSquare, Sparkles, Users, Settings, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -16,6 +16,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: "/conversations", icon: MessageSquare, label: "Chats" },
+  { href: "/ai", icon: Sparkles, label: "AI" },
   { href: "/friends", icon: Users, label: "Friends" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];

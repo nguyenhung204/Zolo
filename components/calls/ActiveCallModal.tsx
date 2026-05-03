@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PhoneCall,
   PhoneOff,
@@ -21,7 +21,7 @@ import {
   useTrackToggle,
   useRoomContext,
 } from "@livekit/components-react";
-import { Track } from "livekit-client";
+import { Track, RoomEvent } from "livekit-client";
 import { useCallStore } from "@/stores/callStore";
 import { useAuthStore } from "@/stores/authStore";
 import { usePresenceStore } from "@/stores/presenceStore";
@@ -232,15 +232,26 @@ function CameraButton() {
 
 function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }) {
   const { clearCallState, setDeclinedGroupCall, setGroupCall } = useCallStore();
-  const groupCallsByConversation = useCallStore((s) => s.groupCallsByConversation);
   const room = useRoomContext();
   const isBusyRef = useRef(false);
 
-  // For a group call with only 2 participants left, leaving = ending the call.
+  // Track real-time remote participant count via LiveKit room events.
+  // This is always accurate — unlike the store's participantIds which only grows.
+  const [remoteCount, setRemoteCount] = useState(() => room.remoteParticipants.size);
+  useEffect(() => {
+    const update = () => setRemoteCount(room.remoteParticipants.size);
+    room.on(RoomEvent.ParticipantConnected, update);
+    room.on(RoomEvent.ParticipantDisconnected, update);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, update);
+      room.off(RoomEvent.ParticipantDisconnected, update);
+    };
+  }, [room]);
+
+  // For a group call with only 1 remote participant remaining (2 total),
+  // leaving = ending the call for everyone.
   const conversationId = useCallStore.getState().activeCall?.conversationId ?? "";
-  const groupEntry = conversationId ? groupCallsByConversation[conversationId] : undefined;
-  const participantCount = groupEntry?.participantIds.length ?? 0;
-  const shouldEndGroupCall = isGroup && participantCount <= 2;
+  const shouldEndGroupCall = isGroup && remoteCount <= 1;
 
   const handleAction = useCallback(() => {
     if (isBusyRef.current) return;
