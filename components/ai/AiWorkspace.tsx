@@ -17,7 +17,6 @@ import {
 import { toast } from "sonner";
 import { MarkdownMessage } from "@/components/messages/MarkdownMessage";
 import {
-  AI_API_BASE_URL,
   checkAiHealth,
   deleteAiSession,
   getAiSessionHistory,
@@ -324,9 +323,7 @@ export function AiWorkspace() {
               {health === "checking" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
               {health === "ok" ? "AI online" : health === "down" ? "AI offline" : "Đang kiểm tra"}
             </span>
-            <span className="rounded-full border border-border bg-surface-secondary px-3 py-1.5 text-muted">
-              {AI_API_BASE_URL}
-            </span>
+
           </div>
         </div>
       </header>
