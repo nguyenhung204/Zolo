@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.example.flutter_chat",
+      "sha256_cert_fingerprints": [
+        "D4:2E:0B:77:EB:FC:0D:D5:6F:53:78:EB:7C:B4:D4:02:6B:64:CE:29:2E:DF:26:3D:FD:86:08:E0:0F:36:97:10"
+      ]
+    }
+  }
+]
