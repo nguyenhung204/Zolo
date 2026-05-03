@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, Info } from "lucide-react";
+import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, Info, Contact } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePinnedMessages } from "@/hooks/useMessages";
 import { useQueryClient } from "@tanstack/react-query";
@@ -53,7 +53,9 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
               ? { icon: FileText, label: "File" }
               : msg.type === "sticker"
                 ? { icon: Sticker, label: "Sticker" }
-                : { icon: null, label: msg.content || `[${msg.type}]` };
+                : msg.type === "contact_card"
+                  ? { icon: Contact, label: (msg.metadata?.contactUsername ?? msg.content) || "Danh thiếp" }
+                  : { icon: null, label: msg.content || `[${msg.type}]` };
 
   const handleUnpin = async (m: Message) => {
     setPopoverOpen(false);

@@ -9,6 +9,7 @@ import { TypingIndicator } from "@/components/messages/TypingIndicator";
 import { PinnedMessageBanner } from "@/components/messages/PinnedMessageBanner";
 import { AddFriendBanner } from "@/components/conversations/AddFriendBanner";
 import { GroupCallBanner } from "@/components/calls/GroupCallBanner";
+import { ActivePollsBanner } from "@/components/conversations/ActivePollsBanner";
 import { useConversationMembers, useConversation } from "@/hooks/useConversations";
 import { useGroupSocketEvents } from "@/hooks/useGroupSocketEvents";
 import { useConversationCallStatus } from "@/hooks/useConversationCallStatus";
@@ -138,6 +139,7 @@ export default function ConversationPage({ params }: Props) {
         conversationId={id}
         onViewDetails={setDetailsTarget}
       />
+      <ActivePollsBanner conversationId={id} />
       <GroupCallBanner conversationId={id} />
 
       {/* Message area */}

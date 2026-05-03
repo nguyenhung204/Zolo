@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { X, Reply, Pencil, Clock3, User, MessageSquareText, Image, Video, Mic, Sticker, ClipboardList, Hash, Eye, CheckCheck } from "lucide-react";
+import { X, Reply, Pencil, Clock3, User, MessageSquareText, Image, Video, Mic, Sticker, ClipboardList, Hash, Eye, CheckCheck, Contact } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/api/messages";
 import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
@@ -33,6 +33,7 @@ function rowIcon(type: string) {
     case "audio": return <Mic className="w-4 h-4" />;
     case "file": return <ClipboardList className="w-4 h-4" />;
     case "sticker": return <Sticker className="w-4 h-4" />;
+    case "contact_card": return <Contact className="w-4 h-4" />;
     default: return <Hash className="w-4 h-4" />;
   }
 }
@@ -45,6 +46,7 @@ function typeLabel(type: string) {
     audio: "Voice",
     file: "Attachment",
     sticker: "Sticker",
+    contact_card: "Danh thiếp",
   };
   return map[type] ?? type;
 }
@@ -119,7 +121,11 @@ export function MessageDetailsModal({ message, memberMap, messageById, otherMemb
               {isEdited && <Pencil className="w-3.5 h-3.5 text-cta" />}
               {repliedToMsg && <Reply className="w-3.5 h-3.5 text-cta" />}
             </div>
-            <p className="mt-2 text-sm text-text whitespace-pre-wrap break-words">{message.content || "(empty)"}</p>
+            <p className="mt-2 text-sm text-text whitespace-pre-wrap break-words">
+              {message.type === "contact_card"
+                ? ((message.metadata?.contactUsername ?? message.metadata?.contactEmail ?? message.content) || "(empty)")
+                : (message.content || "(empty)")}
+            </p>
           </div>
 
           <Field icon={<User className="w-4 h-4" />} label="Sender" value={senderName} />

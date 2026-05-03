@@ -116,9 +116,9 @@ export function PollUI({
         qc.setQueryData(queryKeys.polls.detail(id), context.snapshot);
       }
       if (err.status === 403) {
-        toast.error("Voting is closed for this poll.");
+        toast.error("Voting is closed for this poll.", { id: `vote-err-${id}` });
       } else {
-        toast.error(err.message ?? "Failed to record your vote.");
+        toast.error(err.message ?? "Failed to record your vote.", { id: `vote-err-${id}` });
       }
     },
 
@@ -143,9 +143,9 @@ export function PollUI({
     },
     onError: (err) => {
       if (err.status === 403) {
-        toast.error("Only the poll creator or an admin can close this poll.");
+        toast.error("Only the poll creator or an admin can close this poll.", { id: `close-err-${pollId}` });
       } else {
-        toast.error("Failed to close poll.");
+        toast.error("Failed to close poll.", { id: `close-err-${pollId}` });
       }
     },
   });

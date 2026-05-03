@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useSessions, useDeleteSession, useDeleteAllSessions } from "@/hooks/useUser";
 import { formatDistanceToNowStrict } from "@/lib/utils/date";
+import { Monitor, Smartphone, Globe, LogOut, Loader2 } from "lucide-react";
 import type { UserSession } from "@/lib/api/users";
 
 export function SessionsSection() {
@@ -97,38 +98,44 @@ function SessionCard({
   onRevoke: () => void;
   isRevoking: boolean;
 }) {
-  const rawClients = session.clients;
-  const clientList = Array.isArray(rawClients)
-    ? rawClients
-    : rawClients && typeof rawClients === "object"
-    ? Object.values(rawClients as Record<string, string>)
-    : [];
-  const clientNames = clientList.join(", ") || "Unknown client";
+  const deviceLabel = session.deviceName ?? session.userAgent?.split(" ")[0] ?? "Unknown device";
+  const platform = session.platform?.toLowerCase() ?? "";
+
+  const Icon =
+    platform === "mobile" || platform === "ios" || platform === "android"
+      ? Smartphone
+      : platform === "web"
+        ? Monitor
+        : Globe;
+
+  const startedAt = session.start ? new Date(session.start) : null;
+  const lastAccessAt = session.lastAccess ? new Date(session.lastAccess) : null;
 
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl border border-border/70 bg-bg/50 hover:bg-bg transition">
       <div className="flex items-center gap-3 min-w-0">
-        <div className="shrink-0 w-8 h-8 rounded-full bg-border/60 flex items-center justify-center">
-          <DeviceIcon />
+        <div className="shrink-0 w-9 h-9 rounded-xl bg-cta/10 text-cta flex items-center justify-center">
+          <Icon className="w-4 h-4" />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-medium text-text truncate">{clientNames}</p>
-          <div className="flex items-center gap-2 text-xs text-muted">
+          <p className="text-sm font-semibold text-text truncate">{deviceLabel}</p>
+          <div className="flex items-center gap-1.5 flex-wrap text-xs text-muted mt-0.5">
             {session.ipAddress && (
+              <span className="font-mono bg-border/40 rounded px-1 py-0.5 text-[10px]">{session.ipAddress}</span>
+            )}
+            {session.platform && (
+              <span className="capitalize">{session.platform}</span>
+            )}
+            {lastAccessAt && (
               <>
-                <span className="font-mono">{session.ipAddress}</span>
                 <span>·</span>
+                <span>Active {formatDistanceToNowStrict(lastAccessAt.toISOString())} ago</span>
               </>
             )}
-            {session.lastAccess ? (
-              <span>Active {formatDistanceToNowStrict(session.lastAccess)} ago</span>
-            ) : session.started ? (
-              <span>Started {formatDistanceToNowStrict(session.started)} ago</span>
-            ) : null}
           </div>
-          {session.started && (
-            <p className="text-[10px] text-muted/70 mt-0.5">
-              Since {new Date(session.started).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+          {startedAt && (
+            <p className="text-[10px] text-muted/60 mt-0.5">
+              Since {startedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
             </p>
           )}
         </div>
@@ -137,18 +144,13 @@ function SessionCard({
       <button
         onClick={onRevoke}
         disabled={isRevoking}
-        className="shrink-0 text-xs font-medium text-error hover:underline disabled:opacity-50 transition"
+        className="shrink-0 flex items-center gap-1 text-xs font-medium text-error hover:text-error/80 disabled:opacity-50 transition cursor-pointer"
       >
+        {isRevoking
+          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          : <LogOut className="w-3.5 h-3.5" />}
         {isRevoking ? "Revoking…" : "Revoke"}
       </button>
     </div>
-  );
-}
-
-function DeviceIcon() {
-  return (
-    <svg className="w-4 h-4 text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
-    </svg>
   );
 }

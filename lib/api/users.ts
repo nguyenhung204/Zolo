@@ -52,9 +52,11 @@ export interface UpdateSettingsDto {
 export interface UserSession {
   id: string;
   ipAddress?: string;
-  started?: string;
-  lastAccess?: string;
-  clients?: string[];
+  start?: number;        // epoch ms
+  lastAccess?: number;   // epoch ms
+  platform?: string;     // e.g. "web", "mobile"
+  deviceName?: string;   // e.g. "Chrome on Windows"
+  userAgent?: string;
 }
 
 // ─── User Profile ─────────────────────────────────────────────────────────────

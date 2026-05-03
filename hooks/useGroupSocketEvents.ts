@@ -194,8 +194,7 @@ export function useGroupSocketEvents(conversationId: string) {
       if (payload.conversationId !== conversationId) return;
 
       if (!payload.userId || payload.userId === myId) {
-        toast.error("You have been removed from this group.");
-        // Evict ALL query data related to this conversation.
+        // Evict ALL query data related to this conversation. Toast is fired by useSocket.ts.
         qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
         qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
         qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
@@ -221,7 +220,7 @@ export function useGroupSocketEvents(conversationId: string) {
     const onDisbanded = (payload: GroupDisbandedEvent) => {
       if (payload.conversationId !== conversationId) return;
 
-      toast.error("This group has been disbanded.");
+      // Toast is fired by useSocket.ts global handler.
       qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
       qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
@@ -377,7 +376,7 @@ export function useGroupSocketEvents(conversationId: string) {
         // Current user's request was approved — refresh conversations list to include this group.
         qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
         qc.invalidateQueries({ queryKey: queryKeys.messages.list(payload.conversationId) });
-        toast.success(`Your request to join the group has been approved${payload.reviewedByName ? ` by ${payload.reviewedByName}` : ""}!`);
+        // Toast is fired by useSocket.ts global handler.
         router.push(`/conversations/${payload.conversationId}`);
       } else {
         // Another user was approved — refresh members and message history for the approval system message.
@@ -391,9 +390,7 @@ export function useGroupSocketEvents(conversationId: string) {
     // Strategy: only self receives this event. Show an informative toast.
     const onJoinRejected = (payload: GroupJoinRejectedEvent) => {
       if (payload.conversationId !== conversationId) return;
-      if (payload.userId === myId) {
-        toast.error(`Your request to join the group was declined${payload.reviewedByName ? ` by ${payload.reviewedByName}` : ""}.`);
-      }
+      // Toast is fired by useSocket.ts global handler (for self only).
     };
 
     // ── conversation:removed ───────────────────────────────────────────────
@@ -415,7 +412,7 @@ export function useGroupSocketEvents(conversationId: string) {
         queryKeys.conversations.list(),
         (old) => old?.filter((c) => c.id !== conversationId),
       );
-      if (payload.message) toast.error(payload.message);
+      // Toast is fired by useSocket.ts global handler.
       router.push("/conversations");
     };
 
@@ -460,7 +457,7 @@ export function useGroupSocketEvents(conversationId: string) {
       const isSelfRemoved = removedIds.includes(myId ?? "");
 
       if (isSelfRemoved) {
-        toast.error("You have been removed from this group.");
+        // Toast is fired by useSocket.ts global handler.
         qc.removeQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
         qc.removeQueries({ queryKey: queryKeys.conversations.members(conversationId) });
         qc.removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
