@@ -49,7 +49,7 @@ export function AddFriendBanner({ conversationId }: AddFriendBannerProps) {
   // are always accurate even before the per-user status query initialises.
   const { data: requests } = useFriendRequests();
 
-  const status: typeof friendshipData.status | undefined = (() => {
+  const status: NonNullable<typeof friendshipData>["status"] | undefined = (() => {
     if (!otherId) return undefined;
     if (requests?.incoming?.includes(otherId)) return "PENDING_IN";
     if (requests?.outgoing?.includes(otherId)) return "PENDING_OUT";
