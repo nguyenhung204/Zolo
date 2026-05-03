@@ -8,7 +8,6 @@ export interface NotificationSettings {
   desktopEnabled?: boolean;
   mobileEnabled?: boolean;
   notifyFor?: "ALL" | "MENTIONS_ONLY" | "NOTHING";
-  muteUntil?: string | null;
 }
 
 export interface PrivacySettings {
