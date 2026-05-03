@@ -121,12 +121,19 @@ Initiate a new call. The caller's device starts ringing on the callee's side.
 | Status | Code | Reason |
 |---|---|---|
 | 403 | `FORBIDDEN_NOT_MEMBER` | Caller not a member of the conversation |
+| 403 | `FORBIDDEN_STRANGER_INTERACTION` | **Direct call only:** callee disabled stranger interactions; caller must be an accepted friend first. |
 | 409 | `CALL_CALLEE_BUSY` | **Direct call:** a callee is already in another live call — backend records a `MISSED` call with `endReason: callee_busy` and injects a chat message `Cuộc gọi nhỡ (Đường dây bận)`. **Group call:** returned only if *all* callees are busy; busy-but-not-all callees are silently skipped (no notification to them). |
 | 409 | `CALL_CALLER_BUSY` | Caller is already in an active or ringing call |
 
 **Group call busy handling:** For group calls (≥ 2 callees), busy members are silently skipped — they are not rung and receive no notification. The call proceeds with the available members. A `409 CALL_CALLEE_BUSY` is only returned if **all** callees are busy. For direct calls the previous reject-immediately behavior is unchanged.
 
 **Side effects**: Call Service fetches caller + callee profiles, writes enriched `call.event.ringing` to Kafka, publishes the same enriched event to Redis fast-track for Socket.IO, and Notification Service sends data-only VoIP/FCM pushes to every non-busy callee.
+
+**Privacy rule for direct calls:** when a callee has
+`settings.privacy.allowStrangerMessagesAndCalls = false`, only accepted friends
+can start a direct call to that callee. Backend rejects non-friends before
+creating a call record or emitting ringing events. FE should show “Gửi lời mời
+kết bạn trước” on `403 FORBIDDEN_STRANGER_INTERACTION`.
 
 `call.event.ringing` / `call:ringing` payload:
 
@@ -428,6 +435,7 @@ interface CallTokenDto {
 | `CALL_ALREADY_ENDED` | 409 | Call is already in a terminal status |
 | `CALL_NOT_PARTICIPANT` | 403 | User is not a participant on this call |
 | `FORBIDDEN_NOT_MEMBER` | 403 | User is not a member of the conversation |
+| `FORBIDDEN_STRANGER_INTERACTION` | 403 | Direct call/message target only accepts interactions from accepted friends |
 
 ---
 

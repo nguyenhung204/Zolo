@@ -15,8 +15,17 @@ import type { MessagesInfiniteData } from "./useMessages";
 
 function isBlockedError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const err = error as { status?: number; message?: string };
-  return err.status === 403 && err.message === "FORBIDDEN_BLOCKED_USER";
+  const err = error as { status?: number; message?: string; code?: string };
+  return err.status === 403 && (err.message === "FORBIDDEN_BLOCKED_USER" || err.code === "FORBIDDEN_BLOCKED_USER");
+}
+
+function isStrangerInteractionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const err = error as { status?: number; message?: string; code?: string };
+  return err.status === 403 && (
+    err.message === "FORBIDDEN_STRANGER_INTERACTION" ||
+    err.code === "FORBIDDEN_STRANGER_INTERACTION"
+  );
 }
 
 // ─── Global upload tracker (used by beforeunload guard in AppShell) ───────────
@@ -408,6 +417,11 @@ export function useSendMessage() {
               toast.error("You can't send messages here. You may have been blocked.");
               return;
             }
+            if (isStrangerInteractionError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("This person only accepts messages from friends. Send a friend request first.");
+              return;
+            }
             markFailed(conversationId, clientMessageId);
           } finally {
             _activeUploadIds.delete(clientMessageId);
@@ -451,6 +465,11 @@ export function useSendMessage() {
               toast.error("You can't send messages here. You may have been blocked.");
               return;
             }
+            if (isStrangerInteractionError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("This person only accepts messages from friends. Send a friend request first.");
+              return;
+            }
             markFailed(conversationId, clientMessageId);
           } finally {
             _activeUploadIds.delete(clientMessageId);
@@ -477,6 +496,11 @@ export function useSendMessage() {
             if (isBlockedError(err)) {
               removeOptimisticMessage(conversationId, clientMessageId);
               toast.error("You can't send messages here. You may have been blocked.");
+              return;
+            }
+            if (isStrangerInteractionError(err)) {
+              removeOptimisticMessage(conversationId, clientMessageId);
+              toast.error("This person only accepts messages from friends. Send a friend request first.");
               return;
             }
             markFailed(conversationId, clientMessageId);

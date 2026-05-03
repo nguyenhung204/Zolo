@@ -117,6 +117,8 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
         // Backend already persisted a missed-call system message — do nothing locally.
       } else if (code === "CALL_CALLER_BUSY") {
         toast.error("You are already in a call.");
+      } else if (code === "FORBIDDEN_STRANGER_INTERACTION") {
+        toast.error("This person only accepts calls from friends. Send a friend request first.");
       } else {
         toast.error("Could not start call.");
       }

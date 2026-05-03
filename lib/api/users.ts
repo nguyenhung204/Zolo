@@ -11,12 +11,19 @@ export interface NotificationSettings {
   muteUntil?: string | null;
 }
 
+export interface PrivacySettings {
+  /** Whether strangers (non-friends) can send direct messages or initiate direct calls.
+   *  Defaults to `true` when field is absent (backward-compatible with existing users). */
+  allowStrangerMessagesAndCalls?: boolean;
+}
+
 export interface UserSettings {
   statusMessage?: string;
   theme?: "LIGHT" | "DARK" | "SYSTEM";
   messageDensity?: "COMFORTABLE" | "COMPACT";
   enterToSend?: boolean;
   notifications?: NotificationSettings;
+  privacy?: PrivacySettings;
 }
 
 export interface UserProfile {
@@ -47,6 +54,7 @@ export interface UpdateSettingsDto {
   messageDensity?: "COMFORTABLE" | "COMPACT";
   enterToSend?: boolean;
   notifications?: NotificationSettings;
+  privacy?: PrivacySettings;
 }
 
 export interface UserSession {

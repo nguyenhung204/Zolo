@@ -29,6 +29,12 @@
 
 Gửi tin nhắn vào một conversation. Hỗ trợ nhiều loại tin nhắn.
 
+**Ràng buộc privacy cho direct conversation**: nếu người nhận đặt
+`settings.privacy.allowStrangerMessagesAndCalls = false`, người gửi phải là bạn
+bè đã accept. Nếu chưa là bạn bè, request bị từ chối với
+`403 FORBIDDEN_STRANGER_INTERACTION`. Group/announcement không áp dụng rule này
+vì quyền gửi tin đã dựa trên membership/role của conversation.
+
 ### Gửi tin nhắn text
 
 ```bash
@@ -848,6 +854,7 @@ socket.on('message:updated', (patch) => {
 | `FORBIDDEN_MEDIA_NOT_READY` | 403 | File chưa xử lý xong (vẫn đang PROCESSING) |
 | `FORBIDDEN_MEDIA_OWNERSHIP` | 403 | File không thuộc về bạn |
 | `FORBIDDEN_MEDIA_CLASSIFICATION` | 403 | Loại file không được phép trong conversation này |
+| `FORBIDDEN_STRANGER_INTERACTION` | 403 | Người nhận chỉ cho phép bạn bè đã accept nhắn tin/gọi direct |
 
 ---
 

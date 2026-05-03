@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { Sun, Moon, Monitor, AlignJustify, Rows3, Check } from "lucide-react";
 import { useMyProfile, useUpdateSettings } from "@/hooks/useUser";
-import type { NotificationSettings, UpdateSettingsDto } from "@/lib/api/users";
+import type { NotificationSettings, PrivacySettings, UpdateSettingsDto } from "@/lib/api/users";
 import { usePreferencesStore } from "@/stores/preferencesStore";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +45,7 @@ export function UserSettingsSection() {
   const [mobileEnabled, setMobileEnabled] = useState(true);
   const [notifyFor, setNotifyFor] = useState<NotificationSettings["notifyFor"]>("ALL");
   const [muteUntil, setMuteUntil] = useState<string>("");
+  const [allowStrangerMessagesAndCalls, setAllowStrangerMessagesAndCalls] = useState(true);
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
@@ -58,6 +59,8 @@ export function UserSettingsSection() {
     setMobileEnabled(s.notifications?.mobileEnabled ?? true);
     setNotifyFor(s.notifications?.notifyFor ?? "ALL");
     setMuteUntil(s.notifications?.muteUntil ?? "");
+    // Default true for backward-compat: field absent on old accounts means allowed
+    setAllowStrangerMessagesAndCalls(s.privacy?.allowStrangerMessagesAndCalls ?? true);
   }, [profile]);
 
   function mark() { setDirty(true); }
@@ -73,6 +76,9 @@ export function UserSettingsSection() {
         mobileEnabled,
         notifyFor,
         muteUntil: muteUntil || null,
+      },
+      privacy: {
+        allowStrangerMessagesAndCalls,
       },
     };
     await updateSettings.mutateAsync(dto);
@@ -248,6 +254,19 @@ export function UserSettingsSection() {
           </div>
           <p className="text-[10px] text-muted">Leave empty to remove mute.</p>
         </div>
+      </SettingGroup>
+
+      {/* ── Privacy ──────────────────────────────────────────── */}
+      <SettingGroup label="Privacy">
+        <SettingRow
+          label="Allow strangers to message & call me"
+          description="When off, only accepted friends can send you direct messages or calls"
+        >
+          <Toggle
+            checked={allowStrangerMessagesAndCalls}
+            onChange={() => { setAllowStrangerMessagesAndCalls((v) => !v); mark(); }}
+          />
+        </SettingRow>
       </SettingGroup>
 
       {/* ── Save ─────────────────────────────────────────────── */}

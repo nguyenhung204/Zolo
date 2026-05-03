@@ -58,6 +58,9 @@ Authorization: Bearer <token>
       "mobileEnabled": true,
       "notifyFor": "ALL",
       "muteUntil": null
+    },
+    "privacy": {
+      "allowStrangerMessagesAndCalls": true
     }
   }
 }
@@ -134,6 +137,9 @@ Content-Type: application/json
     "mobileEnabled": true,
     "notifyFor": "MENTIONS_ONLY",
     "muteUntil": "2026-04-04T08:00:00.000Z"
+  },
+  "privacy": {
+    "allowStrangerMessagesAndCalls": false
   }
 }
 ```
@@ -148,14 +154,31 @@ Content-Type: application/json
 | `notifications.mobileEnabled` | boolean | — | Bật/tắt push trên mobile |
 | `notifications.notifyFor` | enum | `ALL` \| `MENTIONS_ONLY` \| `NOTHING` | Lọc loại thông báo push |
 | `notifications.muteUntil` | string (ISO 8601) \| `null` | — | Tắt tất cả push đến thời điểm này; `null` để xoá mute |
+| `privacy.allowStrangerMessagesAndCalls` | boolean | — | `true`/mặc định = người lạ vẫn có thể nhắn tin/gọi direct; `false` = chỉ bạn bè đã accept mới được nhắn/gọi direct |
 
 **Lưu ý về merge**:
 - Mỗi field là độc lập — chỉ field được gửi mới bị ghi đè, các field còn lại **không bị xoá**.
 - `notifications` được merge riêng: gửi `{ "notifications": { "notifyFor": "NOTHING" } }` **không** ảnh hưởng `desktopEnabled`, `mobileEnabled` đang lưu.
+- `privacy` cũng được merge riêng: gửi `{ "privacy": { "allowStrangerMessagesAndCalls": false } }` không ảnh hưởng các setting khác.
 - Để xoá `muteUntil`, gửi `{ "notifications": { "muteUntil": null } }`.
 - Các field không thuộc schema (ví dụ `language`, `timezone`) sẽ bị **từ chối 400** bởi validation pipe.
 
 **Response 200**: object user đã cập nhật (cùng cấu trúc `GET /users/me`).
+
+**Hướng dẫn FE implement privacy**:
+- Toggle label gợi ý: “Cho phép người lạ nhắn tin/gọi cho tôi”.
+- Default UI nên coi field thiếu là `true` để tương thích user cũ.
+- Khi user tắt toggle, gọi `PATCH /users/me/settings` với body:
+
+```json
+{
+  "privacy": {
+    "allowStrangerMessagesAndCalls": false
+  }
+}
+```
+
+- Nếu gửi tin nhắn/gọi direct tới người đã tắt setting và chưa phải bạn bè, backend trả `403 FORBIDDEN_STRANGER_INTERACTION`; FE nên gợi ý “Gửi lời mời kết bạn trước”.
 
 ---
 
