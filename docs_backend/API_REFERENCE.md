@@ -2148,6 +2148,8 @@ All endpoints require `Authorization: Bearer <token>` except `GET /calls/health`
 **409** `CALL_CALLER_BUSY` — caller already in a live call  
 **403** `FORBIDDEN_NOT_MEMBER` — not a conversation member
 
+Terminal call states emit a conversation call message with `metadata.systemType: "system_call"`. In direct conversations, `senderId`/`senderName` are the original caller and `type` is `"text"`; in group and announcement conversations they remain `SYSTEM` with `type: "system"`.
+
 ### POST /calls/:callId/accept
 
 **200** → `CallAcceptResponseDto`

@@ -121,10 +121,12 @@ Initiate a new call. The caller's device starts ringing on the callee's side.
 | Status | Code | Reason |
 |---|---|---|
 | 403 | `FORBIDDEN_NOT_MEMBER` | Caller not a member of the conversation |
-| 409 | `CALL_CALLEE_BUSY` | A callee is already in an active or ringing call. Backend records a `MISSED` call with `endReason: callee_busy` and injects a system message: `Cuộc gọi nhỡ (Đường dây bận)` |
+| 409 | `CALL_CALLEE_BUSY` | **Direct call:** a callee is already in another live call — backend records a `MISSED` call with `endReason: callee_busy` and injects a chat message `Cuộc gọi nhỡ (Đường dây bận)`. **Group call:** returned only if *all* callees are busy; busy-but-not-all callees are silently skipped (no notification to them). |
 | 409 | `CALL_CALLER_BUSY` | Caller is already in an active or ringing call |
 
-**Side effects**: Call Service fetches the caller profile, writes enriched `call.event.ringing` to Kafka, publishes the same enriched event to Redis fast-track for Socket.IO, and Notification Service sends data-only VoIP/FCM pushes to every callee.
+**Group call busy handling:** For group calls (≥ 2 callees), busy members are silently skipped — they are not rung and receive no notification. The call proceeds with the available members. A `409 CALL_CALLEE_BUSY` is only returned if **all** callees are busy. For direct calls the previous reject-immediately behavior is unchanged.
+
+**Side effects**: Call Service fetches caller + callee profiles, writes enriched `call.event.ringing` to Kafka, publishes the same enriched event to Redis fast-track for Socket.IO, and Notification Service sends data-only VoIP/FCM pushes to every non-busy callee.
 
 `call.event.ringing` / `call:ringing` payload:
 
@@ -137,7 +139,12 @@ Initiate a new call. The caller's device starts ringing on the callee's side.
     name: string;
     avatar: string;
   };
-  calleeIds: string[];
+  calleeIds: string[];          // only non-busy callees
+  calleeProfiles: {             // NEW — profile of each non-busy callee
+    id: string;
+    name: string;
+    avatar: string;
+  }[];
   startedAt: string; // ISO-8601
 }
 ```
@@ -179,7 +186,7 @@ Accept an incoming call. Transitions `RINGING → ACTIVE` and returns a LiveKit 
 | 403 | `FORBIDDEN_NOT_MEMBER` | User is not a callee on this call |
 | 409 | `CALL_NO_LONGER_RINGING` | Call already ended or expired |
 
-**Side effects**: `call.event.accepted` → Realtime Gateway broadcasts `call:accepted` to `call:{callId}` WS room. The caller receives this event and then calls `GET /calls/:callId/token` to get their own LiveKit JWT.
+**Side effects**: `call.event.accepted` → Realtime Gateway broadcasts `call:accepted` to `call:{callId}` WS room. The payload now includes `callee: { id, name, avatar }` — the full profile of the accepting callee. The caller receives this event and then calls `GET /calls/:callId/token` to get their own LiveKit JWT.
 
 ---
 
@@ -234,13 +241,45 @@ End an active call or cancel a ringing call.
 
 ### GET /calls/:callId
 
-Fetch a single call record.
+Fetch a single call record. **Participants are now enriched with display name and avatar** so the FE can rebuild `profileMap` on reconnect without a separate user lookup.
 
 **Rate limit**: 60 requests / minute
 
 **Path params**: `callId`
 
 **Response `200`** — `CallDto` or `null`
+
+```json
+{
+  "id": "call-uuid",
+  "conversationId": "conv-uuid",
+  "callerId": "caller-uuid",
+  "status": "ACTIVE",
+  "createdAt": "2026-04-20T10:00:00.000Z",
+  "startedAt": "2026-04-20T10:00:00.000Z",
+  "endedAt": null,
+  "participants": [
+    {
+      "userId": "caller-uuid",
+      "role": "CALLER",
+      "joinedAt": "2026-04-20T10:00:00.000Z",
+      "leftAt": null,
+      "createdAt": "...",
+      "displayName": "Nguyễn Văn A",
+      "avatarUrl": "https://cdn.example.com/avatars/a.jpg"
+    },
+    {
+      "userId": "callee-uuid",
+      "role": "CALLEE",
+      "joinedAt": "2026-04-20T10:00:05.000Z",
+      "leftAt": null,
+      "createdAt": "...",
+      "displayName": "Trần Thị B",
+      "avatarUrl": "https://cdn.example.com/avatars/b.jpg"
+    }
+  ]
+}
+```
 
 ---
 
@@ -380,7 +419,7 @@ interface CallTokenDto {
 
 | Code | HTTP | Description |
 |---|---|---|
-| `CALL_CALLEE_BUSY` | 409 | Callee is already in an active or ringing call |
+| `CALL_CALLEE_BUSY` | 409 | All callees are busy (direct call: any callee busy; group call: every callee busy) |
 | `CALL_CALLER_BUSY` | 409 | Caller is already in an active or ringing call |
 | `CALL_NOT_FOUND` | 404 | Call record does not exist |
 | `CALL_NOT_ACTIVE` | 409 | Call must be ACTIVE for this operation |
@@ -410,11 +449,13 @@ interface CallTokenDto {
 4. When done: POST /calls/:callId/end
 ```
 
-If `POST /calls/start` returns `409 CALL_CALLEE_BUSY`, do not create a local outgoing-call UI. The backend has already persisted a `MISSED` call record and emitted the conversation system message:
+If `POST /calls/start` returns `409 CALL_CALLEE_BUSY`, do not create a local outgoing-call UI. The backend has already persisted a `MISSED` call record and emitted the conversation call message. Direct conversations use the caller as `senderId`/`senderName` and `type: 'text'`; group and announcement conversations use `SYSTEM` with `type: 'system'`:
 
 ```typescript
 {
-  type: 'system',
+  senderId: '<caller-id for direct, SYSTEM for group>',
+  senderName: '<caller name for direct, SYSTEM for group>',
+  type: '<text for direct, system for group>',
   content: 'Cuộc gọi nhỡ (Đường dây bận)',
   metadata: {
     systemType: 'system_call',
@@ -428,7 +469,8 @@ If `POST /calls/start` returns `409 CALL_CALLEE_BUSY`, do not create a local out
 ### Callee flow
 
 ```
-1. Receive WS call:ringing { callId, conversationId, caller: { id, name, avatar }, calleeIds, startedAt }
+1. Receive WS call:ringing { callId, conversationId, caller, calleeIds, calleeProfiles, startedAt }
+        → seed profileMap with caller + calleeProfiles
         → show incoming call UI with ringtone
 
 2a. User accepts:

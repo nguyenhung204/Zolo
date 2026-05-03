@@ -1086,9 +1086,15 @@ callSocket.on(
       name: string;
       avatar: string;
     };
-    calleeIds: string[];
+    calleeIds: string[];        // only non-busy callees in group calls
+    calleeProfiles: {           // NEW — profile of every non-busy callee
+      id: string;
+      name: string;
+      avatar: string;
+    }[];
     startedAt: string; // ISO-8601
   }) => {
+    // Seed profileMap with caller + calleeProfiles before rendering UI
     // Show incoming call UI
     // Emit call:join_room to start receiving call-level broadcasts
     callSocket.emit('call:join_room', { callId: payload.callId });
@@ -1096,7 +1102,7 @@ callSocket.on(
 );
 ```
 
-**FE behavior:** display the incoming call banner. Offer "Accept" (`POST /calls/:callId/accept`) and "Decline" (`POST /calls/:callId/decline`) actions.
+**FE behavior:** seed `profileMap` with `caller` and each entry in `calleeProfiles`, then display the incoming call banner. Offer "Accept" (`POST /calls/:callId/accept`) and "Decline" (`POST /calls/:callId/decline`) actions.
 
 ---
 
@@ -1113,15 +1119,21 @@ callSocket.on(
     callId: string;
     conversationId: string;
     calleeId: string;
+    callee: {               // NEW — full profile of the accepting callee
+      id: string;
+      name: string;
+      avatar: string;
+    };
     acceptedAt: string;
   }) => {
+    // Seed profileMap with callee profile
     // Caller: fetch LiveKit token via GET /calls/:callId/token
     // Connect to LiveKit SFU room
   },
 );
 ```
 
-**FE behavior (caller):** call `GET /calls/:callId/token`, receive `{ token, roomName, livekitUrl }`, connect to LiveKit SFU.
+**FE behavior (caller):** add `payload.callee` to `profileMap`, call `GET /calls/:callId/token`, receive `{ token, roomName, livekitUrl }`, connect to LiveKit SFU.
 
 ---
 
@@ -1326,20 +1338,22 @@ Caller                        Server                        Callee
 1. `POST /calls/start` with `{ conversationId, calleeIds }` → receive `CallDto` with `callId`.
 2. Emit `call:join_room { callId }` to subscribe to call-level broadcasts.
 3. Wait for `call:accepted` event on the `call:{callId}` room.
-4. On `call:accepted`: call `GET /calls/:callId/token` → receive `{ token, roomName, livekitUrl }`.
+4. On `call:accepted`: add `payload.callee` to `profileMap`, call `GET /calls/:callId/token` → receive `{ token, roomName, livekitUrl }`.
 5. Connect to LiveKit SFU using the token.
 6. When done: `POST /calls/:callId/end` → receive `call:ended` broadcast.
 7. Disconnect from LiveKit, emit `call:leave_room { callId }`.
 
 **Step-by-step (Callee):**
 
-1. Receive `call:ringing` in personal room `user:{userId}` — display incoming call UI.
+1. Receive `call:ringing` in personal room `user:{userId}` — seed `profileMap` from `caller` and `calleeProfiles`, then display incoming call UI.
 2. Emit `call:join_room { callId }` to subscribe to call-level broadcasts.
 3. On "Accept": `POST /calls/:callId/accept` → ACK contains `livekitToken` and `livekitUrl`.
 4. Connect to LiveKit SFU using the token from the accept response.
 5. On "Decline": `POST /calls/:callId/decline` → `call:declined` broadcast to room.
 6. When done: `POST /calls/:callId/end` or wait for `call:ended` broadcast.
 7. Disconnect from LiveKit, emit `call:leave_room { callId }`.
+
+**Reconnect / tab refresh:** call `GET /calls/:callId` — the response now includes `displayName` and `avatarUrl` on every participant so `profileMap` can be fully rebuilt without separate user-service lookups.
 
 **Important notes:**
 

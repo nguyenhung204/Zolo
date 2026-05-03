@@ -37,7 +37,7 @@ startCall
 `calls` rows store:
 
 - `conversationId` — conversation this call belongs to
-- `conversationType` — `'direct' | 'group' | 'announcement'`; set on creation, used for system message routing
+- `conversationType` — `'direct' | 'group' | 'announcement'`; set on creation, used for call chat message sender attribution
 - `callerId` — user who initiated the call
 - `status` — `RINGING | ACTIVE | REJECTED | MISSED | ENDED`
 - `startedAt` — when the call was created (RINGING)
@@ -131,10 +131,10 @@ The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room via 
 
 1. Lock on callId
 2. Validates call is `RINGING`
-3. Atomically: transitions → `REJECTED`, marks all participants left, writes `CallSummaryEntity`, **writes `MESSAGE_ACCEPTED` system message to Outbox** — content: `"Cuộc gọi bị từ chối"` (action: `CALL_REJECTED`)
+3. Atomically: transitions → `REJECTED`, marks all participants left, writes `CallSummaryEntity`, **writes `MESSAGE_ACCEPTED` call message to Outbox** — content: `"Cuộc gọi bị từ chối"` (action: `CALL_REJECTED`)
 4. **Post-transaction fast-track:** publishes `call.event.declined` to Redis `realtime:call_events` channel
 
-> Group call: each callee declines independently. The call only becomes `REJECTED` when all callees have declined. Only then is the system message enqueued.
+> Group call: each callee declines independently. The call only becomes `REJECTED` when all callees have declined. Only then is the call message enqueued.
 
 ### Ending a call
 
@@ -145,11 +145,13 @@ The Realtime Gateway broadcasts `call:accepted` to the `call:{callId}` room via 
 3. Determines final status:
    - Caller hangs up while `RINGING` → `MISSED`
    - Otherwise → `ENDED`
-4. Atomically: transitions status, marks all participants left, writes `CallSummaryEntity`, **writes `call.event.ended` to Outbox** (Kafka signaling), **writes `MESSAGE_ACCEPTED` system message to Outbox**:
+4. Atomically: transitions status, marks all participants left, writes `CallSummaryEntity`, **writes `call.event.ended` to Outbox** (Kafka signaling), **writes `MESSAGE_ACCEPTED` call message to Outbox**:
    - `MISSED` (caller cancelled): content `"Cuộc gọi nhỡ"` (action: `CALL_MISSED`)
    - `ENDED`: content `"Cuộc gọi đã kết thúc • {duration}"` (action: `CALL_ENDED`), e.g. `"Cuộc gọi đã kết thúc • 5 phút 30 giây"`
 5. **Post-transaction fast-track:** also publishes `call.event.ended` to Redis `realtime:call_events` channel
 6. Fire-and-forget `liveKit.closeRoom(callId).catch(log)` — LiveKit is best-effort
+
+All terminal call chat messages keep `metadata.systemType: "system_call"` so clients can render the call card consistently. Direct conversations are attributed to the original caller and use `type: "text"`; group and announcement conversations use `senderId: "SYSTEM"` and `type: "system"`.
 
 ### Getting a LiveKit token
 
@@ -194,7 +196,7 @@ Finds all RINGING calls older than `CALL_RINGING_TIMEOUT_SECONDS` (default 60 s)
 
 1. Acquires call lock (skips if locked — active transaction in progress)
 2. Re-fetches fresh state inside lock
-3. Atomically: transitions → `MISSED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path), **writes `MESSAGE_ACCEPTED` system message** — content: `"Cuộc gọi nhỡ"` (action: `CALL_MISSED`, reason: `ringing_timeout`)
+3. Atomically: transitions → `MISSED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path), **writes `MESSAGE_ACCEPTED` call message** — content: `"Cuộc gọi nhỡ"` (action: `CALL_MISSED`, reason: `ringing_timeout`)
 4. **Post-transaction fast-track:** publishes `call.event.ended` to Redis `realtime:call_events` channel
 
 #### Ghost ACTIVE call sweep
@@ -202,7 +204,7 @@ Finds all RINGING calls older than `CALL_RINGING_TIMEOUT_SECONDS` (default 60 s)
 Finds all ACTIVE calls where every participant has `leftAt != null`, or where the call age exceeds `CALL_MAX_ACTIVE_DURATION_SECONDS` (default 4 h). For each:
 
 1. Acquires call lock, re-checks fresh state
-2. Atomically: transitions → `ENDED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path), **writes `MESSAGE_ACCEPTED` system message** — content: `"Cuộc gọi đã kết thúc • {duration}"` (action: `CALL_ENDED`)
+2. Atomically: transitions → `ENDED`, marks all participants left, writes `CallSummaryEntity`, writes `call.event.ended` to Outbox (Kafka path), **writes `MESSAGE_ACCEPTED` call message** — content: `"Cuộc gọi đã kết thúc • {duration}"` (action: `CALL_ENDED`)
 3. **Post-transaction fast-track:** publishes `call.event.ended` to Redis `realtime:call_events` channel
 4. Fire-and-forget `closeRoom`
 

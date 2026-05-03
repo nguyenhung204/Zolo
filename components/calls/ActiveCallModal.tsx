@@ -364,11 +364,24 @@ export function ActiveCallModal() {
   const { pos, handlePointerDown, handlePointerMove, handlePointerUp } =
     useDraggablePosition(modalW, modalH);
 
+  // Needed for group call detection fallback (see below)
+  const groupCallEntry = useCallStore(
+    (s) => activeCall ? s.groupCallsByConversation[activeCall.conversationId] : undefined
+  );
+
   if (!activeCall) return null;
 
-  // Group call: more than 2 total participants (caller + multiple callees)
+  // Group call: more than 2 total participants (caller + multiple callees).
+  // Fallback: check the groupCallsByConversation entry's participantIds — it only
+  // ever grows, so length > 2 reliably detects a group call even when the API
+  // response for a rejoin omits calleeIds or only lists currently-active participants.
   const calleeCount = activeCall.participants.filter((p) => p.role === "CALLEE").length;
-  const isGroup = calleeCount > 1 || (activeCall.calleeIds?.length ?? 0) > 1;
+  const isGroup =
+    calleeCount > 1 ||
+    (activeCall.calleeIds?.length ?? 0) > 1 ||
+    (!!groupCallEntry &&
+      groupCallEntry.callId === activeCall.id &&
+      groupCallEntry.participantIds.length > 2);
 
   // Resolve the other participant's display info (used for 1:1 only)
   const otherUserId =
