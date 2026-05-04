@@ -209,6 +209,7 @@ export function AttachmentGrid({
 }) {
   const isUploading = typeof uploadProgress === "number" && uploadProgress < 100;
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [lightboxMediaId, setLightboxMediaId] = useState<string | undefined>(undefined);
   const [videoAttachment, setVideoAttachment] = useState<AttachmentRef | null>(null);
 
   // During upload: show local previews
@@ -282,7 +283,7 @@ export function AttachmentGrid({
       <div className="space-y-0.5">
         {mediaItems.length > 0 && (
           <div className={cn("grid gap-0.5", colsClass)}>
-            {mediaItems.map((a) =>
+            {mediaItems.map((a, idx) =>
               a.type === "video" ? (
                 <AttachmentVideoThumb
                   key={a.mediaId}
@@ -295,7 +296,8 @@ export function AttachmentGrid({
                   key={a.mediaId}
                   attachment={a}
                   conversationId={conversationId}
-                  onOpen={(src) => setLightboxSrc(src)}
+                  localPreviewUrl={localAttachments?.[idx]?.previewUrl}
+                  onOpen={(src) => { setLightboxSrc(src); setLightboxMediaId(a.mediaId); }}
                 />
               )
             )}
@@ -316,7 +318,8 @@ export function AttachmentGrid({
       {lightboxSrc && (
         <ImageLightbox
           src={lightboxSrc}
-          onClose={() => setLightboxSrc(null)}
+          mediaId={lightboxMediaId}
+          onClose={() => { setLightboxSrc(null); setLightboxMediaId(undefined); }}
           conversationId={conversationId}
         />
       )}
@@ -338,47 +341,50 @@ export function AttachmentGrid({
 function AttachmentImageThumb({
   attachment,
   conversationId,
+  localPreviewUrl,
   onOpen,
 }: {
   attachment: AttachmentRef;
   conversationId?: string;
+  localPreviewUrl?: string;
   onOpen: (src: string) => void;
 }) {
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  // cdnUrl: server URL once loaded. localPreviewUrl is shown as fallback until then.
+  const [cdnUrl, setCdnUrl] = useState<string | null>(null);
+  const displayUrl = cdnUrl ?? localPreviewUrl ?? null;
   const isLoadingRef = useRef(false);
   const divRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (cdnUrl) return; // already have CDN URL
     const node = divRef.current;
-    if (!node || thumbUrl) return;
+    if (!node) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && !isLoadingRef.current) {
           isLoadingRef.current = true;
-          setIsLoading(true);
           fetchDisplayUrl(attachment.mediaId, conversationId)
-            .then((url) => { if (url) setThumbUrl(url); })
+            .then((url) => { if (url) setCdnUrl(url); })
             .catch(() => {})
-            .finally(() => { isLoadingRef.current = false; setIsLoading(false); });
+            .finally(() => { isLoadingRef.current = false; });
         }
       },
       { rootMargin: "50px" }
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [attachment.mediaId, conversationId, thumbUrl]);
+  }, [attachment.mediaId, conversationId, cdnUrl]);
 
-  if (thumbUrl) {
+  if (displayUrl) {
     return (
       <div
         ref={divRef}
         className="aspect-square overflow-hidden bg-border/20 cursor-zoom-in"
         role="button"
-        onClick={() => onOpen(thumbUrl)}
+        onClick={() => onOpen(cdnUrl ?? displayUrl)}
         aria-label="View image"
       >
-        <img src={thumbUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+        <img src={displayUrl} alt="" className="w-full h-full object-cover" />
       </div>
     );
   }
@@ -387,7 +393,7 @@ function AttachmentImageThumb({
       ref={divRef}
       className="aspect-square bg-border/20 flex items-center justify-center"
     >
-      {isLoading && <Loader2 className="w-4 h-4 animate-spin text-muted/60" />}
+      <Loader2 className="w-4 h-4 animate-spin text-muted/60" />
     </div>
   );
 }

@@ -10,7 +10,7 @@ interface Props {
 function buildSystemText(
   action: NonNullable<Message["metadata"]>["action"],
   metadata: Message["metadata"],
-): string | null {
+): string | string[] | null {
   if (!action) return null;
 
   // Names are pre-populated by message-store — no store lookup needed.
@@ -69,6 +69,35 @@ function buildSystemText(
       return `${actor} updated the group`;
     }
 
+    case "OWNERSHIP_TRANSFERRED": {
+      const newOwner = targetNames.length > 0 ? targetNames[0] : "someone";
+      return `${actor} transferred group ownership to ${newOwner}`;
+    }
+
+    case "GROUP_SETTINGS_UPDATED": {
+      const changes = metadata?.changes;
+      const lines: string[] = [];
+      if (changes?.allowMemberMessage === true)
+        lines.push(`${actor} allowed members to send messages`);
+      else if (changes?.allowMemberMessage === false)
+        lines.push(`${actor} restricted messaging to admins only`);
+      if (changes?.joinApprovalRequired === true)
+        lines.push(`${actor} enabled join approval`);
+      else if (changes?.joinApprovalRequired === false)
+        lines.push(`${actor} disabled join approval`);
+      return lines.length > 0 ? (lines.length === 1 ? lines[0] : lines) : `${actor} updated group settings`;
+    }
+
+    case "POLL_CLOSED":
+      return `${actor} closed a poll`;
+
+    case "POLL_VOTED": {
+      const texts = metadata?.optionTexts;
+      return texts && texts.length > 0
+        ? `${actor} voted for '${texts.join(", ")}' on a poll`
+        : `${actor} voted on a poll`;
+    }
+
     default:
       return null;
   }
@@ -80,11 +109,15 @@ export function SystemMessageChip({ message }: Props) {
 
   if (!text) return null;
 
+  const lines = Array.isArray(text) ? text : [text];
+
   return (
     <div className="flex flex-col items-center gap-0.5 px-6 py-1.5 select-none">
-      <span className="text-[11px] text-muted bg-border/40 rounded-full px-3 py-1 text-center leading-relaxed max-w-[90%]">
-        {text}
-      </span>
+      {lines.map((line, i) => (
+        <span key={i} className="text-[11px] text-muted bg-border/40 rounded-full px-3 py-1 text-center leading-relaxed max-w-[90%]">
+          {line}
+        </span>
+      ))}
       <span className="text-[10px] text-muted/60 tabular-nums">
         {formatTime(message.createdAt)}
       </span>

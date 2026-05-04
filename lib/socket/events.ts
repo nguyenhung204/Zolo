@@ -1,5 +1,7 @@
 // ─── Shared domain types ─────────────────────────────────────────────────────
 
+import type { SystemMessageAction } from "@/lib/api/messages";
+
 export type MessageType = "text" | "image" | "file" | "audio" | "video" | "system" | "sticker" | "media" | "call_summary" | "contact_card";
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
@@ -28,16 +30,24 @@ export interface WsMessage {
     attachmentUrls?: string[];
     url?: string;
     // system message fields (type === "system")
-    action?: string;
+    action?: SystemMessageAction | "CALL_MISSED" | "CALL_MISSED_BUSY" | "CALL_REJECTED" | "CALL_ENDED";
     actorId?: string;
     actorName?: string;
     targetIds?: string[];
     targetNames?: string[];
     joinSource?: "manual" | "invite_link" | "join_request";
     newRole?: string;
-    changes?: { name?: string; avatarChanged?: boolean };
+    changes?: {
+      name?: string;
+      avatarChanged?: boolean;
+      allowMemberMessage?: boolean;
+      joinApprovalRequired?: boolean;
+    };
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
+    pollId?: string;
+    optionIds?: string[];
+    optionTexts?: string[];
     contactUserId?: string;
     cardType?: "friend_contact";
     contactUsername?: string;
@@ -351,7 +361,6 @@ export interface ServerEvents {
       name?: string;
       avatarChanged?: boolean;
       allowMemberMessage?: boolean;
-      isPublic?: boolean;
       joinApprovalRequired?: boolean;
     };
     updatedBy: string;
@@ -419,6 +428,46 @@ export interface ServerEvents {
     conversationId: string;
     reason: "removed-from-conversation" | "group-member-kicked" | "group-disbanded" | string;
     message?: string;
+  }) => void;
+
+  "group:poll_created": (data: {
+    conversationId: string;
+    poll: {
+      id: string;
+      conversationId: string;
+      creatorId: string;
+      question: string;
+      options: Array<{ id: string; text: string; voterIds: string[] }>;
+      multipleChoice: boolean;
+      deadline: string | null;
+      isClosed: boolean;
+    };
+    createdBy: string;
+    createdByName: string;
+    timestamp: string;
+  }) => void;
+
+  "group:poll_voted": (data: {
+    conversationId: string;
+    pollId: string;
+    voterId: string;
+    voterName: string;
+    optionIds: string[];
+    options: Array<{ id: string; text: string; voterIds: string[] }>;
+    timestamp: string;
+  }) => void;
+
+  "group:poll_closed": (data: {
+    conversationId: string;
+    pollId: string;
+    closedBy: string;
+    closedByName: string;
+    options: Array<{ id: string; text: string; voterIds: string[] }>;
+    timestamp: string;
+  }) => void;
+
+  "account:status-changed": (data: {
+    reason: "deactivated" | "deleted";
   }) => void;
 }
 

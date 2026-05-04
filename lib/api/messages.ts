@@ -12,7 +12,11 @@ export type SystemMessageAction =
   | "MEMBER_REMOVED"
   | "MEMBER_KICKED"
   | "ROLE_CHANGED"
-  | "GROUP_INFO_UPDATED";
+  | "OWNERSHIP_TRANSFERRED"
+  | "GROUP_INFO_UPDATED"
+  | "GROUP_SETTINGS_UPDATED"
+  | "POLL_CLOSED"
+  | "POLL_VOTED";
 
 // ─── Reaction types ───────────────────────────────────────────────────────────
 
@@ -141,7 +145,17 @@ export interface Message {
     targetNames?: string[];   // parallel array — same order as targetIds
     joinSource?: "manual" | "invite_link" | "join_request";
     newRole?: string;
-    changes?: { name?: string; avatarChanged?: boolean };
+    changes?: {
+      // GROUP_INFO_UPDATED
+      name?: string;
+      avatarChanged?: boolean;
+      // GROUP_SETTINGS_UPDATED
+      allowMemberMessage?: boolean;
+      joinApprovalRequired?: boolean;
+    };
+    pollId?: string;              // POLL_CLOSED / POLL_VOTED
+    optionIds?: string[];         // POLL_VOTED
+    optionTexts?: string[];       // POLL_VOTED — parallel to optionIds
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
     contactUserId?: string;

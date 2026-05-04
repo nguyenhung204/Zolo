@@ -538,6 +538,12 @@ function CompactPolls({
   const allowMemberMessage = conversation.allowMemberMessage !== false;
   const createPoll = useCreatePoll(conversationId);
 
+  const MAX_ACTIVE_POLLS = 3;
+  const activePolls = polls.filter((p) => !p.isClosed && (!p.deadline || new Date(p.deadline).getTime() > Date.now()));
+  const atPollLimit = activePolls.length >= MAX_ACTIVE_POLLS;
+
+  const sortedPolls = [...polls].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
   const cleanOptions = options.map((option) => option.trim()).filter(Boolean);
   const uniqueOptions = Array.from(new Set(cleanOptions));
   const deadlineDate = deadline ? new Date(deadline) : null;
@@ -554,6 +560,10 @@ function CompactPolls({
   const handleCreate = () => {
     if (!supportsPolls) {
       toast.error("Polls are only available in groups.");
+      return;
+    }
+    if (atPollLimit) {
+      toast.error(`Tối đa ${MAX_ACTIVE_POLLS} poll đang hoạt động. Đóng bớt poll để tạo mới.`);
       return;
     }
     if (cleanOptions.length !== uniqueOptions.length) {
@@ -590,8 +600,8 @@ function CompactPolls({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <SectionHeader title="Polls" description={`${polls.length} poll${polls.length !== 1 ? "s" : ""} in this group`} />
-        {view === "list" && (
+        <SectionHeader title="Polls" description={`${polls.length} poll${polls.length !== 1 ? "s" : ""} \u00b7 ${activePolls.length}/${MAX_ACTIVE_POLLS} active`} />
+        {view === "list" && !atPollLimit && (
           <button
             onClick={() => setView("create")}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-cta bg-cta/10 rounded-lg hover:bg-cta/15 transition cursor-pointer"
@@ -616,7 +626,13 @@ function CompactPolls({
           </button>
         ) : (
           <div className="space-y-3">
-            {polls.map((poll) => (
+            {atPollLimit && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-border/30 border border-border text-xs text-muted">
+                <BarChart3 className="w-3.5 h-3.5 shrink-0" />
+                Tối đa {MAX_ACTIVE_POLLS} poll đang hoạt động. Đóng bớt poll để tạo mới.
+              </div>
+            )}
+            {sortedPolls.map((poll) => (
               <PollUI
                 key={poll.id}
                 pollId={poll.id}

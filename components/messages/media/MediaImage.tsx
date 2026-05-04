@@ -75,12 +75,13 @@ export function MediaImage({ message, isMine }: Props) {
       <>
         <div
           ref={imgRef}
-          className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in inline-block"
+          className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in block"
           style={{
             aspectRatio: displayAspectRatio ?? undefined,
             width: displayWidth ? `min(${displayWidth}px, 100%)` : "min(420px, 100%)",
             maxWidth: "min(420px, 100%)",
             maxHeight: "70vh",
+            minHeight: displayAspectRatio ? undefined : "120px",
           }}
           onClick={() => !isUploading && setLightboxSrc(previewSrc)}
           role="button"
@@ -92,7 +93,6 @@ export function MediaImage({ message, isMine }: Props) {
             alt=""
             className="block w-full h-full"
             style={{ objectFit: "contain" }}
-            loading="lazy"
             onLoad={(e) => {
               const t = e.currentTarget;
               if (t.naturalWidth && t.naturalHeight) {

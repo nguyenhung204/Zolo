@@ -96,17 +96,14 @@ function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
 
   // Append active polls at the very bottom so they're immediately visible
   if (activePolls.length > 0) {
-    for (const poll of activePolls) {
+    const sorted = [...activePolls].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    for (const poll of sorted) {
       items.push({ kind: "poll", poll });
     }
   }
 
   items.push({ kind: "padding" }); // bottom spacer
   return items;
-}
-
-function isOwnPendingMedia(message: Message, userId: string): boolean {
-  return (message._mine || message.senderId === userId) && !!message._pending && (message.type === "image" || message.type === "video" || message.type === "media");
 }
 
 // ─── Row props ────────────────────────────────────────────────────────────────
@@ -389,8 +386,7 @@ export function VirtualMessageList({
     ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
     : [];
   const items = buildItems(messages, visiblePolls);
-  const stableTimelineCount =
-    messages.filter((message) => !isOwnPendingMedia(message, userId)).length + visiblePolls.length;
+  const stableTimelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
   const messageById = new Map(messages.map((m) => [m.messageId, m]));
 

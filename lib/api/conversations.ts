@@ -41,7 +41,7 @@ export interface Conversation {
     };
   };
   // Group management settings (only present for group conversations)
-  isPublic?: boolean;
+
   joinApprovalRequired?: boolean;
   allowMemberMessage?: boolean;
   linkVersion?: number;

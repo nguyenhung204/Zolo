@@ -92,7 +92,7 @@ export function useCreatePoll(conversationId: string) {
         (old) => {
           const list = old ?? [];
           if (list.some((poll) => poll.id === newPoll.id)) return list;
-          return [newPoll, ...list];
+          return [newPoll, ...list].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
         },
       );
       qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);

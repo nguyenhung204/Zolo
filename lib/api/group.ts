@@ -5,7 +5,6 @@ import type { Conversation, MemberRole } from "@/lib/api/conversations";
 
 export interface GroupSettingsPayload {
   allowMemberMessage?: boolean;
-  isPublic?: boolean;
   joinApprovalRequired?: boolean;
 }
 

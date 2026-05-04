@@ -135,10 +135,7 @@ export function useGroupSocketEvents(conversationId: string) {
         } else if (payload.changes.allowMemberMessage === true && myRole === "member") {
           toast.info("Members can now send messages in this group.");
         }
-      } else if (
-        "joinApprovalRequired" in payload.changes ||
-        "isPublic" in payload.changes
-      ) {
+      } else if ("joinApprovalRequired" in payload.changes) {
         // Only surface to admins/owner — regular members don't manage access.
         if (myRole === "owner" || myRole === "admin") {
           toast.info("Group settings have been updated.");

@@ -35,6 +35,12 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
 
   if (!open) return null;
 
+  const MAX_ACTIVE_POLLS = 3;
+  const activePolls = polls.filter((p) => !p.isClosed && (!p.deadline || new Date(p.deadline).getTime() > Date.now()));
+  const atPollLimit = activePolls.length >= MAX_ACTIVE_POLLS;
+
+  const sortedPolls = [...polls].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
   const cleanOptions = options.map((option) => option.trim()).filter(Boolean);
   const uniqueOptions = Array.from(new Set(cleanOptions));
   const deadlineDate = deadline ? new Date(deadline) : null;
@@ -51,6 +57,10 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
   const handleCreate = () => {
     if (!supportsPolls) {
       toast.error("Polls are only available in groups.");
+      return;
+    }
+    if (atPollLimit) {
+      toast.error(`Tối đa ${MAX_ACTIVE_POLLS} poll đang hoạt động. Đóng bớt poll để tạo mới.`);
       return;
     }
     if (cleanOptions.length !== uniqueOptions.length) {
@@ -117,7 +127,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
               </h2>
               <p className="text-[11px] text-muted mt-0.5">
                 {view === "list"
-                  ? `${polls.length} poll${polls.length !== 1 ? "s" : ""} in this group`
+                  ? `${polls.length} poll${polls.length !== 1 ? "s" : ""} · ${activePolls.length}/${MAX_ACTIVE_POLLS} active`
                   : "Create a poll for the group"
                 }
               </p>
@@ -137,19 +147,26 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
             <div className="p-4 sm:p-5 space-y-4">
               {/* Create button */}
               {supportsPolls && (
-                <button
-                  onClick={() => setView("create")}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl",
-                    "bg-cta/5 border border-cta/20 hover:bg-cta/10 transition-colors cursor-pointer",
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Plus className="w-4 h-4 text-cta" />
-                    <span className="text-sm font-semibold text-cta">Create new poll</span>
+                atPollLimit ? (
+                  <div className="w-full flex items-center gap-2.5 px-4 py-3 rounded-xl bg-border/30 border border-border text-muted text-sm">
+                    <BarChart3 className="w-4 h-4 shrink-0" />
+                    <span>Tối đa {MAX_ACTIVE_POLLS} poll đang hoạt động. Đóng bớt poll để tạo mới.</span>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-cta/60" />
-                </button>
+                ) : (
+                  <button
+                    onClick={() => setView("create")}
+                    className={cn(
+                      "w-full flex items-center justify-between px-4 py-3 rounded-xl",
+                      "bg-cta/5 border border-cta/20 hover:bg-cta/10 transition-colors cursor-pointer",
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Plus className="w-4 h-4 text-cta" />
+                      <span className="text-sm font-semibold text-cta">Create new poll</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-cta/60" />
+                  </button>
+                )
               )}
 
               {/* Poll list */}
@@ -163,7 +180,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {polls.map((poll) => (
+                  {sortedPolls.map((poll) => (
                     <PollUI
                       key={poll.id}
                       pollId={poll.id}

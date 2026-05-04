@@ -28,7 +28,9 @@ export function ActivePollsBanner({ conversationId }: ActivePollsBannerProps) {
   const myRole = useMyConversationRole(conversationId);
   const allowMemberMessage = conversation?.allowMemberMessage ?? true;
 
-  const activePolls = polls.filter(isActivePoll);
+  const activePolls = polls
+    .filter(isActivePoll)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   if (!isGroup || activePolls.length === 0) return null;
 
   return (
