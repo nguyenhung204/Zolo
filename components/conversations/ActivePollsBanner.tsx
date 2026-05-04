@@ -21,7 +21,7 @@ function isActivePoll(poll: Poll): boolean {
 }
 
 export function ActivePollsBanner({ conversationId }: ActivePollsBannerProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const { data: conversation } = useConversation(conversationId);
   const isGroup = conversation?.kind === "group";
   const { data: polls = [] } = usePolls(conversationId, isGroup);
