@@ -53,17 +53,31 @@ type ListItem =
   | { kind: "divider"; label: string }
   | { kind: "padding" };
 
+function isPollExpired(deadline?: string): boolean {
+  if (!deadline) return false;
+  return new Date(deadline).getTime() < Date.now();
+}
+
+function isActivePoll(poll: Poll): boolean {
+  return !poll.isClosed && !isPollExpired(poll.deadline);
+}
+
 function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
+  // Active polls float to the bottom so they're always visible on open.
+  // Closed/expired polls remain at their chronological position.
+  const closedPolls = polls.filter((p) => !isActivePoll(p));
+  const activePolls = polls.filter(isActivePoll);
+
   const timeline = [
     ...messages.map((msg) => ({ kind: "message" as const, createdAt: msg.createdAt, msg })),
-    ...polls.map((poll) => ({ kind: "poll" as const, createdAt: poll.createdAt, poll })),
+    ...closedPolls.map((poll) => ({ kind: "poll" as const, createdAt: poll.createdAt, poll })),
   ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  if (timeline.length === 0) return [];
+
   const items: ListItem[] = [{ kind: "padding" }]; // top spacer
+
   for (let i = 0; i < timeline.length; i++) {
     const item = timeline[i];
     const prev = timeline[i - 1] ?? null;
-    // Insert date divider when date changes
     if (
       !prev ||
       new Date(prev.createdAt).toDateString() !== new Date(item.createdAt).toDateString()
@@ -79,6 +93,14 @@ function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
     const nextMsg = next?.kind === "message" ? next.msg : null;
     items.push({ kind: "message", msg: item.msg, prev: prevMsg, next: nextMsg });
   }
+
+  // Append active polls at the very bottom so they're immediately visible
+  if (activePolls.length > 0) {
+    for (const poll of activePolls) {
+      items.push({ kind: "poll", poll });
+    }
+  }
+
   items.push({ kind: "padding" }); // bottom spacer
   return items;
 }
@@ -234,7 +256,7 @@ export function VirtualMessageList({
   const { data: conversation } = useConversation(conversationId);
   const myRole = useMyConversationRole(conversationId);
   const supportsPolls = conversation?.kind === "group";
-  const { data: polls = [] } = usePolls(conversationId, false);
+  const { data: polls = [] } = usePolls(conversationId, supportsPolls);
   const allowMemberMessage = conversation?.allowMemberMessage ?? true;
 
   // ─── Seen cursor tracking ────────────────────────────────────────────────
