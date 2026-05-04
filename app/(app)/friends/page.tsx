@@ -93,9 +93,9 @@ export default function FriendsPage() {
   return (
     <div className="flex flex-col h-full min-h-0 bg-bg">
       {/* Header */}
-      <div className="border-b border-border px-6 pt-5 pb-0 bg-surface shrink-0">
+      <div className="border-b border-border px-4 md:px-6 pt-4 md:pt-5 pb-0 bg-surface shrink-0">
         <h1 className="text-xl font-bold text-primary mb-4 tracking-tight">Friends</h1>
-        <nav className="flex gap-1">
+        <nav className="flex gap-1 overflow-x-auto scrollbar-none">
           {tabs.map(({ id, label, icon, badge }) => (
             <button
               key={id}
@@ -476,7 +476,7 @@ function SearchPeople({
   const showResults = query.trim().length >= 2;
 
   return (
-    <div className="p-4 max-w-lg">
+    <div className="p-4 max-w-lg md:max-w-2xl w-full">
       {/* Search input */}
       <div className="relative mb-5">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" />
@@ -550,12 +550,40 @@ function SearchResultRow({
   );
   const status: FriendshipStatus = statusData?.status ?? user.friendship ?? "NONE";
 
+  const router = useRouter();
   const { mutateAsync: send } = useSendFriendRequest();
   const { mutateAsync: accept } = useAcceptFriendRequest();
   const { mutateAsync: rejectOrCancel } = useRejectFriendRequest();
   const { mutateAsync: unfriend } = useUnfriend();
   const { mutateAsync: unblockUser } = useUnblockUser();
+  const { mutateAsync: createConversation } = useCreateConversation();
+  const { data: conversations = [] } = useConversations();
   const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
+
+  const dmConversation = useMemo(
+    () => conversations.find((c) => c.kind === "direct" && c.otherUser?.id === user.id),
+    [conversations, user.id],
+  );
+
+  async function handleMessage() {
+    if (pendingAction === "message") return;
+    if (dmConversation) {
+      router.push(`/conversations/${encodeId(dmConversation.id)}`);
+      return;
+    }
+    setPendingAction("message");
+    try {
+      const conversation = await createConversation({
+        kind: "direct",
+        memberIds: [user.id],
+      });
+      router.push(`/conversations/${encodeId(conversation.id)}`);
+    } catch {
+      toast.error("Could not start the conversation.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
 
   async function run(action: ActionKey, fn: () => Promise<unknown>) {
     setPendingAction(action);
@@ -648,6 +676,14 @@ function SearchResultRow({
 
       {!isMe && status === "FRIEND" && (
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => void handleMessage()}
+            disabled={actionDisabled}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cta/10 text-cta text-xs font-semibold hover:bg-cta/20 transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {pendingAction === "message" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5" />}
+            Message
+          </button>
           <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-success/10 text-success text-xs font-semibold">
             <UserCheck className="w-3.5 h-3.5" />
             Friends

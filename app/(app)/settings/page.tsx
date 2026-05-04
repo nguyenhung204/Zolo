@@ -41,11 +41,11 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 max-w-2xl mx-auto w-full p-6 space-y-5">
+    <div className="flex flex-col h-full min-h-0 max-w-2xl mx-auto w-full px-4 py-5 md:p-6 space-y-5">
       <h1 className="text-lg font-bold text-primary">Settings</h1>
 
       {/* Tab nav */}
-      <nav className="flex gap-1 border-b border-border pb-0">
+      <nav className="flex gap-1 border-b border-border pb-0 overflow-x-auto scrollbar-none">
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -78,7 +78,7 @@ export default function SettingsPage() {
               {logoutError && (
                 <p className="mb-3 text-xs text-error">{logoutError}</p>
               )}
-              <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-text">Sign out from this device</p>
                   <p className="text-xs text-muted mt-1">Your account stays active and you can sign back in later.</p>
@@ -86,7 +86,7 @@ export default function SettingsPage() {
                 <button
                   onClick={handleLogout}
                   disabled={logoutPending}
-                  className="px-5 py-2.5 rounded-lg bg-error text-white text-sm font-semibold hover:opacity-90 transition cursor-pointer"
+                  className="self-start sm:self-auto px-5 py-2.5 rounded-lg bg-error text-white text-sm font-semibold hover:opacity-90 transition cursor-pointer"
                 >
                   {logoutPending ? "Signing out..." : "Sign out"}
                 </button>

@@ -139,7 +139,6 @@ export default function ConversationPage({ params }: Props) {
         conversationId={id}
         onViewDetails={setDetailsTarget}
       />
-      <ActivePollsBanner conversationId={id} />
       <GroupCallBanner conversationId={id} />
 
       {/* Message area */}

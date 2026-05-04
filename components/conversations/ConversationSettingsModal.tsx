@@ -41,7 +41,7 @@ import {
   useRemoveConversationMember,
   useSetMemberRole,
 } from "@/hooks/useConversations";
-import { useUserSearch, useBlockUser } from "@/hooks/useFriends";
+import { useUserSearch } from "@/hooks/useFriends";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
 import { useAuthStore } from "@/stores/authStore";
 import { queryKeys } from "@/lib/query/keys";
@@ -56,6 +56,7 @@ import { JoinRequestsPanel } from "./JoinRequestsPanel";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
 import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
+import { useFriendshipStatus, useBlockUser, useUnblockUser } from "@/hooks/useFriends";
 import { usePolls, useCreatePoll } from "@/hooks/useGroup";
 import type { ConversationMuteDuration } from "@/lib/api/notifications";
 import type { MemberRole, Conversation } from "@/lib/api/conversations";
@@ -745,6 +746,8 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [confirmDeleteForMe, setConfirmDeleteForMe] = useState(false);
   const [isBlockingDirect, setIsBlockingDirect] = useState(false);
   const [confirmBlockDirect, setConfirmBlockDirect] = useState(false);
+  const [isUnblockingDirect, setIsUnblockingDirect] = useState(false);
+  const [confirmUnblockDirect, setConfirmUnblockDirect] = useState(false);
   const [pendingRemoveMemberId, setPendingRemoveMemberId] = useState<string | null>(null);
   const [dangerOpen, setDangerOpen] = useState(false);
 
@@ -766,6 +769,10 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const removeMember = useRemoveConversationMember();
   const setRole = useSetMemberRole();
   const { mutateAsync: blockUser } = useBlockUser();
+  const { mutateAsync: unblockDirectUser } = useUnblockUser();
+  const { data: directFriendship } = useFriendshipStatus(
+    conv?.kind === "direct" ? conv?.otherUser?.id : undefined,
+  );
   const avatarUpload = useAvatarUpload();
   const leaveGroupMutation = useLeaveGroup();
   const deleteForMeMutation = useDeleteConversationForMe();
@@ -941,6 +948,18 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
     }
   };
 
+  const handleUnblockDirectUser = async () => {
+    const otherUserId = conv?.otherUser?.id;
+    if (!otherUserId) return;
+    setIsUnblockingDirect(true);
+    try {
+      await unblockDirectUser(otherUserId);
+      setConfirmUnblockDirect(false);
+    } finally {
+      setIsUnblockingDirect(false);
+    }
+  };
+
   // ── Group permission toggles ───────────────────────────────────────────────
   const handleSettingChange = (key: keyof GroupSettingsPayload, value: boolean) => {
     updateSettingsMutation.mutate({ [key]: value });
@@ -974,9 +993,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   // Tabs visible to this user
   const tabs: { id: Tab; label: string }[] = [
     { id: "info", label: "Info" },
+    { id: "members" as Tab, label: "Members" },
     ...(!isDirect
       ? [
-          { id: "members" as Tab, label: "Members" },
           { id: "settings" as Tab, label: "Settings" },
           ...(canManageAdmin
             ? [
@@ -1159,15 +1178,25 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                     open={dangerOpen}
                     onToggle={() => setDangerOpen((v) => !v)}
                   >
-                    <DangerRow
-                      icon={<UserX className="w-4 h-4" />}
-                      label="Block user"
-                      description="They won't be able to message you anymore."
-                      onClick={() => setConfirmBlockDirect(true)}
-                    />
+                    {directFriendship?.status === "BLOCKED" ? (
+                      <DangerRow
+                        icon={<UserX className="w-4 h-4" />}
+                        label="Unblock user"
+                        description="Allow them to message you again."
+                        tone="warning"
+                        onClick={() => setConfirmUnblockDirect(true)}
+                      />
+                    ) : (
+                      <DangerRow
+                        icon={<UserX className="w-4 h-4" />}
+                        label="Block user"
+                        description="They won't be able to message you anymore."
+                        onClick={() => setConfirmBlockDirect(true)}
+                      />
+                    )}
                     <DangerRow
                       icon={<Trash2 className="w-4 h-4" />}
-                      label="Delete conversation for me"
+                      label="Delete conversation"
                       description="Hides this chat and clears your local history."
                       onClick={() => setConfirmDeleteForMe(true)}
                     />
@@ -1243,6 +1272,65 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {activeTab === "members" && isDirect && (
+            <div className="p-5 space-y-3">
+              <SectionHeader title="Members (2)" />
+              <div className="space-y-0.5">
+                {conv.otherUser && (
+                  <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/20 transition">
+                    {conv.otherUser.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={conv.otherUser.avatarUrl} alt={conv.otherUser.displayName} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
+                        {conv.otherUser.displayName[0]?.toUpperCase()}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-text truncate">{conv.otherUser.displayName}</p>
+                      <p className="text-xs text-muted">@{conv.otherUser.username}</p>
+                    </div>
+                    <div className="flex items-center gap-1 text-xs text-muted shrink-0">
+                      <User className="w-3 h-3" />
+                      <span>Member</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-border/20 transition">
+                  {members.find((m) => m.userId === currentUserId) && (() => {
+                    const me = members.find((m) => m.userId === currentUserId)!;
+                    const meAvatar = (me as { avatarUrl?: string | null }).avatarUrl;
+                    const meName = (me as { displayName?: string }).displayName ?? (me as { username?: string }).username ?? "You";
+                    const meUsername = (me as { username?: string }).username;
+                    return (
+                      <>
+                        {meAvatar ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={meAvatar} alt={meName} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                        ) : (
+                          <div className="w-9 h-9 rounded-full bg-secondary/20 flex items-center justify-center text-sm font-semibold text-secondary shrink-0">
+                            {meName[0]?.toUpperCase()}
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-text truncate">
+                            {meName}
+                            <span className="text-muted font-normal ml-1">(you)</span>
+                          </p>
+                          {meUsername && <p className="text-xs text-muted">@{meUsername}</p>}
+                        </div>
+                        <div className="flex items-center gap-1 text-xs text-muted shrink-0">
+                          <User className="w-3 h-3" />
+                          <span>Member</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
             </div>
           )}
 
@@ -1480,7 +1568,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                 )}
                 <DangerRow
                   icon={<Trash2 className="w-4 h-4" />}
-                  label="Delete conversation for me"
+                  label="Delete conversation"
                   description="Hides the chat and clears your local history. New messages bring it back."
                   onClick={() => setConfirmDeleteForMe(true)}
                 />
@@ -1584,12 +1672,12 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
         onConfirm={() => disbandMutation.mutate()}
       />
 
-      {/* Confirm: delete conversation for me */}
+      {/* Confirm: delete conversation */}
       <ConfirmDialog
         open={confirmDeleteForMe}
-        title="Delete this conversation for you?"
+        title="Delete conversation?"
         description="The chat is hidden and your local message history is cleared. Other members aren't affected. New messages will bring it back."
-        confirmLabel={deleteForMeMutation.isPending ? "Deleting…" : "Delete for me"}
+        confirmLabel={deleteForMeMutation.isPending ? "Deleting…" : "Delete"}
         loading={deleteForMeMutation.isPending}
         tone="danger"
         onCancel={() => setConfirmDeleteForMe(false)}
@@ -1617,6 +1705,22 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
           await handleBlockDirectUser();
           setConfirmBlockDirect(false);
         }}
+      />
+
+      {/* Confirm: unblock direct user */}
+      <ConfirmDialog
+        open={confirmUnblockDirect}
+        title="Unblock this user?"
+        description={
+          conv?.otherUser?.displayName
+            ? `${conv.otherUser.displayName} will be able to message you again.`
+            : "They will be able to message you again."
+        }
+        confirmLabel={isUnblockingDirect ? "Unblocking…" : "Unblock"}
+        loading={isUnblockingDirect}
+        tone="warning"
+        onCancel={() => setConfirmUnblockDirect(false)}
+        onConfirm={handleUnblockDirectUser}
       />
     </>
   );

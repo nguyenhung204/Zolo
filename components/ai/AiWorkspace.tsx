@@ -13,6 +13,7 @@ import {
   UploadCloud,
   WifiOff,
   X,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { MarkdownMessage } from "@/components/messages/MarkdownMessage";
@@ -88,6 +89,7 @@ export function AiWorkspace() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeIntent, setActiveIntent] = useState<AiIntent | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -326,13 +328,25 @@ export function AiWorkspace() {
               {health === "checking" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
               {health === "ok" ? "AI online" : health === "down" ? "AI offline" : "Checking"}
             </span>
-
+            <button
+              type="button"
+              onClick={() => setSidebarOpen((v) => !v)}
+              className="md:hidden inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-secondary hover:bg-border/50 transition"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Documents
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", sidebarOpen && "rotate-180")} />
+            </button>
           </div>
         </div>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="min-h-0 overflow-y-auto border-b border-border bg-surface p-4 md:border-b-0 md:border-r md:p-5">
+        <aside className={cn(
+          "overflow-y-auto border-b border-border bg-surface p-4",
+          "md:!block md:min-h-0 md:border-b-0 md:border-r md:p-5",
+          sidebarOpen ? "block" : "hidden",
+        )}>
           <div className="rounded-3xl border border-border bg-surface-secondary p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
