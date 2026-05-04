@@ -356,7 +356,7 @@ function ActiveCallRoom({
 
 // ─── Active Call Modal ────────────────────────────────────────────────────────
 export function ActiveCallModal() {
-  const { activeCall, liveKitCredentials } = useCallStore();
+  const { activeCall, liveKitCredentials, clearCallState } = useCallStore();
   const myId = useAuthStore((s) => s.user?.id);
   const profileMap = usePresenceStore((s) => s.profileMap);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -456,6 +456,22 @@ export function ActiveCallModal() {
             adaptiveStream: true,
           }}
           onConnected={() => useCallStore.getState().setHasJoinedCall(true)}
+          onError={(error) => {
+            // LiveKit rejected the connection (e.g. RoomNotFound after a race between
+            // acceptCall and endCall). Clear UI immediately — call:ended WS event is
+            // also in-flight but may arrive late or not at all in edge cases.
+            console.error("[LiveKit] connection error:", error);
+            if (!useCallStore.getState().activeCall) return; // already cleaned up
+            clearCallState();
+            toast.error("Call connection failed. The call may have already ended.");
+          }}
+          onDisconnected={() => {
+            // Fires for both user-initiated and unexpected disconnects.
+            // For user-initiated (EndCallButton), clearCallState() is called synchronously
+            // before room.disconnect(), so activeCall is already null here — safe no-op.
+            if (!useCallStore.getState().activeCall) return;
+            clearCallState();
+          }}
           className="flex flex-col flex-1 min-h-0"
         >
           <ActiveCallRoom
