@@ -748,6 +748,7 @@ function UserProfileModal({
   const { mutateAsync: unfriend } = useUnfriend();
   const { mutateAsync: blockUser } = useBlockUser();
   const { mutateAsync: unblockUser } = useUnblockUser();
+  const { mutateAsync: createConversation } = useCreateConversation();
 
   const [pendingAction, setPendingAction] = useState<ActionKey | null>(null);
   const actionDisabled = pendingAction !== null || statusLoading;
@@ -756,6 +757,30 @@ function UserProfileModal({
     () => userId ? conversations.find((c) => c.kind === "direct" && c.otherUser?.id === userId) : undefined,
     [conversations, userId]
   );
+
+  async function handleMessage() {
+    if (!userId || pendingAction === "message") return;
+
+    if (dmConversation) {
+      router.push(`/conversations/${encodeId(dmConversation.id)}`);
+      onClose();
+      return;
+    }
+
+    setPendingAction("message");
+    try {
+      const conversation = await createConversation({
+        kind: "direct",
+        memberIds: [userId],
+      });
+      router.push(`/conversations/${encodeId(conversation.id)}`);
+      onClose();
+    } catch {
+      toast.error("Could not start the conversation.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
 
   async function run(action: ActionKey, fn: () => Promise<unknown>) {
     setPendingAction(action);
@@ -840,18 +865,14 @@ function UserProfileModal({
                 {/* Actions */}
                 {!isMe && (
                   <div className="flex flex-col gap-2">
-                    {/* Message button — always available if DM exists or status is friend */}
-                    {(dmConversation || friendStatus === "FRIEND") && (
+                    {/* Message button opens an existing DM or creates one on demand. */}
+                    {friendStatus !== "BLOCKED" && (
                       <button
-                        onClick={() => {
-                          if (dmConversation) {
-                            router.push(`/conversations/${encodeId(dmConversation.id)}`);
-                            onClose();
-                          }
-                        }}
-                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-cta text-white text-sm font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+                        onClick={() => void handleMessage()}
+                        disabled={actionDisabled}
+                        className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-cta text-white text-sm font-semibold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-60"
                       >
-                        <MessageSquare className="w-4 h-4" />
+                        {pendingAction === "message" ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
                         Send Message
                       </button>
                     )}
