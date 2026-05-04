@@ -93,13 +93,26 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
 
   const statusMessage = isDirect ? otherProfile?.settings?.statusMessage : undefined;
 
+  // For direct convs: participants may not be loaded yet (list cache doesn't include them),
+  // but otherUser is always available from the list response — use it as a reliable fallback.
+  // For group convs: we need participants; guard against calling with an empty array.
+  const calleeIdsReady = isDirect
+    ? !!(resolvedOtherUser?.id)
+    : (conv?.participants?.length ?? 0) > 0;
+
   const handleStartCall = async () => {
-    if (!conv || isBusyRef.current) return;
+    if (!conv || isBusyRef.current || !calleeIdsReady) return;
     isBusyRef.current = true;
     try {
-      const otherMemberIds = (conv.participants ?? [])
-        .map((p) => p.userId)
-        .filter((id) => id !== currentUserId);
+      const otherMemberIds = isDirect
+        ? (resolvedOtherUser?.id ? [resolvedOtherUser.id] : [])
+        : (conv.participants ?? []).map((p) => p.userId).filter((id) => id !== currentUserId);
+
+      if (!otherMemberIds.length) {
+        toast.error("Could not determine call recipients. Please try again.");
+        return;
+      }
+
       const callDto = await startInstantCall({
         conversationId,
         calleeIds: otherMemberIds,
@@ -208,7 +221,11 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
         {!isCommunity && (
-          <ActionButton onClick={handleStartCall} title="Start call">
+          <ActionButton
+            onClick={handleStartCall}
+            title={calleeIdsReady ? "Start call" : "Loading participants…"}
+            disabled={!calleeIdsReady}
+          >
             <Phone className="w-4 h-4" />
           </ActionButton>
         )}
@@ -238,20 +255,24 @@ function ActionButton({
   title,
   children,
   hideOnMobile,
+  disabled,
 }: {
   onClick: () => void;
   title: string;
   children: React.ReactNode;
   hideOnMobile?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
       aria-label={title}
+      disabled={disabled}
       className={cn(
         "flex items-center gap-1 px-2 h-9 md:h-8 rounded-lg text-secondary hover:text-primary hover:bg-border/50 transition-colors cursor-pointer",
         hideOnMobile && "hidden md:flex",
+        disabled && "opacity-40 cursor-not-allowed pointer-events-none",
       )}
     >
       {children}
