@@ -16,6 +16,10 @@ export interface WsMessage {
   content?: string | null;
   type: MessageType;
   offset: number;
+  isPinned?: boolean;
+  pinnedBy?: string;
+  pinnedByName?: string;
+  pinnedAt?: string;
   mediaId?: string;
   mediaStatus?: MediaStatus;
   replyToMessageId?: string;
@@ -53,6 +57,7 @@ export interface WsMessage {
     contactUsername?: string;
     contactEmail?: string;
     contactAvatarId?: string;
+    messageId?: string;
     // system_call fields (present when type === "system" && systemType === "system_call")
     systemType?: "system_call";
     callId?: string;
@@ -126,6 +131,7 @@ export interface ServerEvents {
     senderName: string;
     content: string;
     type: string;
+    metadata?: WsMessage["metadata"];
     mentions?: string[];
     conversationName?: string;
   }) => void;
@@ -213,6 +219,20 @@ export interface ServerEvents {
     errorMessage: string;
     failedAt: string;
     originalTopic?: string;
+  }) => void;
+  "message:pinned": (data: {
+    messageId: string;
+    conversationId: string;
+    pinnedBy: string;
+    pinnedByName?: string;
+    pinnedAt: string;
+  }) => void;
+  "message:unpinned": (data: {
+    messageId: string;
+    conversationId: string;
+    unpinnedBy: string;
+    unpinnedByName?: string;
+    unpinnedAt: string;
   }) => void;
 
   "typing:started": (data: { conversationId: string; userId: string }) => void;

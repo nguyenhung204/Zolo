@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, Info, Contact } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { usePinnedMessages } from "@/hooks/useMessages";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query/keys";
@@ -13,6 +12,52 @@ import type { MessagesInfiniteData } from "@/hooks/useMessages";
 interface PinnedMessageBannerProps {
   conversationId: string;
   onViewDetails?: (msg: Message) => void;
+}
+
+function mediaPreview(message: Message) {
+  const attachments = message.attachments ?? [];
+  const total = attachments.length;
+  const counts = attachments.reduce(
+    (acc, attachment) => {
+      const type = attachment.type ?? attachment.kind;
+      if (type === "image" || type === "video" || type === "audio" || type === "file") {
+        acc[type] += 1;
+      }
+      return acc;
+    },
+    { image: 0, video: 0, audio: 0, file: 0 }
+  );
+  const firstType = attachments[0]?.type ?? attachments[0]?.kind;
+
+  if (total === 1) {
+    if (firstType === "image") return { icon: Image, label: "Hình ảnh" };
+    if (firstType === "video") return { icon: Video, label: "Video" };
+    if (firstType === "audio") return { icon: Mic, label: "Âm thanh" };
+    if (firstType === "file") return { icon: FileText, label: attachments[0]?.filename ?? "File" };
+  }
+
+  if (total > 1) {
+    if (counts.image === total) return { icon: Image, label: `${total} hình ảnh` };
+    if (counts.video === total) return { icon: Video, label: `${total} video` };
+    if (counts.audio === total) return { icon: Mic, label: `${total} âm thanh` };
+    if (counts.file === total) return { icon: FileText, label: `${total} file` };
+    return { icon: Image, label: `${total} tệp đính kèm` };
+  }
+
+  return { icon: Image, label: message.content || "Media" };
+}
+
+function pinnedPreview(message: Message) {
+  if (message.isRevoked) return { icon: null, label: "Tin nhắn đã thu hồi" };
+  if (message.type === "text" || !message.type) return { icon: null, label: message.content || "…" };
+  if (message.type === "image") return { icon: Image, label: "Hình ảnh" };
+  if (message.type === "video") return { icon: Video, label: "Video" };
+  if (message.type === "audio") return { icon: Mic, label: "Âm thanh" };
+  if (message.type === "file") return { icon: FileText, label: message.metadata?.filename ?? message.attachments?.[0]?.filename ?? "File" };
+  if (message.type === "media") return mediaPreview(message);
+  if (message.type === "sticker") return { icon: Sticker, label: "Sticker" };
+  if (message.type === "contact_card") return { icon: Contact, label: (message.metadata?.contactUsername ?? message.content) || "Danh thiếp" };
+  return { icon: null, label: message.content || `[${message.type}]` };
 }
 
 export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMessageBannerProps) {
@@ -39,23 +84,7 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
   const safeIndex = Math.min(index, pinned.length - 1);
   const msg = pinned[safeIndex];
 
-  const preview = msg.isRevoked
-    ? { icon: null, label: "Tin nhắn đã thu hồi" }
-    : (msg.type === "text" || !msg.type)
-      ? { icon: null, label: msg.content || "…" }
-      : msg.type === "image"
-        ? { icon: Image, label: "Hình ảnh" }
-        : msg.type === "video"
-          ? { icon: Video, label: "Video" }
-          : msg.type === "audio"
-            ? { icon: Mic, label: "Âm thanh" }
-            : msg.type === "file"
-              ? { icon: FileText, label: "File" }
-              : msg.type === "sticker"
-                ? { icon: Sticker, label: "Sticker" }
-                : msg.type === "contact_card"
-                  ? { icon: Contact, label: (msg.metadata?.contactUsername ?? msg.content) || "Danh thiếp" }
-                  : { icon: null, label: msg.content || `[${msg.type}]` };
+  const preview = pinnedPreview(msg);
 
   const handleUnpin = async (m: Message) => {
     setPopoverOpen(false);

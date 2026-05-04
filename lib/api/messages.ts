@@ -16,7 +16,9 @@ export type SystemMessageAction =
   | "GROUP_INFO_UPDATED"
   | "GROUP_SETTINGS_UPDATED"
   | "POLL_CLOSED"
-  | "POLL_VOTED";
+  | "POLL_VOTED"
+  | "MESSAGE_PINNED"
+  | "MESSAGE_UNPINNED";
 
 // ─── Reaction types ───────────────────────────────────────────────────────────
 
@@ -96,6 +98,7 @@ interface RawMessage {
     contactUsername?: string;
     contactEmail?: string;
     contactAvatarId?: string;
+    messageId?: string;
   };
   createdAt: string;
   updatedAt?: string;
@@ -163,6 +166,7 @@ export interface Message {
     contactUsername?: string;
     contactEmail?: string;
     contactAvatarId?: string;
+    messageId?: string;
     // system_call fields (present when type === "system" && systemType === "system_call")
     systemType?: "system_call";
     callerId?: string;
@@ -176,6 +180,10 @@ export interface Message {
   editedAt?: string;
   deletedAt?: string;
   isRevoked?: boolean;
+  isPinned?: boolean;
+  pinnedBy?: string;
+  pinnedByName?: string;
+  pinnedAt?: string;
   reactions?: ReactionMap;
   deliveryStatus?: MessageDeliveryStatus;
   // local-only optimistic fields
@@ -532,5 +540,7 @@ export async function unpinMessage(
 export async function getPinnedMessages(conversationId: string): Promise<Message[]> {
   const res = await apiClient.get(`/conversations/${conversationId}/pinned`);
   const raw: RawMessage[] = Array.isArray(res.data?.data) ? res.data.data : [];
-  return raw.map(normalizeRawMessage);
+  return raw
+    .map(normalizeRawMessage)
+    .sort((a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime());
 }

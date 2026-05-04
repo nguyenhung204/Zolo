@@ -23,6 +23,14 @@ function messagePreview(type: WsMessage["type"], content: string): string {
   }
 }
 
+function isPinSystemPayload(payload: { type?: string; content?: string; metadata?: { action?: unknown } }) {
+  if (payload.type !== "system") return false;
+  if (payload.metadata?.action === "MESSAGE_PINNED" || payload.metadata?.action === "MESSAGE_UNPINNED") {
+    return true;
+  }
+  return /\b(un)?pinned a message\b/i.test(payload.content ?? "");
+}
+
 /** Request browser Notification permission lazily (triggered by first message). */
 async function ensureNotificationPermission(): Promise<boolean> {
   if (typeof Notification === "undefined") return false;
@@ -168,10 +176,10 @@ export function useMessageNotifications() {
     // ─── message:notify — server pushes to clients NOT in the room ───────────
     const handleMessageNotify = ({
       conversationId,
-      latestOffset: _latestOffset,
       senderName,
       content,
       type,
+      metadata,
       conversationName,
     }: {
       conversationId: string;
@@ -179,9 +187,11 @@ export function useMessageNotifications() {
       senderName: string;
       content: string;
       type: string;
+      metadata?: WsMessage["metadata"];
       conversationName?: string;
     }) => {
       if (conversationId === activeConvIdRef.current) return;
+      if (isPinSystemPayload({ type, content, metadata })) return;
 
       const title = conversationName ?? senderName;
       const subtitle = conversationName ? senderName : undefined;

@@ -338,12 +338,32 @@ export function VirtualMessageList({
     try {
       await pinMessage(msg.messageId, conversationId);
       const qc = getQueryClient();
+      const pinnedAt = msg.pinnedAt ?? new Date().toISOString();
+      const pinnedMessage = { ...msg, isPinned: true, pinnedAt };
       qc.setQueryData(
         queryKeys.messages.pinned(conversationId),
         (old: Message[] | undefined) => {
           const list = old ?? [];
-          if (list.some((m) => m.messageId === msg.messageId)) return list;
-          return [...list, msg];
+          const byId = new Map(list.map((message) => [message.messageId, message]));
+          byId.set(msg.messageId, { ...byId.get(msg.messageId), ...pinnedMessage });
+          return Array.from(byId.values()).sort(
+            (a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime()
+          );
+        }
+      );
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              data: page.data.map((message) =>
+                message.messageId === msg.messageId ? { ...message, isPinned: true, pinnedAt } : message
+              ),
+            })),
+          };
         }
       );
     } catch {

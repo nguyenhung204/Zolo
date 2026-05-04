@@ -98,6 +98,12 @@ function buildSystemText(
         : `${actor} voted on a poll`;
     }
 
+    case "MESSAGE_PINNED":
+      return `${actor} pinned a message`;
+
+    case "MESSAGE_UNPINNED":
+      return `${actor} unpinned a message`;
+
     default:
       return null;
   }

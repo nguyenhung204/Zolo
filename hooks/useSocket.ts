@@ -7,6 +7,7 @@ import { useSocketStore } from "@/stores/socketStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { useTypingStore } from "@/stores/typingStore";
 import { useMentionStore } from "@/stores/mentionStore";
+import { useConversationStore } from "@/stores/conversationStore";
 import { getChatSocket } from "@/lib/socket/socket";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
@@ -15,7 +16,7 @@ import { upsertMessage, prefetchMessages, type MessagesInfiniteData } from "@/ho
 import { getMediaSignedUrl } from "@/lib/api/media";
 import { getFriendsPresence, getMyPresenceStatus } from "@/lib/api/presence";
 import { getConversation } from "@/lib/api/conversations";
-import { normalizeReactionMap, type Message } from "@/lib/api/messages";
+import { getPinnedMessages, normalizeReactionMap, type Message } from "@/lib/api/messages";
 import type { Friendship, FriendshipStatus, FriendshipStatusResponse, PendingRequestsResponse, UserSearchResult } from "@/lib/api/friends";
 import { decodeId } from "@/lib/utils/obfuscateId";
 import { toast } from "sonner";
@@ -41,6 +42,16 @@ function normalizeMediaStatus(status: string | undefined): WsMessage["mediaStatu
     default:
       return undefined;
   }
+}
+
+function isPinSystemAction(action: unknown): action is "MESSAGE_PINNED" | "MESSAGE_UNPINNED" {
+  return action === "MESSAGE_PINNED" || action === "MESSAGE_UNPINNED";
+}
+
+function isPinSystemPayload(payload: { type?: string; content?: string; metadata?: { action?: unknown } }) {
+  if (payload.type !== "system") return false;
+  if (isPinSystemAction(payload.metadata?.action)) return true;
+  return /\b(un)?pinned a message\b/i.test(payload.content ?? "");
 }
 
 /**
@@ -77,6 +88,62 @@ export function useSocket() {
     };
     const qc = getQueryClient();
     const unique = (ids: string[]) => Array.from(new Set(ids.filter(Boolean)));
+    const refreshPinnedMessages = (conversationId: string) => {
+      qc.fetchQuery({
+        queryKey: queryKeys.messages.pinned(conversationId),
+        queryFn: () => getPinnedMessages(conversationId),
+        staleTime: 0,
+      }).catch(() => {
+        qc.invalidateQueries({ queryKey: queryKeys.messages.pinned(conversationId) });
+      });
+    };
+    const patchConversationMessages = (
+      conversationId: string,
+      updater: (message: Message) => Message
+    ): boolean => {
+      let found = false;
+      qc.setQueryData(
+        queryKeys.messages.list(conversationId),
+        (old: MessagesInfiniteData | undefined) => {
+          if (!old || !Array.isArray(old.pages)) return old;
+          const pages = old.pages.map((page) => ({
+            ...page,
+            data: page.data.map((message) => {
+              const next = updater(message);
+              if (next !== message) found = true;
+              return next;
+            }),
+          }));
+          return { ...old, pages };
+        }
+      );
+      return found;
+    };
+    const findCachedMessage = (messageId: string): Message | undefined => {
+      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
+      for (const query of listKeys) {
+        const data = query.state.data as MessagesInfiniteData | undefined;
+        if (!data || !Array.isArray(data.pages)) continue;
+        for (const page of data.pages) {
+          const message = page.data.find((item) => item.messageId === messageId);
+          if (message) return message;
+        }
+      }
+      return undefined;
+    };
+    const sortPinnedMessages = (messages: Message[]) =>
+      [...messages].sort((a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime());
+    const upsertPinnedMessage = (conversationId: string, message: Message) => {
+      qc.setQueryData<Message[]>(
+        queryKeys.messages.pinned(conversationId),
+        (old) => {
+          const byId = new Map<string, Message>();
+          for (const item of old ?? []) byId.set(item.messageId, item);
+          byId.set(message.messageId, { ...byId.get(message.messageId), ...message });
+          return sortPinnedMessages(Array.from(byId.values()));
+        }
+      );
+    };
     const getOtherUserId = (ids: Array<string | undefined>) =>
       ids.find((id) => !!id && id !== myId) ?? ids.find(Boolean);
     const patchFriendRequests = (updater: (old: PendingRequestsResponse) => PendingRequestsResponse) => {
@@ -276,6 +343,10 @@ export function useSocket() {
       heartbeatRef.current = setInterval(() => {
         socket.emit("heartbeat");
       }, 3_000);
+      const activeConversationId = useConversationStore.getState().activeConversationId;
+      if (activeConversationId) {
+        socket.emit("conversation:join", { conversationId: activeConversationId });
+      }
       // Seed initial presence state — do this after every (re)connect
       Promise.allSettled([getFriendsPresence(), getMyPresenceStatus()])
         .then(([friendsRes, meRes]) => {
@@ -377,6 +448,11 @@ export function useSocket() {
         content: typeof msg.content === "string" ? msg.content : "",
         updatedAt: msg.editedAt ?? msg.createdAt,
       } as Message;
+      const pinSystemMessage = isPinSystemPayload({
+        type: normalized.type,
+        content: normalized.content,
+        metadata: normalized.metadata,
+      });
       // Track mentions if the current user is mentioned
       const mentions = (msg as WsMessage & { mentions?: string[] }).mentions ?? (normalized as { metadata?: { mentions?: string[] } }).metadata?.mentions;
       if (mentions?.includes(myId ?? "")) {
@@ -418,8 +494,12 @@ export function useSocket() {
                     senderId: msg.senderId ?? "SYSTEM",
                     type: msg.type,
                     createdAt: msg.createdAt,
+                    ...(msg.metadata ? { metadata: msg.metadata } : {}),
                   },
                   maxOffset: Math.max(Number(c.maxOffset ?? 0), msg.offset),
+                  ...(pinSystemMessage
+                    ? { lastSeenOffset: Math.max(Number(c.lastSeenOffset ?? 0), msg.offset) }
+                    : {}),
                 }
               : c
           );
@@ -430,7 +510,8 @@ export function useSocket() {
     socket.on("chat:message_received", handleIncomingMessage);
     socket.on("message:new", handleIncomingMessage);
 
-    socket.on("message:notify", ({ conversationId, latestOffset, mentions, content, type }: { conversationId: string; latestOffset: number; mentions?: string[]; content?: string; type?: string }) => {
+    socket.on("message:notify", ({ conversationId, latestOffset, mentions, content, type, metadata }: { conversationId: string; latestOffset: number; mentions?: string[]; content?: string; type?: string; metadata?: WsMessage["metadata"] }) => {
+      if (isPinSystemPayload({ type, content, metadata })) return;
       // Update maxOffset in the conversations list so the unread badge recalculates
       // without fetching the full conversation detail.
       qc.setQueryData(
@@ -536,6 +617,60 @@ export function useSocket() {
           };
         }
       );
+    });
+
+    socket.on("message:pinned", ({ messageId, conversationId, pinnedBy, pinnedByName, pinnedAt }) => {
+      let patchedMessage: Message | undefined;
+      const foundInConversation = patchConversationMessages(conversationId, (message) => {
+        if (message.messageId !== messageId) return message;
+        patchedMessage = {
+          ...message,
+          isPinned: true,
+          pinnedBy,
+          pinnedByName,
+          pinnedAt,
+        };
+        return patchedMessage;
+      });
+
+      const cachedMessage = patchedMessage ?? findCachedMessage(messageId);
+      if (foundInConversation && cachedMessage) {
+        upsertPinnedMessage(conversationId, {
+          ...cachedMessage,
+          isPinned: true,
+          pinnedBy,
+          pinnedByName,
+          pinnedAt,
+        });
+      } else {
+        refreshPinnedMessages(conversationId);
+      }
+    });
+
+    socket.on("message:unpinned", ({ messageId, conversationId }) => {
+      const foundInConversation = patchConversationMessages(conversationId, (message) =>
+        message.messageId === messageId
+          ? {
+              ...message,
+              isPinned: false,
+              pinnedBy: undefined,
+              pinnedByName: undefined,
+              pinnedAt: undefined,
+            }
+          : message
+      );
+      let removedFromPinned = false;
+      qc.setQueryData<Message[]>(
+        queryKeys.messages.pinned(conversationId),
+        (old) => {
+          const list = old ?? [];
+          removedFromPinned = list.some((message) => message.messageId === messageId);
+          return list.filter((message) => message.messageId !== messageId);
+        }
+      );
+      if (!foundInConversation || !removedFromPinned) {
+        refreshPinnedMessages(conversationId);
+      }
     });
 
     socket.on("message:edited", ({ messageId, conversationId, content, editedAt }) => {
