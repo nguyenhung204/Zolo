@@ -271,6 +271,13 @@ export interface ServerEvents {
     userIds: string[];
     timestamp: string;
   }) => void;
+  "friendship:request_canceled": (data: {
+    canceledBy: string;
+    canceledByName?: string;
+    targetUserId: string;
+    userIds: string[];
+    timestamp: string;
+  }) => void;
   "friendship:removed": (data: {
     userIds: string[];
     removedBy: string;
