@@ -83,7 +83,7 @@ function VerifyOtpContent() {
               required
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-primary text-center tracking-widest placeholder:text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-cta"
+              className="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-primary text-center tracking-widest placeholder:text-muted focus:outline-none"
               placeholder="000000"
             />
             <p className="text-xs text-muted">Code expires in 10 minutes</p>
@@ -102,7 +102,7 @@ function VerifyOtpContent() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full flex items-center justify-center gap-2 rounded-lg bg-cta px-6 py-3 text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 disabled:opacity-60 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-cta"
+            className="w-full flex items-center justify-center gap-2 rounded-lg bg-cta px-6 py-3 text-sm font-semibold text-white transition-all duration-200 hover:opacity-90 disabled:opacity-60 cursor-pointer focus:outline-none"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
             Verify

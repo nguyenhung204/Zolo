@@ -113,7 +113,7 @@ export function UserSettingsSection() {
           maxLength={100}
           onChange={(e) => { setStatusMessage(e.target.value); mark(); }}
           placeholder="“In a meeting”, “BRB”…"
-          className="w-full px-3 py-2.5 rounded-xl border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
+          className="w-full px-3 py-2.5 rounded-xl border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none transition"
         />
         <p className="text-[10px] text-muted text-right">{statusMessage.length}/100</p>
       </div>

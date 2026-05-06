@@ -179,7 +179,7 @@ function Field({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        className="px-3 py-2 rounded-lg border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40 focus:border-cta transition"
+        className="px-3 py-2 rounded-lg border border-border bg-bg text-sm text-text placeholder:text-muted focus:outline-none transition"
       />
     </div>
   );

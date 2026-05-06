@@ -30,7 +30,7 @@ export function scheduleRefresh(tokens: TokenSet, onRefreshed: (t: TokenSet) => 
       scheduleRefresh(fresh, onRefreshed);
     } catch {
       // Refresh cookie is invalid or expired — clear local state.
-      clearClientAuthSession();
+      void clearClientAuthSession();
     }
   }, msUntilRefresh);
 }
@@ -71,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
       })
       .catch(() => {
-        clearClientAuthSession();
+        void clearClientAuthSession();
         if (!PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
           router.push("/login");
         }

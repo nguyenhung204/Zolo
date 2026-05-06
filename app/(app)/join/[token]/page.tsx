@@ -122,7 +122,7 @@ export default function JoinGroupPage({ params }: Props) {
                     maxLength={200}
                     rows={3}
                     placeholder="Hi! I'd like to join because…"
-                    className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cta/40"
+                    className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text placeholder:text-muted focus:outline-none"
                   />
                   <p className="text-[11px] text-muted text-right">
                     {requestMessage.length}/200

@@ -9,6 +9,7 @@ import { useSocket } from "@/hooks/useSocket";
 import { useCallWebSocketListeners } from "@/hooks/useCallWebSocketListeners";
 import { useMyProfile } from "@/hooks/useUser";
 import { useAuthStore } from "@/stores/authStore";
+import { logoutCompletely } from "@/lib/auth/logout";
 import { connectChatSocket, getChatSocket } from "@/lib/socket/socket";
 import { GlobalCallOverlay } from "@/components/calls/GlobalCallOverlay";
 import { useStickerPreloader } from "@/hooks/useStickers";
@@ -30,7 +31,6 @@ export function AppShell({ children }: AppShellProps) {
   const isSessionRevoked = useAuthStore((s) => s.isSessionRevoked);
   const revocationReason = useAuthStore((s) => s.revocationReason);
   const setSessionRevoked = useAuthStore((s) => s.setSessionRevoked);
-  const clearAuth = useAuthStore((s) => s.clearAuth);
   const tabIdRef = useRef<string>(Math.random().toString(36).slice(2));
 
   // Preload the first 20 stickers for every package in background via Worker thread
@@ -173,8 +173,8 @@ export function AppShell({ children }: AppShellProps) {
   };
 
   const handleSignInAgain = () => {
-    clearAuth();
-    router.push("/login");
+    // End any active call, wipe query cache and auth state, then go to login.
+    void logoutCompletely().finally(() => router.replace("/login"));
   };
 
   // On mobile, the conversation list and the chat page can't both fit on

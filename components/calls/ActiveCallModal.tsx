@@ -11,6 +11,7 @@ import {
   VideoOff,
   Maximize2,
   Minimize2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -25,10 +26,13 @@ import { Track, RoomEvent } from "livekit-client";
 import { useCallStore } from "@/stores/callStore";
 import { useAuthStore } from "@/stores/authStore";
 import { usePresenceStore } from "@/stores/presenceStore";
-import { endInstantCall } from "@/lib/api/calls";
+import { endInstantCall, isGroupInstantCall } from "@/lib/api/calls";
 import { getCallSocket } from "@/lib/socket/socket";
 import { MODAL_COMPACT, MODAL_EXPANDED, useDraggablePosition } from "./useDraggablePosition";
 import { is409 } from "./call-utils";
+
+const API_BASE_URL =
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 
 // ─── 1:1 Video layout ─────────────────────────────────────────────────────────
 interface VideoLayoutProps {
@@ -356,10 +360,11 @@ function ActiveCallRoom({
 
 // ─── Active Call Modal ────────────────────────────────────────────────────────
 export function ActiveCallModal() {
-  const { activeCall, liveKitCredentials, clearCallState } = useCallStore();
+  const { activeCall, liveKitCredentials, clearCallState, setGroupCall } = useCallStore();
   const myId = useAuthStore((s) => s.user?.id);
   const profileMap = usePresenceStore((s) => s.profileMap);
   const [isExpanded, setIsExpanded] = useState(false);
+  const isClosingRef = useRef(false);
   const { w: modalW, h: modalH } = isExpanded ? MODAL_EXPANDED : MODAL_COMPACT;
   const { pos, handlePointerDown, handlePointerMove, handlePointerUp } =
     useDraggablePosition(modalW, modalH);
@@ -369,19 +374,53 @@ export function ActiveCallModal() {
     (s) => activeCall ? s.groupCallsByConversation[activeCall.conversationId] : undefined
   );
 
-  if (!activeCall) return null;
-
   // Group call: more than 2 total participants (caller + multiple callees).
   // Fallback: check the groupCallsByConversation entry's participantIds — it only
   // ever grows, so length > 2 reliably detects a group call even when the API
   // response for a rejoin omits calleeIds or only lists currently-active participants.
-  const calleeCount = activeCall.participants.filter((p) => p.role === "CALLEE").length;
-  const isGroup =
-    calleeCount > 1 ||
-    (activeCall.calleeIds?.length ?? 0) > 1 ||
+  const isGroup = !!activeCall && (
+    isGroupInstantCall(activeCall) ||
     (!!groupCallEntry &&
       groupCallEntry.callId === activeCall.id &&
-      groupCallEntry.participantIds.length > 2);
+      groupCallEntry.participantIds.length > 2)
+  );
+
+  useEffect(() => {
+    if (!activeCall || isGroup) return;
+    const endDirectCallBeforeUnload = () => {
+      const token = useAuthStore.getState().token;
+      getCallSocket().emit("call:leave_room", { callId: activeCall.id });
+      clearCallState();
+      if (!token) return;
+      void fetch(`${API_BASE_URL}/calls/${activeCall.id}/end`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Client-Platform": "web",
+        },
+        keepalive: true,
+      }).catch(() => {});
+    };
+    window.addEventListener("pagehide", endDirectCallBeforeUnload);
+    return () => {
+      window.removeEventListener("pagehide", endDirectCallBeforeUnload);
+    };
+  }, [activeCall, isGroup, clearCallState]);
+
+  const handleCloseAndEndCall = useCallback(() => {
+    if (!activeCall || isClosingRef.current) return;
+    isClosingRef.current = true;
+
+    getCallSocket().emit("call:leave_room", { callId: activeCall.id });
+    setGroupCall(activeCall.conversationId, null);
+    clearCallState();
+    endInstantCall(activeCall.id).catch((err) => {
+      if (!is409(err)) toast.error("Failed to end the call.");
+    });
+  }, [activeCall, clearCallState, setGroupCall]);
+
+  if (!activeCall) return null;
 
   // Resolve the other participant's display info (used for 1:1 only)
   const otherUserId =
@@ -435,6 +474,15 @@ export function ActiveCallModal() {
           {isExpanded
             ? <Minimize2 className="w-3.5 h-3.5" />
             : <Maximize2 className="w-3.5 h-3.5" />}
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); handleCloseAndEndCall(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="p-1.5 rounded-md text-white/40 hover:text-white hover:bg-red-500/20 transition-all duration-200 cursor-pointer"
+          aria-label="End call and close"
+          title="End call and close"
+        >
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
 

@@ -32,7 +32,7 @@ export default function SettingsPage() {
     setLogoutPending(true);
     try {
       await logoutCompletely();
-      router.push("/login");
+      router.replace("/login");
     } catch (error) {
       setLogoutError(getErrorMessage(error, "Could not sign out right now."));
     } finally {

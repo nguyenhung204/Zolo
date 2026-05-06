@@ -224,7 +224,7 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
             disabled={
               loading || (newPassword.length > 0 && !allStrong) || confirmMismatch
             }
-            className="flex items-center gap-2 rounded-lg bg-cta px-5 py-2 text-sm font-semibold text-white hover:bg-cta-hover transition disabled:opacity-60 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-cta"
+            className="flex items-center gap-2 rounded-lg bg-cta px-5 py-2 text-sm font-semibold text-white hover:bg-cta-hover transition disabled:opacity-60 cursor-pointer focus:outline-none"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
             Update password
@@ -271,7 +271,7 @@ function PasswordField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className={cn(
-            "w-full rounded-lg border bg-bg px-3 py-2 pr-10 text-sm text-text placeholder:text-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-cta",
+            "w-full rounded-lg border bg-bg px-3 py-2 pr-10 text-sm text-text placeholder:text-muted focus:outline-none",
             error ? "border-red-400" : "border-border",
           )}
           placeholder="••••••••"
