@@ -283,25 +283,34 @@ export function useCallWebSocketListeners(): void {
 
   // ─── call:declined ───────────────────────────────────────────────────────────
   const handleDeclined = useCallback(
-    (data: { callId: string; declinedBy: string; finalStatus: "REJECTED" | "RINGING" | "MISSED"; declinedAt: string }) => {
+    (data: {
+      callId: string;
+      conversationId: string;
+      declinedBy: string;
+      finalStatus: "REJECTED" | "RINGING" | "MISSED";
+      declinedAt: string;
+    }) => {
       // Group call: one callee declined but others can still accept — keep state alive.
       if (data.finalStatus === "RINGING") {
         return;
       }
 
-      stopAllAudio();
-
       // Guard: if we already cleared state optimistically (i.e. the local user
       // initiated the decline/cancel), ignore this WS echo — we don't want to
       // flash a "Call declined" toast to the person who just clicked Decline.
-      const { incomingCall, outgoingCall } = useCallStore.getState();
-      if (!incomingCall && !outgoingCall) return;
+      const { incomingCall, outgoingCall, activeCall } = useCallStore.getState();
+      const isCurrentCall =
+        incomingCall?.id === data.callId ||
+        outgoingCall?.id === data.callId ||
+        activeCall?.id === data.callId;
+      if (!isCurrentCall) return;
+
+      stopAllAudio();
 
       // Clear any pending re-join opportunity since the call is now fully rejected.
-      const { incomingCall: ic, outgoingCall: oc } = useCallStore.getState();
-      const convId = ic?.conversationId ?? oc?.conversationId;
-      if (convId) useCallStore.getState().setGroupCall(convId, null);
+      useCallStore.getState().setGroupCall(data.conversationId, null);
       useCallStore.getState().setDeclinedGroupCall(null);
+      getCallSocket().emit("call:leave_room", { callId: data.callId });
       clearCallState();
       // Do not show a local toast — the backend emits a system message via
       // message:new which is the authoritative record shown in the conversation.
@@ -311,14 +320,25 @@ export function useCallWebSocketListeners(): void {
 
   // ─── call:ended ──────────────────────────────────────────────────────────────
   const handleEnded = useCallback(
-    (data: { callId: string; endReason: string; durationMs?: number }) => {
-      stopAllAudio();
-
-      // Clear the group call banner — the call is over for everyone.
+    (data: {
+      callId: string;
+      conversationId: string;
+      endedBy: string;
+      endReason: string;
+      durationMs: number;
+      endedAt: string;
+    }) => {
       const state = useCallStore.getState();
       const groupEntry = Object.values(state.groupCallsByConversation)
         .find((e) => e.callId === data.callId);
+      const isCurrentCall =
+        state.incomingCall?.id === data.callId ||
+        state.outgoingCall?.id === data.callId ||
+        state.activeCall?.id === data.callId;
+
+      // Clear the group call banner — the call is over for everyone.
       if (groupEntry) state.setGroupCall(groupEntry.conversationId, null);
+      state.setGroupCall(data.conversationId, null);
 
       // NOTE: do NOT clear declinedGroupCall here. If the user intentionally
       // left a group call (Leave button), declinedGroupCall is their only
@@ -326,9 +346,11 @@ export function useCallWebSocketListeners(): void {
       // join and the API returns a non-active status (which clears it then).
 
       // Guard: if we already cleared state optimistically (i.e. the local user
-      // clicked End Call), ignore this WS echo to avoid a double-toast.
-      const { activeCall } = useCallStore.getState();
-      if (!activeCall || activeCall.id !== data.callId) return;
+      // clicked End Call), ignore this WS echo to avoid a double-toast. For a
+      // remote caller cancellation while ringing, incomingCall is the matching UI.
+      if (!isCurrentCall) return;
+
+      stopAllAudio();
 
       const socket = getCallSocket();
       socket.emit("call:leave_room", { callId: data.callId });
