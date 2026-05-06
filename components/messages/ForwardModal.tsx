@@ -4,11 +4,13 @@ import { useState, useMemo } from "react";
 import { X, Search, Send, Hash, Megaphone, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { UserAvatar } from "@/components/presence/UserAvatar";
-import { useConversations } from "@/hooks/useConversations";
+import { useConversationSearch, useConversations } from "@/hooks/useConversations";
 import { forwardMessage } from "@/lib/api/messages";
 import { useAuthStore } from "@/stores/authStore";
 import type { Message } from "@/lib/api/messages";
 import { toast } from "sonner";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import type { Conversation } from "@/lib/api/conversations";
 
 interface ForwardModalProps {
   message: Message;
@@ -18,32 +20,57 @@ interface ForwardModalProps {
 export function ForwardModal({ message, onClose }: ForwardModalProps) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedConversations, setSelectedConversations] = useState<Record<string, Conversation>>({});
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const { data: conversations = [] } = useConversations();
+  const debouncedQuery = useDebouncedValue(query, 300);
+  const q = debouncedQuery.trim();
+  const isSearching = q.length > 0;
+  const { data: searchData, isFetching: isSearchFetching } =
+    useConversationSearch(q, isSearching);
   const myId = useAuthStore((s) => s.user?.id ?? "");
 
   const filtered = useMemo(() => {
-    const q = query.toLowerCase().trim();
-    return conversations.filter((c) => {
-      if (!q) return true;
+    if (!isSearching) return conversations;
+    const needle = q.toLowerCase();
+    const directMatches = conversations.filter((c) => {
       if (c.kind === "direct") {
         const other = c.otherUser ?? c.participants?.find((p) => p.userId !== myId);
         const name = (other as { displayName?: string; username?: string } | undefined)?.displayName
           ?? (other as { username?: string } | undefined)?.username ?? "";
-        return name.toLowerCase().includes(q);
+        return name.toLowerCase().includes(needle);
       }
-      return (c.name ?? "").toLowerCase().includes(q);
+      return false;
     });
-  }, [conversations, query, myId]);
+    const seen = new Set(directMatches.map((c) => c.id));
+    const groupMatches = (searchData?.conversations ?? []).filter((c) => {
+      if (c.kind === "direct" || seen.has(c.id)) return false;
+      seen.add(c.id);
+      return true;
+    });
+    return [...directMatches, ...groupMatches];
+  }, [conversations, isSearching, myId, q, searchData?.conversations]);
 
-  const toggle = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const toggle = (conversation: Conversation) => {
+    const next = new Set(selected);
+    if (next.has(conversation.id)) {
+      next.delete(conversation.id);
+      setSelected(next);
+      setSelectedConversations((current) => {
+        const rest = { ...current };
+        delete rest[conversation.id];
+        return rest;
+      });
+      return;
+    }
+    if (next.size >= 10) {
+      toast.warning("You can forward to up to 10 conversations.");
+      return;
+    }
+    next.add(conversation.id);
+    setSelected(next);
+    setSelectedConversations((current) => ({ ...current, [conversation.id]: conversation }));
   };
 
   const handleSend = async () => {
@@ -54,6 +81,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
         sourceMessageId: message.messageId,
         sourceConversationId: message.conversationId,
         targetConversationIds: Array.from(selected),
+        includeCaption: true,
       });
       setDone(true);
       toast.success("Message forwarded successfully");
@@ -96,13 +124,13 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
         {selected.size > 0 && (
           <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-border/40 shrink-0">
             {Array.from(selected).map((id) => {
-              const c = conversations.find((x) => x.id === id);
+              const c = selectedConversations[id] ?? conversations.find((x) => x.id === id);
               if (!c) return null;
               const label = c.kind === "direct"
                 ? (c.otherUser?.displayName ?? c.otherUser?.username ?? "Direct")
                 : (c.name ?? "Group");
               return (
-                <button key={id} onClick={() => toggle(id)}
+                <button key={id} onClick={() => toggle(c)}
                   className="flex items-center gap-1 bg-cta/10 text-cta text-xs font-medium px-2.5 py-1 rounded-full hover:bg-cta/20 cursor-pointer">
                   {label}
                   <X className="w-3 h-3" />
@@ -114,7 +142,9 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
 
         {/* List */}
         <div className="flex-1 overflow-y-auto py-1 min-h-0">
-          {filtered.length === 0 ? (
+          {isSearching && isSearchFetching && !searchData ? (
+            <p className="text-center text-sm text-muted py-8">Searching…</p>
+          ) : filtered.length === 0 ? (
             <p className="text-center text-sm text-muted py-8">No conversations found</p>
           ) : (
             filtered.map((c) => {
@@ -136,7 +166,7 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
               const isSelected = selected.has(c.id);
 
               return (
-                <button key={c.id} onClick={() => toggle(c.id)}
+                <button key={c.id} onClick={() => toggle(c)}
                   className={cn(
                     "w-full flex items-center gap-3 px-4 py-2.5 transition-colors text-left cursor-pointer",
                     isSelected ? "bg-cta/8" : "hover:bg-border/40"

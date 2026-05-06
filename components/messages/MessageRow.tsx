@@ -63,6 +63,7 @@ interface MessageRowProps {
   onRevoke?: (msg: Message) => void;
   onForward?: (msg: Message) => void;
   onPin?: (msg: Message) => void;
+  canPin?: boolean;
   onViewDetails?: (msg: Message) => void;
   onRetry?: (msg: Message) => void;
 }
@@ -72,7 +73,7 @@ export function MessageRow({
   replyMsg,
   senderName = "", senderAvatarUrl,
   otherMembers = [], mentionLabels = [],
-  onReply, onEdit, onDelete, onRevoke, onForward, onPin, onViewDetails, onRetry,
+  onReply, onEdit, onDelete, onRevoke, onForward, onPin, canPin = true, onViewDetails, onRetry,
 }: MessageRowProps) {
   const isDeleted = !!message.deletedAt;
   const isRevoked = !!message.isRevoked;
@@ -95,7 +96,8 @@ export function MessageRow({
   useEffect(() => {
     if (message.reactions !== serverReactionsRef.current) {
       serverReactionsRef.current = message.reactions;
-      setLocalReactions(null);
+      const timeout = window.setTimeout(() => setLocalReactions(null), 0);
+      return () => window.clearTimeout(timeout);
     }
   }, [message.reactions]);
 
@@ -228,16 +230,16 @@ export function MessageRow({
         )}
       </div>
 
-      <div className={cn("flex flex-col max-w-[78%]", isMine ? "items-end" : "items-start")}>
+      <div className={cn("flex flex-col max-w-[78%] min-w-0", isMine ? "items-end" : "items-start")}>
         {!isMine && isGroupStart && (
           <span className="text-[11px] font-semibold text-cta ml-1 mb-0.5 select-none">{senderName}</span>
         )}
 
         <div
           className={cn(
-            "flex items-center gap-1",
+            "flex items-center gap-1 w-full min-w-0",
             isMine ? "flex-row-reverse" : "flex-row",
-            isSingleImage && "max-w-full min-w-0"
+            isSingleImage && "w-full min-w-0"
           )}
         >
           {/* ── Message bubble ── */}
@@ -315,7 +317,7 @@ export function MessageRow({
           ) : (
             <div className={cn(
               bubbleShape,
-              "text-sm leading-relaxed break-words max-w-full",
+              "text-sm leading-relaxed break-words [overflow-wrap:anywhere] max-w-full min-w-0",
               isPureMedia
                 ? "overflow-hidden"
                 : isContactCard
@@ -386,6 +388,7 @@ export function MessageRow({
                     onRevoke={onRevoke ? () => { onRevoke(message); setMenuOpen(false); } : undefined}
                     onForward={onForward ? () => { onForward(message); setMenuOpen(false); } : undefined}
                     onPin={onPin ? () => { onPin(message); setMenuOpen(false); } : undefined}
+                    canPin={canPin}
                     onViewDetails={onViewDetails ? () => { onViewDetails(message); setMenuOpen(false); } : undefined}
                   />
                 )}
@@ -431,7 +434,7 @@ function MessageContent({
     if (!caption) return body;
     return (
       <div className="space-y-2">
-        <p className="whitespace-pre-wrap break-words">{caption}</p>
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{caption}</p>
         {body}
       </div>
     );

@@ -99,7 +99,7 @@ export function MentionPicker({
       )}
 
       {filtered.map((member) => {
-        const label = member.displayName || member.username || member.userId;
+        const label = member.displayName || member.username || "Unknown user";
         const initials = label.slice(0, 2).toUpperCase();
         return (
           <button

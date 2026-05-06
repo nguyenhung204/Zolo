@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useMemo, useState } from "react";
 import {
   List,
   useDynamicRowHeight,
@@ -16,12 +16,12 @@ import { useConversationStore } from "@/stores/conversationStore";
 import { getQueryClient } from "@/lib/query/queryClient";
 import { queryKeys } from "@/lib/query/keys";
 import type { Message } from "@/lib/api/messages";
-import { deleteMessageForMe, revokeMessage, pinMessage } from "@/lib/api/messages";
+import { deleteMessageForMe, getMessages, revokeMessage, pinMessage } from "@/lib/api/messages";
 import { ForwardModal } from "./ForwardModal";
 import { MessageDetailsModal } from "./MessageDetailsModal";
 import { ScrollToBottomFab } from "./ScrollToBottomFab";
 import type { ConversationMember } from "@/lib/api/conversations";
-import type { ReplyTarget, EditTarget } from "@/stores/conversationStore";
+import type { ReplyTarget } from "@/stores/conversationStore";
 import { formatDateDivider } from "@/lib/utils/date";
 import { Loader2, MessageSquare } from "lucide-react";
 import type { MessagesInfiniteData } from "@/hooks/useMessages";
@@ -115,6 +115,7 @@ interface RowData {
   memberMap: Map<string, ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }>;
   otherMembers: Array<{ userId: string; lastSeenOffset: number; lastDeliveredOffset: number; avatarUrl?: string | null; displayName?: string; username?: string }>;
   myRole: ConversationMember["role"] | null;
+  canPinMessages: boolean;
   allowMemberMessage: boolean;
   setReplyTo: (msg: ReplyTarget | null) => void;
   onEdit: (msg: Message) => void;
@@ -124,6 +125,7 @@ interface RowData {
   onPin: (msg: Message) => void;
   onViewDetails: (msg: Message) => void;
   onRetry: (conversationId: string, clientMessageId: string) => void;
+  highlightMessageId: string | null;
 }
 
 // rowComponent MUST be defined outside the parent to keep a stable reference
@@ -136,6 +138,7 @@ function MessageRowComponent({
   memberMap,
   otherMembers,
   myRole,
+  canPinMessages,
   allowMemberMessage,
   setReplyTo,
   onEdit,
@@ -145,6 +148,7 @@ function MessageRowComponent({
   onPin,
   onViewDetails,
   onRetry,
+  highlightMessageId,
 }: RowComponentProps<RowData>) {
   const item = items[index];
   if (!item) return null;
@@ -210,7 +214,10 @@ function MessageRowComponent({
     .filter(Boolean);
 
   return (
-    <div style={style}>
+    <div
+      style={style}
+      className={highlightMessageId === msg.messageId ? "bg-warning/20 transition-colors duration-700" : undefined}
+    >
       <MessageRow
         message={msg}
         isMine={isMine}
@@ -227,6 +234,7 @@ function MessageRowComponent({
         onRevoke={onRevoke}
         onForward={onForward}
         onPin={onPin}
+        canPin={canPinMessages}
         onViewDetails={onViewDetails}
         onRetry={msg.clientMessageId ? (m) => onRetry(m.conversationId, m.clientMessageId!) : undefined}
       />
@@ -248,10 +256,18 @@ export function VirtualMessageList({
   const userId = useAuthStore((s) => s.user?.id ?? "");
   const setReplyTo = useConversationStore((s) => s.setReplyTo);
   const setEditingMessage = useConversationStore((s) => s.setEditingMessage);
-  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
+  const targetMessageId = useConversationStore((s) => s.targetMessageId);
+  const setTargetMessageId = useConversationStore((s) => s.setTargetMessageId);
+  const messageMode = useConversationStore((s) => s.messageMode);
+  const setMessageMode = useConversationStore((s) => s.setMessageMode);
+  const pendingJumpedCount = useConversationStore((s) => s.pendingJumpedMessages[conversationId] ?? 0);
+  const clearPendingJumpedMessages = useConversationStore((s) => s.clearPendingJumpedMessages);
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, refetch } =
     useMessages(conversationId);
+  const [isFetchingAfter, setIsFetchingAfter] = useState(false);
   const { data: conversation } = useConversation(conversationId);
   const myRole = useMyConversationRole(conversationId);
+  const canPinMessages = !!myRole;
   const supportsPolls = conversation?.kind === "group";
   const { data: polls = [] } = usePolls(conversationId, supportsPolls);
   const allowMemberMessage = conversation?.allowMemberMessage ?? true;
@@ -261,7 +277,7 @@ export function VirtualMessageList({
   useSeenCursor(conversationId, lastVisibleOffset);
 
   // ─── Message action handlers ──────────────────────────────────────────────
-  const { send: _send, retryMessage } = useSendMessage();
+  const { retryMessage } = useSendMessage();
 
   const handleRetry = useCallback((convId: string, clientMessageId: string) => {
     retryMessage(convId, clientMessageId);
@@ -291,7 +307,7 @@ export function VirtualMessageList({
     } catch {
       // noop
     }
-  }, [conversationId]);
+  }, [conversationId, setMessageMode, clearPendingJumpedMessages]);
 
   const handleRevoke = useCallback(async (msg: Message) => {
     try {
@@ -337,37 +353,8 @@ export function VirtualMessageList({
   const handlePin = useCallback(async (msg: Message) => {
     try {
       await pinMessage(msg.messageId, conversationId);
-      const qc = getQueryClient();
-      const pinnedAt = msg.pinnedAt ?? new Date().toISOString();
-      const pinnedMessage = { ...msg, isPinned: true, pinnedAt };
-      qc.setQueryData(
-        queryKeys.messages.pinned(conversationId),
-        (old: Message[] | undefined) => {
-          const list = old ?? [];
-          const byId = new Map(list.map((message) => [message.messageId, message]));
-          byId.set(msg.messageId, { ...byId.get(msg.messageId), ...pinnedMessage });
-          return Array.from(byId.values()).sort(
-            (a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime()
-          );
-        }
-      );
-      qc.setQueryData(
-        queryKeys.messages.list(conversationId),
-        (old: MessagesInfiniteData | undefined) => {
-          if (!old) return old;
-          return {
-            ...old,
-            pages: old.pages.map((page) => ({
-              ...page,
-              data: page.data.map((message) =>
-                message.messageId === msg.messageId ? { ...message, isPinned: true, pinnedAt } : message
-              ),
-            })),
-          };
-        }
-      );
     } catch {
-      alert("You can pin up to 3 messages in a conversation.");
+      toast.error("You can pin up to 3 messages in a conversation.");
     }
   }, [conversationId]);
 
@@ -376,6 +363,7 @@ export function VirtualMessageList({
 
   const atBottomRef = useRef(true);
   const [showFab, setShowFab] = useState(false);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const prevCountRef = useRef(0);
   // Snapshot before history fetch for scroll restoration
   const scrollSnapRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
@@ -387,9 +375,11 @@ export function VirtualMessageList({
   const hasNextPageRef = useRef(hasNextPage);
   const isFetchingNextPageRef = useRef(isFetchingNextPage);
   const fetchNextPageRef = useRef(fetchNextPage);
+  const isFetchingAfterRef = useRef(isFetchingAfter);
   hasNextPageRef.current = hasNextPage;
   isFetchingNextPageRef.current = isFetchingNextPage;
   fetchNextPageRef.current = fetchNextPage;
+  isFetchingAfterRef.current = isFetchingAfter;
   // Tracks previous scrollTop to derive scroll direction in handleScroll
   const prevScrollTopRef = useRef(0);
   // Programmatic scroll-to-bottom lock — prevents handleScroll from setting atBottomRef=false
@@ -398,9 +388,10 @@ export function VirtualMessageList({
   const scrollToBottomTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Flatten pages — oldest first
-  const messages: Message[] = data?.pages
-    ? [...data.pages].reverse().flatMap((p) => p.data)
-    : [];
+  const messages: Message[] = useMemo(
+    () => data?.pages ? [...data.pages].reverse().flatMap((p) => p.data) : [],
+    [data?.pages],
+  );
 
   const visiblePolls = supportsPolls
     ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
@@ -550,6 +541,8 @@ export function VirtualMessageList({
     scrollToBottomTimersRef.current.forEach(clearTimeout);
     scrollToBottomTimersRef.current = [];
     isScrollingToBottomRef.current = false;
+    setMessageMode("LIVE");
+    clearPendingJumpedMessages(conversationId);
   }, [conversationId]);
 
   // Cleanup timers on unmount
@@ -560,17 +553,26 @@ export function VirtualMessageList({
   useEffect(() => {
     if (targetOffset === null || targetOffset === undefined || messages.length === 0) return;
     const targetIndex = items.findIndex(
-      (item) => item.kind === "message" && item.msg.offset === targetOffset
+      (item) => item.kind === "message" && (
+        item.msg.offset === targetOffset ||
+        (targetMessageId && item.msg.messageId === targetMessageId)
+      )
     );
     if (targetIndex >= 0 && listRef.current) {
       listRef.current.scrollToRow({ index: targetIndex, align: "center" });
+      const targetItem = items[targetIndex];
+      if (targetItem?.kind === "message") {
+        setHighlightMessageId(targetItem.msg.messageId);
+        window.setTimeout(() => setHighlightMessageId(null), 2200);
+      }
       initialScrollDoneRef.current = true;
       prevCountRef.current = messages.length;
       atBottomRef.current = false;
       setShowFab(true);
     }
     useConversationStore.getState().setTargetOffset(null);
-  }, [targetOffset, items, messages.length]);
+    setTargetMessageId(null);
+  }, [targetOffset, targetMessageId, items, messages.length, setTargetMessageId]);
 
   // Scroll to bottom when the first page of messages arrives for this conversation.
   // Uses DOM-native el.scrollTop = el.scrollHeight so virtual coordinate inaccuracies
@@ -623,6 +625,46 @@ export function VirtualMessageList({
     prevCountRef.current = newCount;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, stableTimelineCount, userId, items]);
+
+  const loadMoreAfter = useCallback(async () => {
+    if (messageMode !== "JUMPED" || isFetchingAfterRef.current) return;
+    const newestPage = data?.pages[0];
+    const newestOffset = newestPage?.meta.newestOffset;
+    const hasMoreAfter = newestPage?.meta.hasMoreAfter ?? newestPage?.meta.hasMore;
+    if (newestOffset == null || !hasMoreAfter) return;
+
+    isFetchingAfterRef.current = true;
+    setIsFetchingAfter(true);
+    try {
+      const page = await getMessages({ conversationId, after: newestOffset, limit: 30 });
+      const nextHasMoreAfter = page.meta.hasMoreAfter ?? page.meta.hasMore;
+      if (page.data.length === 0 || !nextHasMoreAfter) {
+        setMessageMode("LIVE");
+        clearPendingJumpedMessages(conversationId);
+        getQueryClient().removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+        await refetch();
+        initialScrollDoneRef.current = false;
+        return;
+      }
+
+      getQueryClient().setQueryData<MessagesInfiniteData>(
+        queryKeys.messages.list(conversationId),
+        (old) => {
+          if (!old) return old;
+          const existingIds = new Set(old.pages.flatMap((p) => p.data.map((m) => m.messageId)));
+          const dedupedPage = {
+            ...page,
+            data: page.data.filter((m) => !existingIds.has(m.messageId)),
+          };
+          return { ...old, pages: dedupedPage.data.length > 0 ? [dedupedPage, ...old.pages] : old.pages };
+        }
+      );
+    } finally {
+      isFetchingAfterRef.current = false;
+      setIsFetchingAfter(false);
+    }
+  }, [messageMode, data?.pages, conversationId, setMessageMode, clearPendingJumpedMessages, refetch]);
+
   // Native scroll handler — drives atBottom tracking and reverse-infinite-scroll trigger.
   // Using react-window's onScroll pass-through (HTMLAttributes spread) gives us a single,
   // reliable event source without manual addEventListener/removeEventListener.
@@ -668,8 +710,19 @@ export function VirtualMessageList({
         }
         fetchNextPageRef.current();
       }
+      const newestPage = data?.pages[0];
+      const hasMoreAfter = newestPage?.meta.hasMoreAfter ?? newestPage?.meta.hasMore;
+      if (
+        messageMode === "JUMPED" &&
+        scrollDirection === "forward" &&
+        scrollHeight - scrollTop - clientHeight < 200 &&
+        hasMoreAfter &&
+        !isFetchingAfterRef.current
+      ) {
+        void loadMoreAfter();
+      }
     },
-    [onScrollChange]
+    [data?.pages, loadMoreAfter, messageMode, onScrollChange]
   );
 
   const handleRowsRendered = useCallback(
@@ -691,8 +744,16 @@ export function VirtualMessageList({
   );
 
   const scrollToBottom = useCallback(() => {
+    if (messageMode === "JUMPED") {
+      setMessageMode("LIVE");
+      clearPendingJumpedMessages(conversationId);
+      getQueryClient().removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
+      void refetch();
+      initialScrollDoneRef.current = false;
+      return;
+    }
     domScrollToBottom();
-  }, [domScrollToBottom]);
+  }, [messageMode, setMessageMode, clearPendingJumpedMessages, conversationId, refetch, domScrollToBottom]);
 
   if (isLoading) {
     return (
@@ -718,7 +779,7 @@ export function VirtualMessageList({
 
   return (
     <div className="flex-1 min-h-0 overflow-hidden relative">
-      {isFetchingNextPage && (
+      {(isFetchingNextPage || isFetchingAfter) && (
         <div className="flex justify-center py-2 absolute top-0 left-0 right-0 z-10 pointer-events-none">
           <Loader2 className="w-4 h-4 animate-spin text-muted" />
         </div>
@@ -729,14 +790,14 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, messageById, memberMap, otherMembers, myRole, allowMemberMessage, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry }}
+        rowProps={{ items, userId, messageById, memberMap, otherMembers, myRole, canPinMessages, allowMemberMessage, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry, highlightMessageId }}
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
         overscanCount={8}
       />
       <ScrollToBottomFab
-        show={showFab}
-        unreadCount={0}
+        show={showFab || (messageMode === "JUMPED" && pendingJumpedCount > 0)}
+        unreadCount={messageMode === "JUMPED" ? pendingJumpedCount : 0}
         onClick={scrollToBottom}
       />
       {forwardTarget && (

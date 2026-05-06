@@ -5,9 +5,10 @@ import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, I
 import { usePinnedMessages } from "@/hooks/useMessages";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query/keys";
-import { unpinMessage } from "@/lib/api/messages";
+import { getMessagesAround, unpinMessage } from "@/lib/api/messages";
 import type { Message } from "@/lib/api/messages";
 import type { MessagesInfiniteData } from "@/hooks/useMessages";
+import { useConversationStore } from "@/stores/conversationStore";
 
 interface PinnedMessageBannerProps {
   conversationId: string;
@@ -64,6 +65,7 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
   const { data: pinned = [] } = usePinnedMessages(conversationId);
   const [index, setIndex] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [jumping, setJumping] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const qc = useQueryClient();
 
@@ -90,26 +92,6 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
     setPopoverOpen(false);
     try {
       await unpinMessage(m.messageId, conversationId);
-      qc.setQueryData(
-        queryKeys.messages.pinned(conversationId),
-        (old: Message[] | undefined) => old?.filter((x) => x.messageId !== m.messageId) ?? []
-      );
-      qc.setQueryData(
-        queryKeys.messages.list(conversationId),
-        (old: MessagesInfiniteData | undefined) => {
-          if (!old) return old;
-          return {
-            ...old,
-            pages: old.pages.map((p) => ({
-              ...p,
-              data: p.data.map((x) =>
-                x.messageId === m.messageId ? { ...x, isPinned: false } : x
-              ),
-            })),
-          };
-        }
-      );
-      if (safeIndex >= pinned.length - 1) setIndex(Math.max(0, safeIndex - 1));
     } catch {
       // noop
     }
@@ -118,6 +100,33 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
   const handleViewDetails = () => {
     setPopoverOpen(false);
     onViewDetails?.(msg);
+  };
+
+  const handleJumpToMessage = async () => {
+    if (jumping) return;
+    setPopoverOpen(false);
+    setJumping(true);
+    try {
+      const page = await getMessagesAround({
+        conversationId,
+        messageId: msg.messageId,
+        limit: 30,
+      });
+      qc.setQueryData<MessagesInfiniteData>(
+        queryKeys.messages.list(conversationId),
+        {
+          pages: [page],
+          pageParams: [undefined],
+        }
+      );
+      const store = useConversationStore.getState();
+      store.setMessageMode("JUMPED");
+      store.clearPendingJumpedMessages(conversationId);
+      store.setTargetMessageId(msg.messageId);
+      store.setTargetOffset(page.meta.targetOffset ?? msg.offset);
+    } finally {
+      setJumping(false);
+    }
   };
 
   return (
@@ -152,15 +161,20 @@ export function PinnedMessageBanner({ conversationId, onViewDetails }: PinnedMes
       >
         <button
           type="button"
-          onClick={() => setPopoverOpen((v) => !v)}
+          onClick={handleJumpToMessage}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setPopoverOpen((v) => !v);
+          }}
           className="w-full text-left hover:bg-border/30 rounded-lg px-1 py-0.5 transition-colors cursor-pointer"
+          title="Click to jump to message. Right-click for options."
         >
           <p className="text-[10px] font-semibold text-cta leading-none mb-0.5">
             Tin nhắn ghim{pinned.length > 1 ? ` (${safeIndex + 1}/${pinned.length})` : ""}
           </p>
           <div className="flex items-center gap-1 min-w-0 text-xs text-text truncate leading-tight">
             {preview.icon ? <preview.icon className="w-3 h-3 shrink-0 text-cta" /> : null}
-            <p className="truncate">{preview.label}</p>
+            <p className="truncate">{jumping ? "Đang mở tin nhắn…" : preview.label}</p>
           </div>
         </button>
 

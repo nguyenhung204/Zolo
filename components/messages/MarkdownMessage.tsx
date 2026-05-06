@@ -29,7 +29,7 @@ function buildComponents(
     // ── Paragraph ─────────────────────────────────────────────────────────
     p({ children }) {
       return (
-        <p className="mb-1.5 last:mb-0 break-words leading-relaxed">
+        <p className="mb-1.5 last:mb-0 whitespace-pre-wrap break-all [overflow-wrap:anywhere] leading-relaxed">
           {mentions.length > 0 || mentionAll ? (
             <MentionHighlight
               content={typeof children === "string" ? children : String(children)}
@@ -53,7 +53,7 @@ function buildComponents(
           target="_blank"
           rel="noopener noreferrer"
           className={cn(
-            "hover:underline break-all",
+            "hover:underline break-all [overflow-wrap:anywhere]",
             isMine ? "text-white/90 underline decoration-white/50" : "text-blue-500 hover:text-blue-400"
           )}
         >
@@ -104,7 +104,7 @@ function buildComponents(
       return (
         <code
           className={cn(
-            "font-mono text-[0.85em] px-1 py-0.5 rounded",
+            "font-mono text-[0.85em] px-1 py-0.5 rounded break-all [overflow-wrap:anywhere]",
             isMine ? "bg-white/15 text-white/90" : "bg-black/8 text-pink-500"
           )}
         >
@@ -160,7 +160,7 @@ function buildComponents(
     // ── GFM Tables ────────────────────────────────────────────────────────
     table({ children }) {
       return (
-        <div className="overflow-x-auto my-1.5 rounded-lg">
+        <div className="overflow-x-auto max-w-full my-1.5 rounded-lg">
           <table className="text-xs border-collapse w-full">{children}</table>
         </div>
       );
@@ -207,6 +207,21 @@ function buildComponents(
 // ─── Component ────────────────────────────────────────────────────────────────
 // Wrapped in React.memo — AST parsing is expensive; skip re-renders when
 // neither `content` nor `isMine` changes (critical for react-window scroll).
+/**
+ * Preserve consecutive blank lines that standard Markdown would collapse.
+ * Each extra `\n` beyond the first `\n\n` pair becomes a U+00A0 (NBSP) placeholder
+ * paragraph, which ReactMarkdown renders as a visible empty line.
+ *
+ * e.g. "a\n\n\n\nb"  (4 newlines = 3 blank lines)
+ *   →  "a\n\n\u00A0\n\n\u00A0\n\nb"  → <p>a</p><p> </p><p> </p><p>b</p>
+ */
+function preserveBlankLines(raw: string): string {
+  return raw.replace(/\n{3,}/g, (match) => {
+    const extra = match.length - 2; // number of blank lines beyond the standard paragraph break
+    return "\n\n" + "\u00A0\n\n".repeat(extra);
+  });
+}
+
 function MarkdownMessageBase({
   content,
   isMine = false,
@@ -221,9 +236,11 @@ function MarkdownMessageBase({
     [isMine, mentions, mentionLabels, mentionAll]
   );
 
+  const processedContent = useMemo(() => preserveBlankLines(content), [content]);
+
   return (
     <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
-      {content}
+      {processedContent}
     </ReactMarkdown>
   );
 }

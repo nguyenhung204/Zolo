@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Reply, Share2, Pin, Info, Pencil, Ban, Trash2 } from "lucide-react";
 import type { Message } from "@/lib/api/messages";
@@ -16,13 +17,14 @@ interface Props {
   onRevoke?: () => void;
   onForward?: () => void;
   onPin?: () => void;
+  canPin?: boolean;
   onViewDetails?: () => void;
 }
 
 export function MessageContextMenu({
-  isMine, message, onEmojiPick, onReply, onEdit, onDelete, onRevoke, onForward, onPin, onViewDetails,
+  isMine, message, onEmojiPick, onReply, onEdit, onDelete, onRevoke, onForward, onPin, canPin = true, onViewDetails,
 }: Props) {
-  const now = Date.now();
+  const [now] = useState(() => Date.now());
   const ageMs = now - new Date(message.createdAt).getTime();
   const canEdit = isMine && message.type === "text" && ageMs < 1 * 60 * 60 * 1000;
   const canRevoke = isMine && ageMs < 1 * 60 * 60 * 1000;
@@ -44,7 +46,7 @@ export function MessageContextMenu({
       <div className="py-1">
         {onReply && <CtxItem icon={<Reply className="w-3.5 h-3.5" />} label="Reply" onClick={onReply} />}
         {onForward && <CtxItem icon={<Share2 className="w-3.5 h-3.5" />} label="Forward" onClick={onForward} />}
-        {onPin && <CtxItem icon={<Pin className="w-3.5 h-3.5" />} label="Pin message" onClick={onPin} />}
+        {canPin && onPin && <CtxItem icon={<Pin className="w-3.5 h-3.5" />} label="Pin message" onClick={onPin} />}
         {onViewDetails && <CtxItem icon={<Info className="w-3.5 h-3.5" />} label="View details" onClick={onViewDetails} />}
         {canEdit && onEdit && <CtxItem icon={<Pencil className="w-3.5 h-3.5" />} label="Edit" onClick={onEdit} />}
         {canRevoke && onRevoke && <CtxItem icon={<Ban className="w-3.5 h-3.5" />} label="Revoke" onClick={onRevoke} danger />}

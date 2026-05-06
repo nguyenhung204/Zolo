@@ -177,7 +177,7 @@ export function MessageComposer({
   const myRoleFromMembers = rawMembers.find((m) => m.userId === myId)?.role;
   const myRoleFromHook = useMyConversationRole(conversationId);
   const myRole = myRoleFromMembers ?? myRoleFromHook;
-  const canMentionAll = myRole === "owner" || myRole === "admin";
+  const canMentionAll = !!myRole;
 
   // ── Permission gate ──────────────────────────────────────────────────────
   // When the group setting `allowMemberMessage=false` is on, only OWNER/ADMIN
@@ -239,8 +239,18 @@ export function MessageComposer({
   // Pre-fill textarea when edit mode is activated
   useEffect(() => {
     if (editingMessage) {
-      setText(editingMessage.content);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      const content = editingMessage.content;
+      setText(content);
+      const frame = requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.selectionStart = content.length;
+        el.selectionEnd = content.length;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      });
+      return () => cancelAnimationFrame(frame);
     }
   }, [editingMessage]);
 
@@ -597,8 +607,10 @@ export function MessageComposer({
     // Edit mode: text only
     if (editingMessage) {
       if (!text.trim()) { isSendingRef.current = false; return; }
+      // Strip only leading/trailing blank lines, preserve internal formatting
+      const editedContent = text.replace(/^\n+|\n+$/g, "");
       try {
-        await editMessage(editingMessage.messageId, text.trim());
+        await editMessage(editingMessage.messageId, editedContent);
         const qc = getQueryClient();
         qc.setQueryData(
           queryKeys.messages.list(conversationId),
@@ -610,7 +622,7 @@ export function MessageComposer({
                 ...p,
                 data: p.data.map((m) =>
                   m.messageId === editingMessage.messageId
-                    ? { ...m, content: text.trim(), editedAt: new Date().toISOString() }
+                    ? { ...m, content: editedContent, editedAt: new Date().toISOString() }
                     : m
                 ),
               })),
@@ -778,7 +790,9 @@ export function MessageComposer({
     }
 
     // Text only — split into MAX_CONTENT_LENGTH chunks if needed
-    const trimmed = text.trim();
+    // Trim only leading/trailing blank lines (not internal spacing) so the user's
+    // intentional blank lines within the message body are preserved.
+    const trimmed = text.replace(/^\n+|\n+$/g, "");
     const pendingMentions = mentions.slice();
     const pendingMentionAll = mentionAll;
     setText("");
@@ -881,7 +895,7 @@ export function MessageComposer({
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-lg bg-border/30">
           <Pencil className="w-3 h-3 text-cta shrink-0" />
           <span className="flex-1 text-xs text-muted">Editing message</span>
-          <button type="button" onClick={() => { setEditingMessage(null); setText(""); }}
+          <button type="button" onClick={() => { setEditingMessage(null); setText(""); if (textareaRef.current) textareaRef.current.style.height = "auto"; }}
             className="text-muted hover:text-text cursor-pointer" title="Cancel">
             <X className="w-3.5 h-3.5" />
           </button>
@@ -962,7 +976,7 @@ export function MessageComposer({
               onChange={(e) => setContactQuery(e.target.value)}
               placeholder="Search friends…"
               autoFocus
-              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
+              className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:outline-none transition"
             />
           </div>
           <div className="mt-2 max-h-72 overflow-y-auto scrollbar-thin">
