@@ -193,12 +193,14 @@ function MessageRowComponent({
     prev?.senderId === msg.senderId &&
     prev?.type !== "system" &&
     prev?.type !== "call_summary" &&
+    msg.type !== "system" &&
     msg.type !== "call_summary" &&
     new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() < GROUP_GAP_MS;
   const sameNext =
     next?.senderId === msg.senderId &&
     next?.type !== "system" &&
     next?.type !== "call_summary" &&
+    msg.type !== "system" &&
     msg.type !== "call_summary" &&
     new Date(next.createdAt).getTime() - new Date(msg.createdAt).getTime() < GROUP_GAP_MS;
   const member = memberMap.get(msg.senderId);

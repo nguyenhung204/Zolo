@@ -54,9 +54,9 @@ function buildSystemText(
       return `${actor} kicked ${targetList} from the group`;
 
     case "ROLE_CHANGED": {
-      const role = metadata?.newRole ?? "member";
-      const roleFmt = role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
-      return `${actor} đã bổ nhiệm ${targetList} làm ${roleFmt}`;
+      const role = (metadata?.newRole ?? "member").toLowerCase();
+      const roleFmt = role === "owner" ? "Owner" : role === "admin" ? "Admin" : "Member";
+      return `${actor} made ${targetList} a ${roleFmt}`;
     }
 
     case "GROUP_INFO_UPDATED": {
@@ -72,6 +72,16 @@ function buildSystemText(
     case "OWNERSHIP_TRANSFERRED": {
       const newOwner = targetNames.length > 0 ? targetNames[0] : "someone";
       return `${actor} transferred group ownership to ${newOwner}`;
+    }
+
+    case "JOIN_REQUEST_APPROVED": {
+      const requester = targetNames.length > 0 ? targetNames[0] : "someone";
+      return `${actor} approved ${requester}'s request to join`;
+    }
+
+    case "JOIN_REQUEST_REJECTED": {
+      const requester = targetNames.length > 0 ? targetNames[0] : "someone";
+      return `${actor} rejected ${requester}'s request to join`;
     }
 
     case "GROUP_SETTINGS_UPDATED": {

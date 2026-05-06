@@ -24,7 +24,7 @@ function RequestRow({
   onReject: () => void;
   isBusy: boolean;
 }) {
-  const displayName = request.user?.displayName ?? request.userId;
+  const displayName = request.user?.displayName ?? request.userId.slice(0, 8);
   const initials = displayName.slice(0, 2).toUpperCase();
   const formattedDate = new Date(request.createdAt).toLocaleDateString([], {
     month: "short",

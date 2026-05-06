@@ -15,6 +15,8 @@ export type SystemMessageAction =
   | "OWNERSHIP_TRANSFERRED"
   | "GROUP_INFO_UPDATED"
   | "GROUP_SETTINGS_UPDATED"
+  | "JOIN_REQUEST_APPROVED"
+  | "JOIN_REQUEST_REJECTED"
   | "POLL_CLOSED"
   | "POLL_VOTED"
   | "MESSAGE_PINNED"
@@ -90,7 +92,7 @@ interface RawMessage {
     targetNames?: string[];
     joinSource?: "manual" | "invite_link" | "join_request";
     newRole?: string;
-    changes?: { name?: string; avatarChanged?: boolean };
+    changes?: { name?: string; avatarChanged?: boolean; allowMemberMessage?: boolean; joinApprovalRequired?: boolean };
     ownershipTransferredTo?: string;
     visibility?: "all" | "admins";
     contactUserId?: string;

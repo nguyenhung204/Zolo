@@ -14,6 +14,7 @@ import {
 import { useJoinByInvite } from "@/hooks/useGroup";
 import { useConversations } from "@/hooks/useConversations";
 import { useAuthStore } from "@/stores/authStore";
+import { getChatSocket } from "@/lib/socket/socket";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -79,6 +80,43 @@ export default function JoinGroupPage({ params }: Props) {
       router.replace(`/conversations/${conversationId}`);
     }
   }, [conversations, conversationId, state, router]);
+
+  // When waiting for admin approval, listen for real-time approval/rejection
+  // so we can react immediately without the user having to poll.
+  useEffect(() => {
+    if (state !== "pending" || !conversationId) return;
+
+    const socket = getChatSocket() as unknown as {
+      on(event: string, handler: (payload: Record<string, unknown>) => void): void;
+      off(event: string, handler: (payload: Record<string, unknown>) => void): void;
+    };
+
+    const onApproved = (payload: Record<string, unknown>) => {
+      if (payload.conversationId !== conversationId) return;
+      const myId = useAuthStore.getState().user?.id;
+      if (payload.userId && payload.userId !== myId) return;
+      setState("joined");
+      setJoinedConversationId(conversationId);
+      setTimeout(() => {
+        router.push(`/conversations/${conversationId}`);
+      }, 1200);
+    };
+
+    const onRejected = (payload: Record<string, unknown>) => {
+      if (payload.conversationId !== conversationId) return;
+      const myId = useAuthStore.getState().user?.id;
+      if (payload.userId && payload.userId !== myId) return;
+      setErrorMessage("Your request to join this group was declined.");
+      setState("error");
+    };
+
+    socket.on("group:join_approved", onApproved);
+    socket.on("group:join_rejected", onRejected);
+    return () => {
+      socket.off("group:join_approved", onApproved);
+      socket.off("group:join_rejected", onRejected);
+    };
+  }, [state, conversationId, router]);
 
   function handleJoin() {
     setState("joining");

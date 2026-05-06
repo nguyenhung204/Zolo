@@ -227,7 +227,24 @@ export interface JoinRequest {
   requestMessage: string | null;
   status: "pending" | "approved" | "rejected";
   createdAt: string;
-  user: JoinRequestUser;
+  /** Enriched profile. Present when the socket emits the event with `userName`;
+   * absent (undefined) when fetched from REST (backend does not join profile data). */
+  user?: JoinRequestUser;
+}
+
+function normalizeJoinRequest(raw: Record<string, unknown>): JoinRequest {
+  return {
+    id: raw.id as string,
+    conversationId: raw.conversationId as string,
+    userId: raw.userId as string,
+    requestMessage: (raw.requestMessage as string | null) ?? null,
+    status: (raw.status as JoinRequest["status"]) ?? "pending",
+    createdAt: raw.createdAt as string,
+    // Backend does not enrich with profile; carry it through if present.
+    user: raw.user
+      ? (raw.user as JoinRequestUser)
+      : undefined,
+  };
 }
 
 export type JoinByInviteResult =
@@ -487,7 +504,7 @@ export async function requestToJoin(
 export async function getJoinRequests(conversationId: string): Promise<JoinRequest[]> {
   const res = await apiClient.get(`/conversations/${conversationId}/join-requests`);
   const d = res.data?.data;
-  return Array.isArray(d) ? d : [];
+  return Array.isArray(d) ? d.map((r: Record<string, unknown>) => normalizeJoinRequest(r)) : [];
 }
 
 export async function reviewJoinRequest(

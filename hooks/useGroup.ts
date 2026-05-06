@@ -35,6 +35,7 @@ import {
   deleteConversationForMe,
   getJoinRequests,
   reviewJoinRequest,
+  requestToJoin,
   type LeaveGroupPayload,
   type Poll,
   type CreatePollPayload,
@@ -342,6 +343,25 @@ export function useDeleteConversationForMe() {
         toast.error("You are not a member of this conversation.");
       } else {
         toast.error("Failed to delete the conversation.");
+      }
+    },
+  });
+}
+
+/**
+ * Send a join request to a group that has `joinApprovalRequired = true`
+ * (POST /conversations/:id/join-requests).
+ * Used by public group discovery — not needed for the invite-link flow.
+ */
+export function useRequestToJoin() {
+  return useMutation<JoinRequest, ApiError, { conversationId: string; requestMessage?: string }>({
+    mutationFn: ({ conversationId, requestMessage }) =>
+      requestToJoin(conversationId, requestMessage),
+    onError: (err) => {
+      if (err.status === 400) {
+        toast.error("You already have a pending request or are already a member.");
+      } else {
+        toast.error("Failed to send join request.");
       }
     },
   });

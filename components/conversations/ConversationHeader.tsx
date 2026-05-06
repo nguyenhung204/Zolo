@@ -1,7 +1,7 @@
 "use client";
 
 import { UserAvatar } from "@/components/presence/UserAvatar";
-import { useConversation } from "@/hooks/useConversations";
+import { useConversation, useConversationMembers } from "@/hooks/useConversations";
 import type { ConversationKind } from "@/lib/api/conversations";
 import { startInstantCall } from "@/lib/api/calls";
 import { getUserById } from "@/lib/api/users";
@@ -36,6 +36,7 @@ interface ConversationHeaderProps {
 
 export function ConversationHeader({ conversationId }: ConversationHeaderProps) {
   const { data: conv } = useConversation(conversationId);
+  const { data: members = [] } = useConversationMembers(conversationId);
   const { setOutgoingCall, setGroupCall } = useCallStore();
   const { setUserProfile } = usePresenceStore();
   const isBusyRef = useRef(false);
@@ -95,10 +96,11 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
 
   // For direct convs: participants may not be loaded yet (list cache doesn't include them),
   // but otherUser is always available from the list response — use it as a reliable fallback.
-  // For group convs: we need participants; guard against calling with an empty array.
+  // For group convs: use participants OR memberCount so the button is immediately enabled
+  // even when the detail query hasn't resolved yet (list cache seeds conv without participants).
   const calleeIdsReady = isDirect
     ? !!(resolvedOtherUser?.id)
-    : (conv?.participants?.length ?? 0) > 0;
+    : members.length > 0;
 
   const handleStartCall = async () => {
     if (!conv || isBusyRef.current || !calleeIdsReady) return;
@@ -106,7 +108,7 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
     try {
       const otherMemberIds = isDirect
         ? (resolvedOtherUser?.id ? [resolvedOtherUser.id] : [])
-        : (conv.participants ?? []).map((p) => p.userId).filter((id) => id !== currentUserId);
+        : members.map((m) => m.userId).filter((id) => id !== currentUserId);
 
       if (!otherMemberIds.length) {
         toast.error("Could not determine call recipients. Please try again.");
@@ -131,12 +133,12 @@ export function ConversationHeader({ conversationId }: ConversationHeaderProps) 
         });
       }
       // Sync participant profiles so GlobalCallOverlay can show names/avatars immediately
-      (conv.participants ?? []).forEach((p) => {
-        if (p.userId !== currentUserId) {
-          setUserProfile(p.userId, {
-            displayName: p.displayName ?? p.username ?? null,
+      members.forEach((m) => {
+        if (m.userId !== currentUserId) {
+          setUserProfile(m.userId, {
+            displayName: m.displayName ?? m.username ?? null,
             avatarMediaId: null,
-            avatarUrl: p.avatarUrl ?? null,
+            avatarUrl: m.avatarUrl ?? null,
           });
         }
       });
