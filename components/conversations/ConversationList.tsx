@@ -1,13 +1,15 @@
 "use client";
 
-import { useConversations } from "@/hooks/useConversations";
+import { useConversationSearch, useConversations } from "@/hooks/useConversations";
 import { useConversationStore } from "@/stores/conversationStore";
 import { ConversationItem } from "./ConversationItem";
 import { CreateConversationModal } from "./CreateConversationModal";
 import { useRouter } from "next/navigation";
 import { MessageSquarePlus, Search } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { encodeId } from "@/lib/utils/obfuscateId";
+import { useAuthStore } from "@/stores/authStore";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 export function ConversationList() {
   const { data: conversations = [], isLoading } = useConversations();
@@ -15,16 +17,35 @@ export function ConversationList() {
   const setActive = useConversationStore((s) => s.setActiveConversation);
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 300);
   const [createOpen, setCreateOpen] = useState(false);
+  const myId = useAuthStore((s) => s.user?.id ?? "");
+  const q = debouncedSearchQuery.trim();
+  const isSearching = q.length > 0;
+  const { data: searchData, isFetching: isSearchFetching } =
+    useConversationSearch(q, isSearching);
 
-  const filtered = conversations.filter((c) => {
-    if (!searchQuery) return true;
-    const name =
-      c.kind === "direct"
-        ? (c.otherUser?.displayName ?? c.otherUser?.username ?? "Direct Message")
-        : (c.name ?? "Unnamed");
-    return name.toLowerCase().includes(searchQuery.toLowerCase());
-  });
+  const filtered = useMemo(() => {
+    if (!isSearching) return conversations;
+    const needle = q.toLowerCase();
+    const directMatches = conversations.filter((c) => {
+      if (c.kind !== "direct") return false;
+      const other = c.otherUser ?? c.participants?.find((p) => p.userId !== myId);
+      const name = (other as { displayName?: string; username?: string } | undefined)?.displayName
+        ?? (other as { username?: string } | undefined)?.username
+        ?? "Direct Message";
+      return name.toLowerCase().includes(needle);
+    });
+    const seen = new Set(directMatches.map((c) => c.id));
+    const groupMatches = (searchData?.conversations ?? []).filter((c) => {
+      if (c.kind === "direct" || seen.has(c.id)) return false;
+      seen.add(c.id);
+      return true;
+    });
+    return [...directMatches, ...groupMatches];
+  }, [conversations, isSearching, myId, q, searchData?.conversations]);
+
+  const listLoading = isSearching ? isSearchFetching && !searchData : isLoading;
 
   return (
     <aside className="flex flex-col h-full w-full md:w-80 lg:w-[22rem] bg-surface md:border-r border-border shrink-0 min-h-0">
@@ -49,25 +70,25 @@ export function ConversationList() {
             placeholder="Search conversations…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/10 transition-all placeholder:text-muted"
+            className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition-all placeholder:text-muted"
           />
         </div>
       </div>
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5">
-        {isLoading &&
+        {listLoading &&
           Array.from({ length: 6 }).map((_, i) => (
             <ConversationSkeleton key={i} />
           ))}
 
-        {!isLoading && filtered.length === 0 && (
+        {!listLoading && filtered.length === 0 && (
           <div className="text-center py-12 text-sm text-muted">
-            {searchQuery ? "No conversations found" : "No conversations yet"}
+            {isSearching ? "No conversations found" : "No conversations yet"}
           </div>
         )}
 
-        {!isLoading &&
+        {!listLoading &&
           filtered.map((conv) => (
             <ConversationItem
               key={conv.id}

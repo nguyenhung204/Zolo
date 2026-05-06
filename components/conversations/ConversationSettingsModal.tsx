@@ -12,7 +12,6 @@ import {
   Megaphone,
   Loader2,
   UserPlus,
-  Check,
   Users,
   Bell,
   BellOff,
@@ -41,7 +40,7 @@ import {
   useRemoveConversationMember,
   useSetMemberRole,
 } from "@/hooks/useConversations";
-import { useUserSearch } from "@/hooks/useFriends";
+import { useFriendProfiles } from "@/hooks/useFriendProfiles";
 import { useAvatarUpload } from "@/hooks/useMediaUpload";
 import { useAuthStore } from "@/stores/authStore";
 import { queryKeys } from "@/lib/query/keys";
@@ -56,11 +55,11 @@ import { JoinRequestsPanel } from "./JoinRequestsPanel";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
 import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
-import { useFriendshipStatus, useBlockUser, useUnblockUser } from "@/hooks/useFriends";
+import { useFriendshipSearch, useFriendshipStatus, useBlockUser, useUnblockUser } from "@/hooks/useFriends";
 import { usePolls, useCreatePoll } from "@/hooks/useGroup";
 import type { ConversationMuteDuration } from "@/lib/api/notifications";
 import type { MemberRole, Conversation } from "@/lib/api/conversations";
-import type { UserSearchResult } from "@/lib/api/friends";
+import type { UserProfile } from "@/lib/api/users";
 import {
   getCallHistory,
   getCallSummary,
@@ -81,6 +80,28 @@ const ROLE_ICON: Record<MemberRole, React.ReactNode> = {
   admin: <Shield className="w-3 h-3 text-cta" />,
   member: <User className="w-3 h-3 text-muted" />,
 };
+
+type FriendPickUser = Pick<UserProfile, "id" | "username" | "email" | "firstName" | "lastName" | "avatarUrl">;
+
+function filterFriendProfiles(friends: FriendPickUser[], query: string, excludedIds: Set<string>): FriendPickUser[] {
+  const q = query.trim().toLowerCase();
+  return friends
+    .filter((u) => !excludedIds.has(u.id))
+    .filter((u) => {
+      if (!q) return true;
+      const fullName = `${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
+      return (
+        u.username.toLowerCase().includes(q) ||
+        fullName.includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      const an = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim() || a.username;
+      const bn = `${b.firstName ?? ""} ${b.lastName ?? ""}`.trim() || b.username;
+      return an.localeCompare(bn);
+    });
+}
 
 const ROLE_LABEL: Record<MemberRole, string> = {
   owner: "Owner",
@@ -182,6 +203,7 @@ function NotificationControl({
   onChange: (value: ConversationMuteDuration) => void;
 }) {
   const [pickingDuration, setPickingDuration] = useState(false);
+  const [now] = useState(() => Date.now());
 
   const handleToggle = (turnOn: boolean) => {
     if (turnOn) {
@@ -198,7 +220,7 @@ function NotificationControl({
   };
 
   const isForeverMuted = muteUntil
-    ? new Date(muteUntil).getTime() - Date.now() > 365 * 24 * 60 * 60 * 1000
+    ? new Date(muteUntil).getTime() - now > 365 * 24 * 60 * 60 * 1000
     : false;
   const muteUntilLabel = muteUntil && !isForeverMuted
     ? new Date(muteUntil).toLocaleString(undefined, {
@@ -533,13 +555,14 @@ function CompactPolls({
   const [options, setOptions] = useState(["", ""]);
   const [multipleChoice, setMultipleChoice] = useState(false);
   const [deadline, setDeadline] = useState("");
+  const [now] = useState(() => Date.now());
   const { data: polls = [] } = usePolls(conversationId, enabled);
   const supportsPolls = conversation.kind === "group";
   const allowMemberMessage = conversation.allowMemberMessage !== false;
   const createPoll = useCreatePoll(conversationId);
 
   const MAX_ACTIVE_POLLS = 3;
-  const activePolls = polls.filter((p) => !p.isClosed && (!p.deadline || new Date(p.deadline).getTime() > Date.now()));
+  const activePolls = polls.filter((p) => !p.isClosed && (!p.deadline || new Date(p.deadline).getTime() > now));
   const atPollLimit = activePolls.length >= MAX_ACTIVE_POLLS;
 
   const sortedPolls = [...polls].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -651,7 +674,7 @@ function CompactPolls({
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="Ask something..."
-              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 placeholder:text-muted/60 text-text transition"
+              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:outline-none placeholder:text-muted/60 text-text transition"
             />
           </div>
           <div>
@@ -663,7 +686,7 @@ function CompactPolls({
                     value={option}
                     onChange={(e) => setOptions((prev) => prev.map((item, i) => (i === index ? e.target.value : item)))}
                     placeholder={`Option ${index + 1}`}
-                    className="flex-1 px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 placeholder:text-muted/60 text-text transition"
+                    className="flex-1 px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:outline-none placeholder:text-muted/60 text-text transition"
                   />
                   {options.length > 2 && (
                     <button
@@ -703,7 +726,7 @@ function CompactPolls({
               type="datetime-local"
               value={deadline}
               onChange={(e) => setDeadline(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 text-text transition"
+              className="w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface border border-border focus:outline-none text-text transition"
             />
           </div>
           <div className="flex gap-2 pt-1">
@@ -753,7 +776,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [editDesc, setEditDesc] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [addQuery, setAddQuery] = useState("");
-  const [pendingAdd, setPendingAdd] = useState<UserSearchResult[]>([]);
+  const [pendingAdd, setPendingAdd] = useState<FriendPickUser[]>([]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [confirmDisband, setConfirmDisband] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -795,10 +818,19 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const muteConversation = useMuteConversation(conversationId);
   const { data: notificationPreferences } = useNotificationPreferences(conversationId);
 
-  const { data: searchResults = [] } = useUserSearch(addQuery);
+  const { profiles: friendProfiles, isLoading: friendsLoading } = useFriendProfiles();
+  const { data: searchedFriends = [], isFetching: friendsSearching } = useFriendshipSearch(addQuery);
 
   const isDirect = conv?.kind === "direct";
   const isAnnouncement = conv?.kind === "community";
+  const addableFriends = filterFriendProfiles(
+    addQuery.trim().length >= 2 ? searchedFriends : friendProfiles,
+    addQuery,
+    new Set([
+      ...members.map((m) => m.userId),
+      ...pendingAdd.map((u) => u.id),
+    ]),
+  );
   const ownerCount = members.filter((m) => m.role === "owner").length;
   const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
   const convNotification = notificationPreferences?.conversation;
@@ -943,7 +975,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
     );
   };
 
-  const togglePending = (user: UserSearchResult) => {
+  const togglePending = (user: FriendPickUser) => {
     setPendingAdd((prev) =>
       prev.some((u) => u.id === user.id)
         ? prev.filter((u) => u.id !== user.id)
@@ -1031,6 +1063,8 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
         ]
       : []),
   ];
+  const pendingAddPreview = pendingAdd.slice(0, 3);
+  const pendingAddHiddenCount = Math.max(0, pendingAdd.length - pendingAddPreview.length);
 
   return (
     <>
@@ -1234,7 +1268,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                           setIsDirty(true);
                         }}
                         placeholder="Group name…"
-                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
+                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition"
                       />
                     ) : (
                       <p className="px-3 py-2 text-sm text-text rounded-lg bg-bg border border-border/50">
@@ -1254,7 +1288,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                         }}
                         rows={3}
                         placeholder="Optional description…"
-                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition resize-none"
+                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition resize-none"
                       />
                     ) : (
                       <p className="px-3 py-2 text-sm text-text rounded-lg bg-bg border border-border/50 min-h-[4.5rem]">
@@ -1356,57 +1390,55 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                 <SectionHeader title={`Members (${membersLoading ? "…" : members.length})`} />
                 {canEdit && (
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold text-secondary">Add members</label>
+                    <label className="text-xs font-semibold text-secondary">Add friends</label>
                     <div className="relative">
                       <input
                         type="text"
-                        placeholder="Search users…"
+                        placeholder="Search friends…"
                         value={addQuery}
                         onChange={(e) => setAddQuery(e.target.value)}
-                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition"
+                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition"
                       />
-                      {addQuery.length >= 2 &&
-                        searchResults.filter((u) => !members.some((m) => m.userId === u.id)).length > 0 && (
-                          <div className="absolute top-full left-0 right-0 mt-1 z-10 bg-surface border border-border rounded-xl shadow-lg max-h-44 overflow-y-auto">
-                            {searchResults
-                              .filter((u) => !members.some((m) => m.userId === u.id))
-                              .slice(0, 6)
-                              .map((user) => {
-                                const isPending = pendingAdd.some((u) => u.id === user.id);
-                                return (
-                                  <button
-                                    key={user.id}
-                                    onClick={() => {
-                                      togglePending(user);
-                                      setAddQuery("");
-                                    }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
-                                  >
-                                    {user.avatarUrl ? (
-                                      // eslint-disable-next-line @next/next/no-img-element
-                                      <img src={user.avatarUrl} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
-                                    ) : (
-                                      <div className="w-7 h-7 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
-                                        {(user.firstName?.[0] ?? user.username[0]).toUpperCase()}
-                                      </div>
-                                    )}
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-sm font-medium text-text truncate">
-                                        {user.firstName} {user.lastName}
-                                      </p>
-                                      <p className="text-xs text-muted">@{user.username}</p>
-                                    </div>
-                                    {isPending && <Check className="w-4 h-4 text-cta shrink-0" />}
-                                  </button>
-                                );
-                              })}
+                      <div className="mt-1 bg-surface border border-border rounded-xl shadow-lg max-h-44 overflow-y-auto">
+                        {friendsLoading || friendsSearching ? (
+                          <div className="px-3 py-3 text-xs text-muted">Loading friends…</div>
+                        ) : addableFriends.length === 0 ? (
+                          <div className="px-3 py-3 text-xs text-muted">
+                            {addQuery.trim() ? "No friends found" : "No friends to add"}
                           </div>
+                        ) : (
+                          addableFriends.slice(0, 12).map((user) => (
+                            <button
+                              key={user.id}
+                              onClick={() => {
+                                togglePending(user);
+                                setAddQuery("");
+                              }}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
+                            >
+                              {user.avatarUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={user.avatarUrl} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
+                              ) : (
+                                <div className="w-7 h-7 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
+                                  {(user.firstName?.[0] ?? user.username[0]).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-text truncate">
+                                  {`${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || user.username}
+                                </p>
+                                <p className="text-xs text-muted">@{user.username}</p>
+                              </div>
+                            </button>
+                          ))
                         )}
+                      </div>
                     </div>
 
                     {pendingAdd.length > 0 && (
                       <div className="flex items-center gap-2 flex-wrap">
-                        {pendingAdd.map((u) => (
+                        {pendingAddPreview.map((u) => (
                           <span key={u.id} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-cta/10 text-cta text-xs font-medium rounded-full">
                             {u.firstName || u.username}
                             <button onClick={() => togglePending(u)} className="hover:text-red-500 transition cursor-pointer">
@@ -1414,6 +1446,11 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                             </button>
                           </span>
                         ))}
+                        {pendingAddHiddenCount > 0 && (
+                          <span className="px-2.5 py-1 bg-border/60 text-secondary text-xs font-medium rounded-full">
+                            +{pendingAddHiddenCount}
+                          </span>
+                        )}
                         <button
                           onClick={handleAddMembers}
                           disabled={addMembers.isPending}
@@ -1452,11 +1489,11 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                       const isSelf = member.userId === currentUserId;
                       const isLastOwner = mRole === "owner" && ownerCount <= 1;
                       const canRemove = canEdit && !isSelf && !isLastOwner && mRole !== "owner";
-                      const canChangeRole = isOwner && !isSelf && mRole !== "owner";
+                      const canChangeRole = canManageAdmin && !isSelf && mRole !== "owner";
                       const displayName =
                         (member as { displayName?: string }).displayName ??
                         (member as { username?: string }).username ??
-                        member.userId;
+                        "Unknown user";
                       const memberAvatarUrl = (member as { avatarUrl?: string | null }).avatarUrl;
 
                       return (
@@ -1485,7 +1522,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
                                   role: e.target.value as MemberRole,
                                 })
                               }
-                              className="text-xs border border-border rounded-lg px-2 py-1 bg-surface text-secondary cursor-pointer focus:outline-none focus:border-cta transition"
+                              className="text-xs border border-border rounded-lg px-2 py-1 bg-surface text-secondary cursor-pointer focus:outline-none transition"
                             >
                               {ASSIGNABLE_ROLES.map((r) => (
                                 <option key={r} value={r}>{ROLE_LABEL[r]}</option>
@@ -1652,14 +1689,14 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
             <select
               value={transferOwnershipTo}
               onChange={(e) => setTransferOwnershipTo(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10 transition cursor-pointer"
+              className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition cursor-pointer"
             >
               <option value="" disabled>
                 Choose a member…
               </option>
               {ownershipTransferCandidates.map((member) => (
                 <option key={member.userId} value={member.userId}>
-                  {member.displayName ?? member.username ?? member.userId}
+                  {member.displayName ?? member.username ?? "Unknown user"}
                 </option>
               ))}
             </select>

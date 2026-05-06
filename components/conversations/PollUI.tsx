@@ -250,7 +250,7 @@ export function PollUI({
               disabled={!isInteractive}
               className={cn(
                 "relative w-full text-left rounded-xl overflow-hidden transition-all duration-200",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cta/40",
+                "focus-visible:outline-none/40",
                 isInteractive
                   ? "cursor-pointer active:scale-[0.98]"
                   : "cursor-default",

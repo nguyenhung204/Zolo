@@ -4,7 +4,6 @@ import { useConversationMembers } from "@/hooks/useConversations";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { X, Crown, Shield, User } from "lucide-react";
 import type { MemberRole } from "@/lib/api/conversations";
-import { cn } from "@/lib/utils";
 
 const roleIcon: Record<MemberRole, React.ReactNode> = {
   owner: <Crown className="w-3 h-3 text-warning" />,
@@ -84,7 +83,7 @@ export function MemberList({ conversationId, open, onClose }: MemberListProps) {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-text truncate">{safeName}</p>
                     <p className="text-xs text-muted">
-                      Joined {new Date(member.joinedAt).toLocaleDateString()}
+                      {member.email ?? (member.joinedAt ? `Joined ${new Date(member.joinedAt).toLocaleDateString()}` : "Member")}
                     </p>
                   </div>
                   <div className="flex items-center gap-1 text-xs text-muted">

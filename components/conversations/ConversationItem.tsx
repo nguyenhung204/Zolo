@@ -23,6 +23,8 @@ const typeIconMap: Record<string, React.ElementType | null> = {
 
 function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
   if (!msg) return null;
+  if (msg.isRevoked) return { icon: null, label: "Tin nhắn đã bị thu hồi" };
+  if (msg.isDeleted) return { icon: null, label: "Tin nhắn đã bị xóa" };
   // system_call: present on both type="system" (group) and type="text" (direct)
   if (msg.metadata?.systemType === "system_call") {
     return { icon: Phone, label: msg.content };
@@ -47,7 +49,7 @@ function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
     case "system":
       return { icon: null, label: msg.content };
     default:
-      return { icon: null, label: prefix + (msg.content || "") };
+      return { icon: null, label: prefix + (msg.content || "Tin nhắn") };
   }
 }
 
@@ -150,7 +152,9 @@ export function ConversationItem({ conversation, isActive, onClick }: Conversati
               {preview.icon ? <preview.icon className="w-3 h-3 shrink-0" /> : null}
               <p className="truncate">{preview.label}</p>
             </div>
-          ) : null}
+          ) : (
+            <p className="text-xs text-muted truncate italic">Bắt đầu cuộc trò chuyện</p>
+          )}
         </div>
       </div>
 

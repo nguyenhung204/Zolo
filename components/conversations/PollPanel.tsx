@@ -207,7 +207,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
                       placeholder="Ask something..."
                       className={cn(
                         "w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface-secondary",
-                        "border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10",
+                        "border border-border focus:outline-none",
                         "placeholder:text-muted/60 text-text transition",
                       )}
                     />
@@ -229,7 +229,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
                             placeholder={`Option ${index + 1}`}
                             className={cn(
                               "flex-1 px-3.5 py-2.5 text-sm rounded-xl bg-surface-secondary",
-                              "border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10",
+                              "border border-border focus:outline-none",
                               "placeholder:text-muted/60 text-text transition",
                             )}
                           />
@@ -283,7 +283,7 @@ export function PollPanel({ conversationId, open, onClose }: PollPanelProps) {
                       onChange={(e) => setDeadline(e.target.value)}
                       className={cn(
                         "w-full px-3.5 py-2.5 text-sm rounded-xl bg-surface-secondary",
-                        "border border-border focus:border-cta focus:outline-none focus:ring-2 focus:ring-cta/10",
+                        "border border-border focus:outline-none",
                         "text-text transition",
                       )}
                     />
