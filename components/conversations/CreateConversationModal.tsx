@@ -126,7 +126,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
   const handleSubmit = async () => {
     setError("");
-    if (!name.trim()) { setError("Vui lòng nhập tên nhóm"); return; }
+    if (!name.trim()) { setError("Please enter a group name"); return; }
     try {
       const conv = await create.mutateAsync({
         kind: "group",
@@ -138,7 +138,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
       onClose();
       router.push(`/conversations/${encodeId(conv.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo nhóm thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create group");
     }
   };
 
@@ -156,7 +156,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
 
           {/* ── Header ── */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-            <h2 className="text-base font-bold text-text">Tạo nhóm</h2>
+            <h2 className="text-base font-bold text-text">Create group</h2>
             <button onClick={handleClose} className="w-7 h-7 rounded-full flex items-center justify-center text-muted hover:text-text hover:bg-border/60 transition cursor-pointer">
               <X className="w-4 h-4" />
             </button>
@@ -183,7 +183,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
             </button>
             <input
               type="text"
-              placeholder="Nhập tên nhóm..."
+              placeholder="Enter group name..."
               value={name}
               onChange={(e) => { setName(e.target.value); setError(""); }}
               className="flex-1 border-b border-border bg-transparent text-sm text-text placeholder:text-muted outline-none pb-1 transition"
@@ -198,7 +198,7 @@ export function CreateConversationModal({ open, onClose }: Props) {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
               <input
                 type="text"
-                placeholder="Nhập tên bạn bè hoặc email..."
+                placeholder="Search friends or email..."
                 value={memberQuery}
                 onChange={(e) => setMemberQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-bg border border-border focus:outline-none transition placeholder:text-muted/70"
@@ -239,11 +239,11 @@ export function CreateConversationModal({ open, onClose }: Props) {
               </div>
             ) : filteredFriends.length === 0 && strangerResults.length === 0 ? (
               <p className="text-center text-xs text-muted py-8">
-                {memberQuery.includes("@") ? "Không tìm thấy người dùng với email này" : "Không tìm thấy bạn bè"}
+                {memberQuery.includes("@") ? "No user found with this email" : "No friends found"}
               </p>
             ) : strangerResults.length > 0 ? (
               <>
-                <p className="px-5 py-1.5 text-xs font-semibold text-muted bg-bg/50">Người dùng theo email</p>
+                <p className="px-5 py-1.5 text-xs font-semibold text-muted bg-bg/50">Users by email</p>
                 {strangerResults.map((u) => (
                   <FriendRow key={u.id} user={u} selected={selectedIds.has(u.id)} onToggle={toggleMember} />
                 ))}
@@ -275,14 +275,14 @@ export function CreateConversationModal({ open, onClose }: Props) {
               onClick={handleClose}
               className="flex-1 py-2.5 text-sm font-semibold text-secondary border border-border rounded-xl hover:bg-border/50 transition cursor-pointer"
             >
-              Huỷ
+              Cancel
             </button>
             <button
               onClick={handleSubmit}
               disabled={!canCreate}
               className="flex-1 py-2.5 text-sm font-semibold text-white bg-cta rounded-xl hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
             >
-              {isPending ? "Đang tạo…" : isUploading ? "Đang tải…" : "Tạo nhóm"}
+              {isPending ? "Creating…" : isUploading ? "Uploading…" : "Create group"}
             </button>
           </div>
 

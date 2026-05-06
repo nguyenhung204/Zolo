@@ -1,6 +1,6 @@
 "use client";
 
-import { PhoneMissed, PhoneOff, PhoneCall, PhoneIncoming, Phone } from "lucide-react";
+import { PhoneMissed, PhoneOff, PhoneCall } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/api/messages";
 import { formatTime } from "@/lib/utils/date";
@@ -75,6 +75,10 @@ export function CallSystemMessage({ message, isMine }: Props) {
   };
 
   const { Icon, variant, title, subtitle } = getRow();
+  const isCenteredPill = isMine === undefined;
+  const isMissedAction = action === "CALL_MISSED" || action === "CALL_MISSED_BUSY";
+  const displayTitle = isCenteredPill && isMissedAction ? "Cuộc gọi nhỡ" : title;
+  const displaySubtitle = isCenteredPill && isMissedAction ? null : subtitle;
 
   const variantStyles: Record<CallRow["variant"], { bg: string; iconColor: string; titleColor: string }> = {
     success: {
@@ -116,10 +120,10 @@ export function CallSystemMessage({ message, isMine }: Props) {
         {/* Text */}
         <div className="flex flex-col min-w-0 flex-1">
           <span className={cn("text-[13px] font-semibold leading-tight", styles.titleColor)}>
-            {title}
+            {displayTitle}
           </span>
-          {subtitle && (
-            <span className="text-[11px] text-muted leading-tight mt-0.5 truncate">{subtitle}</span>
+          {displaySubtitle && (
+            <span className="text-[11px] text-muted leading-tight mt-0.5 truncate">{displaySubtitle}</span>
           )}
           <span className="text-[10px] text-muted/60 mt-1 tabular-nums">{formatTime(createdAt)}</span>
         </div>
@@ -139,11 +143,10 @@ export function CallSystemMessage({ message, isMine }: Props) {
     <div className="flex justify-center py-1.5 px-4 select-none">
       <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface border border-border/50">
         <Icon className={cn("w-3.5 h-3.5 shrink-0", pillStyle[variant])} />
-        <span className={cn("text-xs", pillStyle[variant])}>{title}</span>
-        {subtitle && <span className="text-xs text-muted">· {subtitle}</span>}
+        <span className={cn("text-xs", pillStyle[variant])}>{displayTitle}</span>
+        {displaySubtitle && <span className="text-xs text-muted">· {displaySubtitle}</span>}
         <span className="text-[10px] text-muted/60">· {formatTime(createdAt)}</span>
       </div>
     </div>
   );
 }
-
