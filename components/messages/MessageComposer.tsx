@@ -655,7 +655,7 @@ export function MessageComposer({
       if (textareaRef.current) textareaRef.current.style.height = "auto";
       isSendingRef.current = false;
 
-      if (queuedFiles.length === 1) {
+      if (queuedFiles.length === 1 && queuedFiles[0].mediaType !== "image") {
         const stagedFile = queuedFiles[0];
         const fileName = stagedFile.file.name;
         const type = stagedFile.mediaType;

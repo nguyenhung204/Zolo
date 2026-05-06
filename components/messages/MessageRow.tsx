@@ -238,9 +238,9 @@ export function MessageRow({
 
         <div
           className={cn(
-            "flex items-center gap-1 w-full min-w-0",
+            "flex items-center gap-1",
             isMine ? "flex-row-reverse" : "flex-row",
-            isSingleImage && "w-full min-w-0"
+            isSingleImage && "max-w-full min-w-0"
           )}
         >
           {/* ── Message bubble ── */}
@@ -320,7 +320,7 @@ export function MessageRow({
               bubbleShape,
               "text-sm leading-relaxed break-words [overflow-wrap:anywhere] max-w-full min-w-0",
               isPureMedia
-                ? "overflow-hidden"
+                ? "overflow-hidden flex"
                 : isContactCard
                   ? "p-0 bg-transparent border-0 shadow-none"
                 : isMine

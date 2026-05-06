@@ -12,11 +12,17 @@ interface Props {
   isMine: boolean;
 }
 
+const MAX_CHAT_IMAGE_WIDTH = 360;
+
 export function MediaImage({ message, isMine }: Props) {
   const isUploading = typeof message._uploadProgress === "number" && message._uploadProgress < 100;
   const isMediaReady = !message.mediaStatus || message.mediaStatus === "ready";
-  const seededWidth = message.metadata?.width ?? null;
-  const seededHeight = message.metadata?.height ?? null;
+  const imageAttachment = message.attachments?.find((attachment) => {
+    const type = attachment.type ?? attachment.kind;
+    return type === "image" || type == null;
+  });
+  const seededWidth = message.metadata?.width ?? imageAttachment?.width ?? null;
+  const seededHeight = message.metadata?.height ?? imageAttachment?.height ?? null;
   const seededRatio =
     seededWidth && seededHeight
       ? seededWidth / seededHeight
@@ -25,7 +31,7 @@ export function MediaImage({ message, isMine }: Props) {
     isMine ? (message._localPreviewUrl ?? null) : null
   );
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const [aspectRatio, setAspectRatio] = useState<number | null>(seededRatio);
+  const [loadedSize, setLoadedSize] = useState<{ width: number; height: number } | null>(null);
   const isLoadingRef = useRef(false);
   const hasOptimizedRef = useRef(false);
   const imgRef = useRef<HTMLDivElement>(null);
@@ -63,11 +69,13 @@ export function MediaImage({ message, isMine }: Props) {
   }, [isMediaReady, message.mediaId, message.conversationId, imageSrc]);
 
   const previewSrc = imageSrc ?? (isMine ? message._localPreviewUrl : undefined);
-  const displayAspectRatio = aspectRatio ?? seededRatio;
-  const displayWidth = seededWidth
-    ? Math.min(420, seededWidth)
+  const loadedRatio = loadedSize ? loadedSize.width / loadedSize.height : null;
+  const displayAspectRatio = seededRatio ?? loadedRatio;
+  const effectiveWidth = seededWidth ?? loadedSize?.width ?? null;
+  const displayWidth = effectiveWidth
+    ? Math.min(MAX_CHAT_IMAGE_WIDTH, effectiveWidth)
     : displayAspectRatio
-      ? 420
+      ? MAX_CHAT_IMAGE_WIDTH
       : null;
 
   if (previewSrc) {
@@ -75,11 +83,11 @@ export function MediaImage({ message, isMine }: Props) {
       <>
         <div
           ref={imgRef}
-          className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in block"
+          className="relative rounded-2xl overflow-hidden bg-border/20 cursor-zoom-in inline-block"
           style={{
             aspectRatio: displayAspectRatio ?? undefined,
-            width: displayWidth ? `min(${displayWidth}px, 100%)` : "min(420px, 100%)",
-            maxWidth: "min(420px, 100%)",
+            width: displayWidth ? `min(${displayWidth}px, 100%)` : `min(${MAX_CHAT_IMAGE_WIDTH}px, 100%)`,
+            maxWidth: `min(${MAX_CHAT_IMAGE_WIDTH}px, 100%)`,
             maxHeight: "70vh",
             minHeight: displayAspectRatio ? undefined : "120px",
           }}
@@ -96,7 +104,7 @@ export function MediaImage({ message, isMine }: Props) {
             onLoad={(e) => {
               const t = e.currentTarget;
               if (t.naturalWidth && t.naturalHeight) {
-                setAspectRatio(t.naturalWidth / t.naturalHeight);
+                setLoadedSize({ width: t.naturalWidth, height: t.naturalHeight });
               }
             }}
           />
@@ -116,7 +124,7 @@ export function MediaImage({ message, isMine }: Props) {
   }
 
   return (
-    <div ref={imgRef} className="max-w-[420px] w-full aspect-video rounded-2xl bg-black/10 flex items-center justify-center">
+    <div ref={imgRef} className="max-w-[360px] w-full aspect-video rounded-2xl bg-black/10 flex items-center justify-center">
       <Loader2 className="w-5 h-5 animate-spin text-muted/60" />
     </div>
   );
