@@ -49,8 +49,8 @@ export function useMessages(conversationId: string) {
 export function prefetchMessages(
   qc: ReturnType<typeof useQueryClient>,
   conversationId: string
-) {
-  qc.prefetchInfiniteQuery<MessagePage, Error, MessagesInfiniteData, ReturnType<typeof queryKeys.messages.list>, number | undefined>({
+): Promise<void> {
+  return qc.prefetchInfiniteQuery<MessagePage, Error, MessagesInfiniteData, ReturnType<typeof queryKeys.messages.list>, number | undefined>({
     queryKey: queryKeys.messages.list(conversationId),
     queryFn: () => getMessages({ conversationId, limit: MESSAGE_PAGE_SIZE }),
     initialPageParam: undefined,
@@ -91,10 +91,13 @@ export function upsertMessage(
         const next = [...last.data];
         // Only overwrite with defined/truthy values so socket events never clear
         // replyToMessageId (server may echo null for this field even when a reply exists).
+        // Also skip empty-string content so a socket echo with missing content never
+        // overwrites the real message text already stored in the cache.
         const safeFields = Object.fromEntries(
           Object.entries(msg).filter(([key, v]) => {
             if (v === undefined) return false;
             if (key === "replyToMessageId" && !v) return false;
+            if (key === "content" && v === "" && next[existingIdx]?.content) return false;
             return true;
           })
         ) as Partial<Message>;

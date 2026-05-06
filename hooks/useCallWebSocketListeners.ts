@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useAuthStore } from "@/stores/authStore";
 import { useCallStore } from "@/stores/callStore";
 import { getCallSocket } from "@/lib/socket/socket";
-import { getInstantCallToken, getInstantCallById } from "@/lib/api/calls";
+import { getInstantCallToken, getInstantCallById, isGroupInstantCall } from "@/lib/api/calls";
 import { usePresenceStore } from "@/stores/presenceStore";
 
 // ─── Audio helpers ────────────────────────────────────────────────────────────
@@ -77,6 +77,10 @@ export function useCallWebSocketListeners(): void {
       .then((call) => {
         if (!call || call.status !== "ACTIVE") {
           // Call ended while the page was loading — discard persisted state.
+          useCallStore.getState().clearCallState();
+          return;
+        }
+        if (!isGroupInstantCall(call)) {
           useCallStore.getState().clearCallState();
           return;
         }
@@ -160,17 +164,40 @@ export function useCallWebSocketListeners(): void {
         participants: [],
       });
 
-      // Always seed group call banner — it's visible inside the conversation so
-      // context determines relevance. Don't gate on calleeIds.length because
-      // some server versions may omit or send an empty array.
-      setGroupCall(data.conversationId, {
-        callId: data.callId,
-        conversationId: data.conversationId,
-        callerId: data.caller.id,
-        status: "RINGING",
-        participantIds: [data.caller.id],
-        startedAt: data.startedAt,
-      });
+      const isGroup = (data.calleeIds?.length ?? 0) > 1 || (data.calleeProfiles?.length ?? 0) > 1;
+      if (isGroup) {
+        setGroupCall(data.conversationId, {
+          callId: data.callId,
+          conversationId: data.conversationId,
+          callerId: data.caller.id,
+          status: "RINGING",
+          participantIds: [data.caller.id],
+          startedAt: data.startedAt,
+        });
+      } else {
+        setGroupCall(data.conversationId, null);
+        setDeclinedGroupCall(null);
+        getInstantCallById(data.callId)
+          .then((call) => {
+            if (!isGroupInstantCall(call)) return;
+            setGroupCall(data.conversationId, {
+              callId: data.callId,
+              conversationId: data.conversationId,
+              callerId: data.caller.id,
+              status: call?.status === "ACTIVE" ? "ACTIVE" : "RINGING",
+              participantIds: Array.from(
+                new Set([
+                  data.caller.id,
+                  ...(call?.participants ?? [])
+                    .filter((p) => p.joinedAt !== null)
+                    .map((p) => p.userId),
+                ]),
+              ),
+              startedAt: data.startedAt,
+            });
+          })
+          .catch(() => {});
+      }
 
       const store = usePresenceStore.getState();
       // Seed caller profile from the enriched payload — no extra fetch needed.
@@ -188,7 +215,7 @@ export function useCallWebSocketListeners(): void {
         });
       }
     },
-    [myId, setIncomingCall, setGroupCall]
+    [myId, setIncomingCall, setGroupCall, setDeclinedGroupCall]
   );
 
   // ─── Reactive audio: play/stop in sync with call state ───────────────────────

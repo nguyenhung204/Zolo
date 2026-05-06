@@ -55,7 +55,7 @@ interface SendOptions {
   attachments?: AttachmentRef[];
   /** Explicit user-ID mentions (top-level, not in metadata) */
   mentions?: string[];
-  /** @all / @here / @channel — only owner/admin may send */
+  /** @all / @here / @channel */
   mentionAll?: boolean;
   metadata?: {
     mentions?: string[];
@@ -360,6 +360,36 @@ export function useSendMessage() {
             data: [...last.data, optimisticMsg],
           };
           return { ...old, pages };
+        }
+      );
+
+      // Optimistically move the conversation to top of list with latest preview
+      qc.setQueryData(
+        queryKeys.conversations.list(),
+        (old: import("@/lib/api/conversations").Conversation[] | undefined) => {
+          if (!old) return old;
+          const updated = old.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  lastMessage: {
+                    content: resolvedContent,
+                    senderId: userId,
+                    type: resolvedType,
+                    createdAt: optimisticMsg.createdAt,
+                    ...(resolvedMetadata ? { metadata: resolvedMetadata } : {}),
+                  },
+                  // Advance seen cursor so our own message never triggers an unread badge
+                  lastSeenOffset: Math.max(Number(c.lastSeenOffset ?? 0), Number(c.maxOffset ?? 0)),
+                }
+              : c
+          );
+          const idx = updated.findIndex((c) => c.id === conversationId);
+          if (idx > 0) {
+            const [moved] = updated.splice(idx, 1);
+            updated.unshift(moved);
+          }
+          return updated;
         }
       );
 

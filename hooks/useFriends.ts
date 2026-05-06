@@ -10,6 +10,7 @@ import {
   blockUser,
   unblockUser,
   searchUsers,
+  searchFriends,
   type FriendshipStatus,
 } from "@/lib/api/friends";
 import { queryKeys } from "@/lib/query/keys";
@@ -35,9 +36,21 @@ export function useFriendRequests() {
 
 export function useUserSearch(query: string) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  // /users/search requires a valid email — must contain "@"
+  const isValidEmail = query.includes("@") && query.trim().length >= 3;
   return useQuery({
     queryKey: queryKeys.users.search(query),
     queryFn: () => searchUsers(query),
+    enabled: isAuthenticated && isValidEmail,
+    staleTime: 15_000,
+  });
+}
+
+export function useFriendshipSearch(query: string) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: queryKeys.friends.search(query),
+    queryFn: () => searchFriends(query),
     enabled: isAuthenticated && query.trim().length >= 2,
     staleTime: 15_000,
   });

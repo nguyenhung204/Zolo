@@ -120,8 +120,10 @@ export function useGroupSocketEvents(conversationId: string) {
       if (payload.conversationId !== conversationId) return;
 
       // Read role from cache BEFORE updating (participants don't change here).
-      const conv = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
-      const myRole = conv?.participants?.find((p) => p.userId === myId)?.role?.toLowerCase() ?? "member";
+      const cachedMembers = qc.getQueryData<ConversationMember[]>(
+        queryKeys.conversations.members(conversationId),
+      );
+      const myRole = cachedMembers?.find((m) => m.userId === myId)?.role?.toLowerCase() ?? "member";
 
       qc.setQueryData<Conversation>(
         queryKeys.conversations.detail(conversationId),
@@ -346,8 +348,10 @@ export function useGroupSocketEvents(conversationId: string) {
         (old) => (old ? [newRequest, ...old] : [newRequest]),
       );
       // Show notification badge to admins/owner.
-      const conv = qc.getQueryData<Conversation>(queryKeys.conversations.detail(conversationId));
-      const myRole = conv?.participants?.find((p) => p.userId === myId)?.role?.toLowerCase();
+      const cachedMembers = qc.getQueryData<ConversationMember[]>(
+        queryKeys.conversations.members(conversationId),
+      );
+      const myRole = cachedMembers?.find((m) => m.userId === myId)?.role?.toLowerCase();
       if (myRole === "owner" || myRole === "admin") {
         toast.info(
           payload.source === "invite_link"

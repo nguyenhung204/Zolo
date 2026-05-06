@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useCallStore } from "@/stores/callStore";
-import { getInstantCallById } from "@/lib/api/calls";
+import { getInstantCallById, isGroupInstantCall } from "@/lib/api/calls";
 import { getCallSocket } from "@/lib/socket/socket";
 
 /**
@@ -40,7 +40,13 @@ export function useConversationCallStatus(conversationId: string): void {
 
     getInstantCallById(callIdToCheck)
       .then((call) => {
-        if (!call || call.status === "ENDED" || call.status === "REJECTED" || call.status === "MISSED") {
+        if (
+          !call ||
+          !isGroupInstantCall(call) ||
+          call.status === "ENDED" ||
+          call.status === "REJECTED" ||
+          call.status === "MISSED"
+        ) {
           // Call is over — clear stale state
           if (entry) setGroupCall(conversationId, null);
           if (declined) setDeclinedGroupCall(null);

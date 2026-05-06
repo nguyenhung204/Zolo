@@ -10,6 +10,8 @@ import {
   removeConversationMembers,
   setConversationMemberRole,
   getOutboxHealth,
+  getConversationMembers,
+  searchConversations,
   type MemberRole,
   type CreateConversationPayload,
   type UpdateConversationInfoPayload,
@@ -18,25 +20,28 @@ import { queryKeys } from "@/lib/query/keys";
 import { useAuthStore } from "@/stores/authStore";
 import { usePresenceStore } from "@/stores/presenceStore";
 import { prefetchMessages } from "@/hooks/useMessages";
+import type { Conversation } from "@/lib/api/conversations";
 
 const TOP_CONVERSATIONS_TO_PREFETCH = 10;
 
-export function useConversations() {
+export function useConversations(options?: { enabled?: boolean }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const qc = useQueryClient();
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);
 
-  const query = useQuery({
+  const query = useQuery<Conversation[]>({
     queryKey: queryKeys.conversations.list(),
-    queryFn: getConversations,
+    queryFn: () => getConversations(),
     // Presigned URLs expire in 5 min — keep stale time just under that so we
     // don't refetch more often than necessary. WS events keep all other fields
     // (lastMessage, maxOffset, unread) up-to-date without polling.
     staleTime: 4 * 60_000,
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && (options?.enabled ?? true),
   });
 
-  // Warm the message cache for the top-N most recent conversations
+  // Warm the message cache for the top-N most recent conversations so opening
+  // them feels instant. GET /conversations already returns lastMessage, so no
+  // cache backfill is needed here.
   useEffect(() => {
     if (!query.data) return;
     query.data.slice(0, TOP_CONVERSATIONS_TO_PREFETCH).forEach((conv) => {
@@ -66,6 +71,18 @@ export function useConversations() {
   }, [query.dataUpdatedAt, setUserProfile]);
 
   return query;
+}
+
+export function useConversationSearch(q: string, enabled: boolean, limit = 30) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const trimmed = q.trim();
+
+  return useQuery({
+    queryKey: queryKeys.conversations.search(trimmed, limit),
+    queryFn: () => searchConversations({ q: trimmed, limit }),
+    enabled: isAuthenticated && enabled && trimmed.length > 0,
+    staleTime: 10_000,
+  });
 }
 
 export function useConversation(id: string) {
@@ -112,58 +129,34 @@ export function useConversation(id: string) {
 }
 
 export function useConversationMembers(id: string) {
-  const profileMap = usePresenceStore((s) => s.profileMap);
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);
-  const { data: conversation, isLoading } = useConversation(id);
-
-  // The /members endpoint only returns IDs. All profile data (displayName,
-  // username, avatarUrl, role) comes from conv.participants in the detail response.
-  const directOtherUser = conversation?.kind === "direct" ? conversation.otherUser : null;
-
-  const members = (conversation?.participants ?? []).map((p) => {
-    const profile = profileMap[p.userId];
-    const otherUser = directOtherUser?.id === p.userId ? directOtherUser : null;
-    return {
-      id: p.userId,
-      conversationId: id,
-      userId: p.userId,
-      role: p.role as MemberRole,
-      displayName:
-        profile?.displayName ??
-        p.displayName ??
-        otherUser?.displayName ??
-        p.username ??
-        otherUser?.username ??
-        "User",
-      username: p.username ?? otherUser?.username,
-      avatarUrl:
-        profile?.avatarUrl ??
-        (p as { avatarUrl?: string | null }).avatarUrl ??
-        otherUser?.avatarUrl ??
-        null,
-      lastSeenOffset: 0,
-      lastDeliveredOffset: 0,
-      joinedAt: "",
-      leftAt: null as string | null,
-    };
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const query = useQuery({
+    queryKey: queryKeys.conversations.members(id),
+    queryFn: () => getConversationMembers(id),
+    enabled: isAuthenticated && !!id,
+    staleTime: 4 * 60_000,
+    retry: (failureCount, error) => {
+      const status = (error as { status?: number })?.status;
+      if (status === 403 || status === 404) return false;
+      return failureCount < 2;
+    },
   });
 
   // Seed presenceStore.profileMap for each member so UserAvatar stays in sync.
   useEffect(() => {
-    for (const m of members) {
-      if (!m.avatarUrl) continue;
+    for (const m of query.data ?? []) {
       const already = usePresenceStore.getState().profileMap[m.userId];
-      if (already?.avatarUrl) continue; // don't overwrite fresher WS data
+      if (already?.avatarUrl && already?.displayName) continue; // don't overwrite fresher WS data
       setUserProfile(m.userId, {
-        displayName: m.displayName !== "User" ? m.displayName : null,
+        displayName: m.displayName ?? m.username ?? m.email ?? already?.displayName ?? null,
         avatarMediaId: null,
-        avatarUrl: m.avatarUrl,
+        avatarUrl: m.avatarUrl ?? already?.avatarUrl ?? null,
       });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [members, setUserProfile]);
+  }, [query.data, setUserProfile]);
 
-  return { data: members, isLoading };
+  return query;
 }
 
 export function useCreateConversation() {
@@ -177,10 +170,10 @@ export function useCreateConversation() {
 }
 
 export function useMyConversationRole(conversationId: string): MemberRole | null {
-  const { data: conv } = useConversation(conversationId);
+  const { data: members } = useConversationMembers(conversationId);
   const userId = useAuthStore((s) => s.user?.id);
-  if (!conv || !userId) return null;
-  const p = conv.participants?.find((part) => part.userId === userId);
+  if (!members || !userId) return null;
+  const p = members.find((part) => part.userId === userId);
   if (!p) return null;
   return p.role.toLowerCase() as MemberRole;
 }
@@ -222,7 +215,9 @@ export function useAddConversationMembers() {
     mutationFn: ({ conversationId, userIds }: { conversationId: string; userIds: string[] }) =>
       addConversationMembers(conversationId, userIds),
     onSuccess: (_data, { conversationId }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     },
   });
 }
@@ -233,7 +228,9 @@ export function useRemoveConversationMember() {
     mutationFn: ({ conversationId, userId }: { conversationId: string; userId: string }) =>
       removeConversationMember(conversationId, userId),
     onSuccess: (_data, { conversationId }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
     },
   });
 }
@@ -251,6 +248,7 @@ export function useSetMemberRole() {
       role: MemberRole;
     }) => setConversationMemberRole(conversationId, userId, role),
     onSuccess: (_data, { conversationId }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
       qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
     },
   });

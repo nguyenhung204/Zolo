@@ -119,31 +119,6 @@ export function useSocket() {
       );
       return found;
     };
-    const findCachedMessage = (messageId: string): Message | undefined => {
-      const listKeys = qc.getQueryCache().findAll({ queryKey: queryKeys.messages.all });
-      for (const query of listKeys) {
-        const data = query.state.data as MessagesInfiniteData | undefined;
-        if (!data || !Array.isArray(data.pages)) continue;
-        for (const page of data.pages) {
-          const message = page.data.find((item) => item.messageId === messageId);
-          if (message) return message;
-        }
-      }
-      return undefined;
-    };
-    const sortPinnedMessages = (messages: Message[]) =>
-      [...messages].sort((a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime());
-    const upsertPinnedMessage = (conversationId: string, message: Message) => {
-      qc.setQueryData<Message[]>(
-        queryKeys.messages.pinned(conversationId),
-        (old) => {
-          const byId = new Map<string, Message>();
-          for (const item of old ?? []) byId.set(item.messageId, item);
-          byId.set(message.messageId, { ...byId.get(message.messageId), ...message });
-          return sortPinnedMessages(Array.from(byId.values()));
-        }
-      );
-    };
     const getOtherUserId = (ids: Array<string | undefined>) =>
       ids.find((id) => !!id && id !== myId) ?? ids.find(Boolean);
     const patchFriendRequests = (updater: (old: PendingRequestsResponse) => PendingRequestsResponse) => {
@@ -458,10 +433,16 @@ export function useSocket() {
       if (mentions?.includes(myId ?? "")) {
         useMentionStore.getState().setMention(msg.conversationId);
       }
-      // If this conversation has no cache yet, prefetch the latest 30 messages
-      // so opening the conversation later is instant (no loading spinner).
-      // For active conversations (cache exists) upsertMessage does the live update.
-      if (!qc.getQueryData(queryKeys.messages.list(msg.conversationId))) {
+      const conversationState = useConversationStore.getState();
+      const isJumpedActiveConversation =
+        conversationState.activeConversationId === msg.conversationId &&
+        conversationState.messageMode === "JUMPED";
+      if (isJumpedActiveConversation) {
+        conversationState.incrementPendingJumpedMessages(msg.conversationId);
+      } else if (!qc.getQueryData(queryKeys.messages.list(msg.conversationId))) {
+        // If this conversation has no cache yet, prefetch the latest 30 messages
+        // so opening the conversation later is instant (no loading spinner).
+        // For active conversations (cache exists) upsertMessage does the live update.
         prefetchMessages(qc, msg.conversationId);
       } else {
         upsertMessage(qc, msg.conversationId, normalized);
@@ -480,12 +461,18 @@ export function useSocket() {
         }, 1_000);
         deliveredThrottleRef.current.set(msg.conversationId, timer);
       }
-      // Update the lastMessage preview in the conversations list cache
+      // Update the lastMessage preview in the conversations list cache.
+      // If the conversation was previously deleted-for-me it won't be in the
+      // list anymore — detect that and schedule a refetch so it reappears.
+      const listBeforeUpdate = qc.getQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list()
+      );
+      const conversationInList = listBeforeUpdate?.some((c) => c.id === msg.conversationId) ?? false;
       qc.setQueryData(
         queryKeys.conversations.list(),
         (old: import("@/lib/api/conversations").Conversation[] | undefined) => {
           if (!old) return old;
-          return old.map((c) =>
+          const updated = old.map((c) =>
             c.id === msg.conversationId
               ? {
                   ...c,
@@ -497,14 +484,27 @@ export function useSocket() {
                     ...(msg.metadata ? { metadata: msg.metadata } : {}),
                   },
                   maxOffset: Math.max(Number(c.maxOffset ?? 0), msg.offset),
-                  ...(pinSystemMessage
+                  // Advance seen cursor for own messages and pinned system msgs
+                  // so the unread badge never fires for messages sent by the current user.
+                  ...(pinSystemMessage || msg.senderId === myId
                     ? { lastSeenOffset: Math.max(Number(c.lastSeenOffset ?? 0), msg.offset) }
                     : {}),
                 }
               : c
           );
+          // Move the updated conversation to the top of the list
+          const idx = updated.findIndex((c) => c.id === msg.conversationId);
+          if (idx > 0) {
+            const [moved] = updated.splice(idx, 1);
+            updated.unshift(moved);
+          }
+          return updated;
         }
       );
+      // Conversation was evicted (delete-for-me) but new messages arrived — bring it back.
+      if (!conversationInList) {
+        scheduleListInvalidate();
+      }
     };
 
     socket.on("chat:message_received", handleIncomingMessage);
@@ -514,11 +514,15 @@ export function useSocket() {
       if (isPinSystemPayload({ type, content, metadata })) return;
       // Update maxOffset in the conversations list so the unread badge recalculates
       // without fetching the full conversation detail.
+      const notifyListSnapshot = qc.getQueryData<import("@/lib/api/conversations").Conversation[]>(
+        queryKeys.conversations.list()
+      );
+      const notifyConversationInList = notifyListSnapshot?.some((c) => c.id === conversationId) ?? false;
       qc.setQueryData(
         queryKeys.conversations.list(),
         (old: import("@/lib/api/conversations").Conversation[] | undefined) => {
           if (!old) return old;
-          return old.map((c) =>
+          const updated = old.map((c) =>
             c.id === conversationId
               ? {
                   ...c,
@@ -539,8 +543,19 @@ export function useSocket() {
                 }
               : c
           );
+          // Move the updated conversation to the top of the list
+          const notifyIdx = updated.findIndex((c) => c.id === conversationId);
+          if (notifyIdx > 0) {
+            const [moved] = updated.splice(notifyIdx, 1);
+            updated.unshift(moved);
+          }
+          return updated;
         }
       );
+      // Conversation was evicted (delete-for-me) but new messages arrived — bring it back.
+      if (!notifyConversationInList) {
+        scheduleListInvalidate();
+      }
       // Check if the current user was mentioned
       if (mentions?.includes(myId ?? "")) {
         useMentionStore.getState().setMention(conversationId);
@@ -620,31 +635,17 @@ export function useSocket() {
     });
 
     socket.on("message:pinned", ({ messageId, conversationId, pinnedBy, pinnedByName, pinnedAt }) => {
-      let patchedMessage: Message | undefined;
-      const foundInConversation = patchConversationMessages(conversationId, (message) => {
+      patchConversationMessages(conversationId, (message) => {
         if (message.messageId !== messageId) return message;
-        patchedMessage = {
+        return {
           ...message,
           isPinned: true,
           pinnedBy,
           pinnedByName,
           pinnedAt,
         };
-        return patchedMessage;
       });
-
-      const cachedMessage = patchedMessage ?? findCachedMessage(messageId);
-      if (foundInConversation && cachedMessage) {
-        upsertPinnedMessage(conversationId, {
-          ...cachedMessage,
-          isPinned: true,
-          pinnedBy,
-          pinnedByName,
-          pinnedAt,
-        });
-      } else {
-        refreshPinnedMessages(conversationId);
-      }
+      refreshPinnedMessages(conversationId);
     });
 
     socket.on("message:unpinned", ({ messageId, conversationId }) => {
@@ -863,6 +864,19 @@ export function useSocket() {
       patchFriendshipStatus(otherUserId, "NONE");
       if (rejectedBy !== myId && requesterId === myId) {
         toast.info(`${rejectedByName ?? "The user"} declined your friend request.`);
+      }
+    });
+
+    socket.on("friendship:request_canceled", ({ canceledBy, canceledByName, targetUserId: cancelTarget, userIds }) => {
+      const otherUserId = getOtherUserId([...(userIds ?? []), canceledBy, cancelTarget]);
+      if (!otherUserId) return;
+      patchFriendRequests((old) => ({
+        incoming: old.incoming.filter((id) => id !== otherUserId && id !== canceledBy),
+        outgoing: old.outgoing.filter((id) => id !== otherUserId && id !== cancelTarget),
+      }));
+      patchFriendshipStatus(canceledBy === myId ? cancelTarget : canceledBy, "NONE");
+      if (canceledBy !== myId) {
+        toast.info(`${canceledByName ?? "Someone"} canceled their friend request.`);
       }
     });
 
