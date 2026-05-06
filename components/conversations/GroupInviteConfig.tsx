@@ -304,7 +304,7 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
               )}
             >
               <ShieldOff className="w-3.5 h-3.5" />
-              Revoke all links
+              Revoke links
             </button>
           </div>
         </div>
@@ -320,7 +320,7 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
 
       <ConfirmDialog
         open={confirmRevoke}
-        title="Revoke all invite links?"
+        title="Revoke invite links?"
         description="Anyone holding the current link won't be able to use it anymore. You can always generate a fresh one afterwards."
         confirmLabel={resetMutation.isPending ? "Revoking…" : "Revoke links"}
         loading={resetMutation.isPending}

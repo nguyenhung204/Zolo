@@ -503,14 +503,35 @@ export function useSocket() {
       );
       // Conversation was evicted (delete-for-me) but new messages arrived — bring it back.
       if (!conversationInList) {
-        scheduleListInvalidate();
+        const lastMsgFromEvent: import("@/lib/api/conversations").Conversation["lastMessage"] = {
+          id: normalized.messageId,
+          content: normalized.content ?? null,
+          type: normalized.type,
+          senderId: normalized.senderId,
+          offset: normalized.offset,
+          createdAt: normalized.createdAt,
+          ...(normalized.metadata ? { metadata: normalized.metadata as { systemType?: "system_call"; [key: string]: unknown } } : {}),
+        };
+        getConversation(msg.conversationId)
+          .then((conv) => {
+            qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+              queryKeys.conversations.list(),
+              (old) => {
+                const merged = { ...conv, lastMessage: conv.lastMessage ?? lastMsgFromEvent, maxOffset: Math.max(Number(conv.maxOffset ?? 0), normalized.offset) };
+                if (!old) return [merged];
+                if (old.some((c) => c.id === conv.id)) return old;
+                return [merged, ...old];
+              }
+            );
+          })
+          .catch(scheduleListInvalidate);
       }
     };
 
     socket.on("chat:message_received", handleIncomingMessage);
     socket.on("message:new", handleIncomingMessage);
 
-    socket.on("message:notify", ({ conversationId, latestOffset, mentions, content, type, metadata }: { conversationId: string; latestOffset: number; mentions?: string[]; content?: string; type?: string; metadata?: WsMessage["metadata"] }) => {
+    socket.on("message:notify", ({ conversationId, latestOffset, mentions, content, type, metadata, senderName }: { conversationId: string; latestOffset: number; mentions?: string[]; content?: string; type?: string; metadata?: WsMessage["metadata"]; senderName?: string }) => {
       if (isPinSystemPayload({ type, content, metadata })) return;
       // Update maxOffset in the conversations list so the unread badge recalculates
       // without fetching the full conversation detail.
@@ -554,7 +575,29 @@ export function useSocket() {
       );
       // Conversation was evicted (delete-for-me) but new messages arrived — bring it back.
       if (!notifyConversationInList) {
-        scheduleListInvalidate();
+        const lastMsgFromNotify: import("@/lib/api/conversations").Conversation["lastMessage"] = content !== undefined && type
+          ? {
+              content: content ?? null,
+              type,
+              senderId: senderName ?? "",
+              offset: latestOffset,
+              createdAt: new Date().toISOString(),
+              ...(metadata ? { metadata: metadata as { systemType?: "system_call"; [key: string]: unknown } } : {}),
+            }
+          : null;
+        getConversation(conversationId)
+          .then((conv) => {
+            qc.setQueryData<import("@/lib/api/conversations").Conversation[]>(
+              queryKeys.conversations.list(),
+              (old) => {
+                const merged = { ...conv, lastMessage: conv.lastMessage ?? lastMsgFromNotify, maxOffset: Math.max(Number(conv.maxOffset ?? 0), latestOffset) };
+                if (!old) return [merged];
+                if (old.some((c) => c.id === conv.id)) return old;
+                return [merged, ...old];
+              }
+            );
+          })
+          .catch(scheduleListInvalidate);
       }
       // Check if the current user was mentioned
       if (mentions?.includes(myId ?? "")) {

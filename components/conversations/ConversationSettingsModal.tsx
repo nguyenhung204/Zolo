@@ -55,7 +55,7 @@ import { JoinRequestsPanel } from "./JoinRequestsPanel";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useJoinRequests, useLeaveGroup, useDeleteConversationForMe } from "@/hooks/useGroup";
 import { useMuteConversation, useNotificationPreferences } from "@/hooks/useNotifications";
-import { useFriendshipSearch, useFriendshipStatus, useBlockUser, useUnblockUser } from "@/hooks/useFriends";
+import { useFriendshipSearch, useFriendshipStatus, useBlockUser, useUnblockUser, useUserSearch } from "@/hooks/useFriends";
 import { usePolls, useCreatePoll } from "@/hooks/useGroup";
 import type { ConversationMuteDuration } from "@/lib/api/notifications";
 import type { MemberRole, Conversation } from "@/lib/api/conversations";
@@ -141,6 +141,52 @@ function Toggle({
         )}
       />
     </button>
+  );
+}
+
+function AddMemberRow({
+  user,
+  selected,
+  onToggle,
+}: {
+  user: FriendPickUser;
+  selected: boolean;
+  onToggle: (user: FriendPickUser) => void;
+}) {
+  const name = `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || user.username;
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(user)}
+      className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
+    >
+      <div className={cn(
+        "w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition",
+        selected ? "bg-cta border-cta" : "border-border"
+      )}>
+        {selected && <CheckIcon />}
+      </div>
+      {user.avatarUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={user.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
+      ) : (
+        <div className="w-8 h-8 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
+          {name[0]?.toUpperCase()}
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-text truncate">{name}</p>
+        <p className="text-xs text-muted truncate">{user.email || `@${user.username}`}</p>
+      </div>
+    </button>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth="3">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
   );
 }
 
@@ -777,6 +823,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
   const [isDirty, setIsDirty] = useState(false);
   const [addQuery, setAddQuery] = useState("");
   const [pendingAdd, setPendingAdd] = useState<FriendPickUser[]>([]);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [confirmDisband, setConfirmDisband] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -830,6 +877,11 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
       ...members.map((m) => m.userId),
       ...pendingAdd.map((u) => u.id),
     ]),
+  );
+  const strangerSearchQuery = addQuery.includes("@") && addableFriends.length === 0 ? addQuery : "";
+  const { data: searchedStrangers = [], isFetching: strangersSearching } = useUserSearch(strangerSearchQuery);
+  const addableStrangers = searchedStrangers.filter(
+    (u) => !members.some((m) => m.userId === u.id) && !pendingAdd.some((p) => p.id === u.id),
   );
   const ownerCount = members.filter((m) => m.role === "owner").length;
   const ownershipTransferCandidates = members.filter((m) => m.userId !== currentUserId);
@@ -921,6 +973,9 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
       URL.revokeObjectURL(previewUrl);
       setPreviewUrl(null);
     }
+    setAddMemberOpen(false);
+    setAddQuery("");
+    setPendingAdd([]);
     onClose();
   };
 
@@ -970,9 +1025,16 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
         onSuccess: () => {
           setPendingAdd([]);
           setAddQuery("");
+          setAddMemberOpen(false);
         },
       },
     );
+  };
+
+  const closeAddMemberModal = () => {
+    setAddMemberOpen(false);
+    setAddQuery("");
+    setPendingAdd([]);
   };
 
   const togglePending = (user: FriendPickUser) => {
@@ -1389,79 +1451,13 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
           <div className="space-y-3">
                 <SectionHeader title={`Members (${membersLoading ? "…" : members.length})`} />
                 {canEdit && (
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-secondary">Add friends</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        placeholder="Search friends…"
-                        value={addQuery}
-                        onChange={(e) => setAddQuery(e.target.value)}
-                        className="w-full px-3 py-2 text-sm rounded-lg bg-bg border border-border focus:outline-none transition"
-                      />
-                      <div className="mt-1 bg-surface border border-border rounded-xl shadow-lg max-h-44 overflow-y-auto">
-                        {friendsLoading || friendsSearching ? (
-                          <div className="px-3 py-3 text-xs text-muted">Loading friends…</div>
-                        ) : addableFriends.length === 0 ? (
-                          <div className="px-3 py-3 text-xs text-muted">
-                            {addQuery.trim() ? "No friends found" : "No friends to add"}
-                          </div>
-                        ) : (
-                          addableFriends.slice(0, 12).map((user) => (
-                            <button
-                              key={user.id}
-                              onClick={() => {
-                                togglePending(user);
-                                setAddQuery("");
-                              }}
-                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-border/40 text-left transition cursor-pointer"
-                            >
-                              {user.avatarUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={user.avatarUrl} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
-                              ) : (
-                                <div className="w-7 h-7 rounded-full bg-secondary/20 flex items-center justify-center text-xs font-semibold text-secondary shrink-0">
-                                  {(user.firstName?.[0] ?? user.username[0]).toUpperCase()}
-                                </div>
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-text truncate">
-                                  {`${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || user.username}
-                                </p>
-                                <p className="text-xs text-muted">@{user.username}</p>
-                              </div>
-                            </button>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    {pendingAdd.length > 0 && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {pendingAddPreview.map((u) => (
-                          <span key={u.id} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-cta/10 text-cta text-xs font-medium rounded-full">
-                            {u.firstName || u.username}
-                            <button onClick={() => togglePending(u)} className="hover:text-red-500 transition cursor-pointer">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        ))}
-                        {pendingAddHiddenCount > 0 && (
-                          <span className="px-2.5 py-1 bg-border/60 text-secondary text-xs font-medium rounded-full">
-                            +{pendingAddHiddenCount}
-                          </span>
-                        )}
-                        <button
-                          onClick={handleAddMembers}
-                          disabled={addMembers.isPending}
-                          className="flex items-center gap-1.5 px-3 py-1 bg-cta text-white text-xs font-semibold rounded-full hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
-                        >
-                          <UserPlus className="w-3 h-3" />
-                          {addMembers.isPending ? "Adding…" : "Add"}
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  <button
+                    onClick={() => setAddMemberOpen(true)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-cta border border-cta/30 rounded-xl hover:bg-cta/10 transition cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    Add member
+                  </button>
                 )}
 
                 <div className="space-y-0.5">
@@ -1642,6 +1638,94 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
           )}
         </div>
       </div>
+
+      {addMemberOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeAddMemberModal} />
+          <div className="relative w-full max-w-[420px] max-h-[82vh] bg-surface rounded-2xl shadow-2xl border border-border flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+              <h3 className="text-base font-bold text-text">Add member</h3>
+              <button
+                onClick={closeAddMemberModal}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-muted hover:text-text hover:bg-border/60 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="px-5 py-3 border-b border-border/60 shrink-0">
+              <input
+                type="text"
+                placeholder="Search friends or enter email..."
+                value={addQuery}
+                onChange={(e) => setAddQuery(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-xl bg-bg border border-border focus:outline-none transition"
+                autoFocus
+              />
+            </div>
+
+            {pendingAdd.length > 0 && (
+              <div className="px-5 py-2 flex items-center gap-2 flex-wrap border-b border-border/60 shrink-0">
+                {pendingAddPreview.map((u) => (
+                  <span key={u.id} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-cta/10 text-cta text-xs font-medium rounded-full">
+                    {u.firstName || u.username}
+                    <button onClick={() => togglePending(u)} className="hover:text-red-500 transition cursor-pointer">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+                {pendingAddHiddenCount > 0 && (
+                  <span className="px-2.5 py-1 bg-border/60 text-secondary text-xs font-medium rounded-full">
+                    +{pendingAddHiddenCount}
+                  </span>
+                )}
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto min-h-0">
+              {friendsLoading || friendsSearching || strangersSearching ? (
+                <div className="px-5 py-8 flex justify-center">
+                  <Loader2 className="w-5 h-5 text-muted animate-spin" />
+                </div>
+              ) : addableFriends.length === 0 && addableStrangers.length === 0 ? (
+                <div className="px-5 py-8 text-center text-xs text-muted">
+                  {addQuery.includes("@") ? "No user found with this email" : "No friends to add"}
+                </div>
+              ) : addableStrangers.length > 0 ? (
+                <>
+                  <p className="px-5 py-1.5 text-xs font-semibold text-muted bg-bg/50">User by email</p>
+                  {addableStrangers.map((user) => (
+                    <AddMemberRow key={user.id} user={user} selected={pendingAdd.some((u) => u.id === user.id)} onToggle={togglePending} />
+                  ))}
+                </>
+              ) : (
+                <>
+                  <p className="px-5 py-1.5 text-xs font-semibold text-muted bg-bg/50">Friends</p>
+                  {addableFriends.slice(0, 30).map((user) => (
+                    <AddMemberRow key={user.id} user={user} selected={pendingAdd.some((u) => u.id === user.id)} onToggle={togglePending} />
+                  ))}
+                </>
+              )}
+            </div>
+
+            <div className="flex gap-2 px-5 py-4 border-t border-border shrink-0">
+              <button
+                onClick={closeAddMemberModal}
+                className="flex-1 py-2.5 text-sm font-semibold text-secondary border border-border rounded-xl hover:bg-border/50 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddMembers}
+                disabled={pendingAdd.length === 0 || addMembers.isPending}
+                className="flex-1 py-2.5 text-sm font-semibold text-white bg-cta rounded-xl hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+              >
+                {addMembers.isPending ? "Adding…" : "Add"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm: remove member */}
       <ConfirmDialog

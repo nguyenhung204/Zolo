@@ -286,7 +286,6 @@ export function useCallWebSocketListeners(): void {
     (data: { callId: string; declinedBy: string; finalStatus: "REJECTED" | "RINGING" | "MISSED"; declinedAt: string }) => {
       // Group call: one callee declined but others can still accept — keep state alive.
       if (data.finalStatus === "RINGING") {
-        toast.info("A participant declined the call.");
         return;
       }
 

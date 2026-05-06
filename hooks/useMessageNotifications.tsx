@@ -143,6 +143,7 @@ export function useMessageNotifications() {
         router.push(`/conversations/${encodeId(conversationId)}`);
       };
 
+      const toastId = `msg-notify-${conversationId}`;
       toast.custom(
         (id) => (
           <NotificationToast
@@ -154,7 +155,7 @@ export function useMessageNotifications() {
             onDismiss={() => { toast.dismiss(id); }}
           />
         ),
-        { duration: 5_000, position: "top-right" }
+        { id: toastId, duration: 5_000, position: "top-right" }
       );
       playNotificationSound();
 
