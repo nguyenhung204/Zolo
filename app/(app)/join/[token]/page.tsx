@@ -2,7 +2,6 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Loader2,
   Users,
@@ -13,9 +12,8 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import { useJoinByInvite } from "@/hooks/useGroup";
+import { useConversations } from "@/hooks/useConversations";
 import { useAuthStore } from "@/stores/authStore";
-import { queryKeys } from "@/lib/query/keys";
-import type { Conversation } from "@/lib/api/conversations";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -40,7 +38,6 @@ function decodeJwtConversationId(jwt: string): string | null {
 export default function JoinGroupPage({ params }: Props) {
   const { token } = use(params);
   const router = useRouter();
-  const qc = useQueryClient();
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const joinMutation = useJoinByInvite();
@@ -52,6 +49,13 @@ export default function JoinGroupPage({ params }: Props) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const didInit = useRef(false);
 
+  // Decode conversationId once so it can be used reactively.
+  const conversationId = decodeJwtConversationId(token);
+
+  // Fetch the conversations list so we can detect membership even when the
+  // cache is cold (e.g. the user navigated directly to the /join URL).
+  const { data: conversations } = useConversations({ enabled: isAuthenticated });
+
   useEffect(() => {
     if (!isInitialized) return;
     if (didInit.current) return;
@@ -62,19 +66,19 @@ export default function JoinGroupPage({ params }: Props) {
       return;
     }
 
-    // If the conversation is already in the cache the user is a member — go straight in.
-    const conversationId = decodeJwtConversationId(token);
-    if (conversationId) {
-      const cached = qc.getQueryData<Conversation[]>(queryKeys.conversations.list());
-      const alreadyMember = cached?.some((c) => c.id === conversationId);
-      if (alreadyMember) {
-        router.replace(`/conversations/${conversationId}`);
-        return;
-      }
-    }
-
     setState("confirm");
-  }, [isAuthenticated, isInitialized, qc, router, token]);
+  }, [isAuthenticated, isInitialized, router, token]);
+
+  // Reactively redirect once the conversations list is available and the user
+  // is already a member — handles both warm-cache and cold-cache situations.
+  useEffect(() => {
+    if (!conversationId || !conversations) return;
+    if (state !== "confirm" && state !== "idle") return;
+    const alreadyMember = conversations.some((c) => c.id === conversationId);
+    if (alreadyMember) {
+      router.replace(`/conversations/${conversationId}`);
+    }
+  }, [conversations, conversationId, state, router]);
 
   function handleJoin() {
     setState("joining");
