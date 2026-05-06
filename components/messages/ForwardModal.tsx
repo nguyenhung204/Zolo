@@ -173,6 +173,13 @@ export function ForwardModal({ message, onClose }: ForwardModalProps) {
                   )}>
                   {isDirect ? (
                     <UserAvatar userId={userId} name={name} avatarUrl={avatarUrl} size="sm" showPresence={false} />
+                  ) : avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={avatarUrl}
+                      alt={name}
+                      className="w-8 h-8 rounded-full object-cover shrink-0"
+                    />
                   ) : (
                     <div className="w-8 h-8 rounded-full bg-cta/10 flex items-center justify-center shrink-0">
                       {c.kind === "community"
