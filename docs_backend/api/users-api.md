@@ -56,8 +56,7 @@ Authorization: Bearer <token>
     "notifications": {
       "desktopEnabled": true,
       "mobileEnabled": true,
-      "notifyFor": "ALL",
-      "muteUntil": null
+      "notifyFor": "ALL"
     },
     "privacy": {
       "allowStrangerMessagesAndCalls": true
@@ -135,8 +134,7 @@ Content-Type: application/json
   "notifications": {
     "desktopEnabled": true,
     "mobileEnabled": true,
-    "notifyFor": "MENTIONS_ONLY",
-    "muteUntil": "2026-04-04T08:00:00.000Z"
+    "notifyFor": "MENTIONS_ONLY"
   },
   "privacy": {
     "allowStrangerMessagesAndCalls": false
@@ -150,18 +148,28 @@ Content-Type: application/json
 | `theme` | enum | `LIGHT` \| `DARK` \| `SYSTEM` | Giao diện sáng/tối/theo hệ thống |
 | `messageDensity` | enum | `COMFORTABLE` \| `COMPACT` | Mật độ hiển thị danh sách tin nhắn |
 | `enterToSend` | boolean | — | `true` = Enter gửi tin (default); `false` = Ctrl+Enter gửi |
-| `notifications.desktopEnabled` | boolean | — | Bật/tắt push trên desktop/browser |
-| `notifications.mobileEnabled` | boolean | — | Bật/tắt push trên mobile |
-| `notifications.notifyFor` | enum | `ALL` \| `MENTIONS_ONLY` \| `NOTHING` | Lọc loại thông báo push |
-| `notifications.muteUntil` | string (ISO 8601) \| `null` | — | Tắt tất cả push đến thời điểm này; `null` để xoá mute |
+| `notifications.desktopEnabled` | boolean | — | `false` = tắt **WebSocket `message:notify`** — client không nhận badge/alert realtime |
+| `notifications.mobileEnabled` | boolean | — | `false` = tắt **FCM / APNS / Web Push** — không nhận push notification trên điện thoại |
+| `notifications.notifyFor` | enum | `ALL` \| `MENTIONS_ONLY` \| `NOTHING` | Lọc loại push notification: `ALL` = tất cả; `MENTIONS_ONLY` = chỉ @mention; `NOTHING` = tắt toàn bộ push (kể cả mention, trừ cuộc gọi) |
 | `privacy.allowStrangerMessagesAndCalls` | boolean | — | `true`/mặc định = người lạ vẫn có thể nhắn tin/gọi direct; `false` = chỉ bạn bè đã accept mới được nhắn/gọi direct |
+
+**Tác động của từng setting:**
+
+| Setting | Kênh bị ảnh hưởng | Ghi chú |
+|---------|-------------------|---------|
+| `desktopEnabled=false` | WebSocket `message:notify` | realtime-gateway bỏ qua user này khi broadcast |
+| `mobileEnabled=false` | FCM / APNS / Web Push | notification-service block dispatch cho user này |
+| `notifyFor=NOTHING` | FCM / APNS / Web Push | block tất cả push trừ cuộc gọi đến |
+| `notifyFor=MENTIONS_ONLY` | FCM / APNS / Web Push | chỉ block plain message push, @mention vẫn qua |
+| `notifyFor=ALL` | — | không block gì thêm |
+
+> **Lưu ý**: `desktopEnabled` và `mobileEnabled`/`notifyFor` là **độc lập** — tắt FCM không ảnh hưởng WS và ngược lại.
 
 **Lưu ý về merge**:
 - Mỗi field là độc lập — chỉ field được gửi mới bị ghi đè, các field còn lại **không bị xoá**.
 - `notifications` được merge riêng: gửi `{ "notifications": { "notifyFor": "NOTHING" } }` **không** ảnh hưởng `desktopEnabled`, `mobileEnabled` đang lưu.
 - `privacy` cũng được merge riêng: gửi `{ "privacy": { "allowStrangerMessagesAndCalls": false } }` không ảnh hưởng các setting khác.
-- Để xoá `muteUntil`, gửi `{ "notifications": { "muteUntil": null } }`.
-- Các field không thuộc schema (ví dụ `language`, `timezone`) sẽ bị **từ chối 400** bởi validation pipe.
+- Các field không thuộc schema (ví dụ `language`, `timezone`, `muteUntil`) sẽ bị **từ chối 400** bởi validation pipe.
 
 **Response 200**: object user đã cập nhật (cùng cấu trúc `GET /users/me`).
 

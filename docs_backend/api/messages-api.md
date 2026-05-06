@@ -548,6 +548,7 @@ curl -X POST "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50c4
 
 - Chỉ **OWNER** hoặc **ADMIN** mới có quyền ghim tin nhắn.
 - Mỗi conversation tối đa **3 tin nhắn** được ghim cùng lúc. Nếu đã đủ 3, phải bỏ ghim trước.
+- Sau khi `message-store` persist thành công, realtime-gateway phát `message:pinned` vào room `conversation:{conversationId}` và tạo system message `MESSAGE_PINNED` trong history.
 
 ---
 
@@ -579,6 +580,8 @@ curl -X DELETE "http://localhost:3000/messages/5a6a514a-8fd9-45da-a802-2a78bab50
   }
 }
 ```
+
+Sau khi bỏ ghim thành công, realtime-gateway phát `message:unpinned` vào room `conversation:{conversationId}` và tạo system message `MESSAGE_UNPINNED` trong history.
 
 ---
 
@@ -779,6 +782,36 @@ Tin nhắn đã được ẩn phía người dùng — **chỉ gửi cho user th
 
 > Xóa tin nhắn này khỏi danh sách hiển thị của user hiện tại. Các thiết bị khác của cùng user cũng nhận event này (vì cùng room `user:{userId}`).
 
+#### `message:pinned`
+Tin nhắn đã được ghim — broadcast cho các socket đã join `conversation:{conversationId}`. Event chỉ phát sau khi `message-store` persist thành công.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "pinnedBy": "e8394128-...",
+  "pinnedByName": "Nguyen Van A",
+  "pinnedAt": "2026-04-18T10:09:00.000Z"
+}
+```
+
+> Cập nhật pinned bar/list local. Sau đó FE cũng sẽ nhận `message:new` type `system` với `metadata.action = "MESSAGE_PINNED"` để render dòng lịch sử.
+
+#### `message:unpinned`
+Tin nhắn đã được bỏ ghim — broadcast cho các socket đã join `conversation:{conversationId}`. Event chỉ phát khi pin thực sự được xóa.
+
+```json
+{
+  "messageId": "5a6a514a-...",
+  "conversationId": "95782059-...",
+  "unpinnedBy": "e8394128-...",
+  "unpinnedByName": "Nguyen Van A",
+  "unpinnedAt": "2026-04-18T10:10:00.000Z"
+}
+```
+
+> Xóa message khỏi pinned bar/list local. Sau đó FE cũng sẽ nhận `message:new` type `system` với `metadata.action = "MESSAGE_UNPINNED"` để render dòng lịch sử.
+
 #### `message:updated`
 Thay đổi generic — thường là trạng thái attachment sau khi Media Worker xử lý xong.
 
@@ -803,6 +836,8 @@ Thay đổi generic — thường là trạng thái attachment sau khi Media Wor
 | `message:revoked` | Tất cả thành viên conversation | Tin nhắn bị thu hồi |
 | `message:deleted` | Tất cả thành viên conversation | Tin nhắn bị xóa (ADMIN/chủ sở hữu) |
 | `message:deleted_for_me` | **Chỉ người thực hiện** (tất cả thiết bị) | Xóa tin nhắn phía mình |
+| `message:pinned` | Các socket trong `conversation:{id}` | Ghim tin nhắn đã persist thành công |
+| `message:unpinned` | Các socket trong `conversation:{id}` | Bỏ ghim tin nhắn đã persist thành công |
 | `message:updated` | Tất cả thành viên conversation | Cập nhật trạng thái media / patch generic |
 
 ---
@@ -831,6 +866,16 @@ socket.on('message:deleted_for_me', ({ messageId }) => {
 
 socket.on('message:edited', ({ messageId, content, editedAt }) => {
   applyMessagePatch(messageId, { content, isEdited: true, editedAt });
+});
+
+socket.on('message:pinned', ({ messageId, pinnedBy, pinnedByName, pinnedAt }) => {
+  applyMessagePatch(messageId, { isPinned: true, pinnedBy, pinnedByName, pinnedAt });
+  pinnedStore.upsert({ messageId, pinnedBy, pinnedByName, pinnedAt });
+});
+
+socket.on('message:unpinned', ({ messageId }) => {
+  applyMessagePatch(messageId, { isPinned: false });
+  pinnedStore.remove(messageId);
 });
 
 socket.on('message:updated', (patch) => {

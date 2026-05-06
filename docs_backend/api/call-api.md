@@ -242,7 +242,7 @@ End an active call or cancel a ringing call.
 | 404 | `CALL_NOT_FOUND` | — |
 | 409 | `CALL_ALREADY_ENDED` | Call is already in a terminal status |
 
-**Side effects**: `call.event.ended` → Realtime Gateway broadcasts `call:ended`. LiveKit room is closed asynchronously (fire-and-forget).
+**Side effects**: `call.event.ended` → Realtime Gateway broadcasts `call:ended` to the `call:{callId}` room **and** to each participant's personal room `user:{uid}` (so callees who joined via FCM without subscribing to the call room still receive the event). LiveKit room is closed asynchronously (fire-and-forget).
 
 ---
 

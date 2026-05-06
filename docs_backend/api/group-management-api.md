@@ -10,16 +10,17 @@
 ## Mục lục
 
 **HTTP Endpoints**
-1. [PATCH /conversations/:id/settings — Cập nhật cài đặt nhóm](#1-patch-conversationsidsettings--cập-nhật-cài-đặt-nhóm)
-2. [DELETE /conversations/:id — Giải tán nhóm](#2-delete-conversationsid--giải-tán-nhóm)
-3. [POST /conversations/:id/leave — Rời nhóm](#3-post-conversationsidleave--rời-nhóm)
-4. [DELETE /conversations/:id/members/:userId — Kick thành viên](#4-delete-conversationsidmembersuserid--kick-thành-viên)
-5. [POST /conversations/:id/invite-link — Tạo link mời](#5-post-conversationsidinvite-link--tạo-link-mời)
-6. [DELETE /conversations/:id/invite-link — Thu hồi link mời](#6-delete-conversationsidinvite-link--thu-hồi-link-mời)
-7. [POST /conversations/join — Tham gia qua link mời](#7-post-conversationsjoin--tham-gia-qua-link-mời)
-8. [POST /conversations/:id/join-requests — Gửi yêu cầu tham gia](#8-post-conversationsidjoin-requests--gửi-yêu-cầu-tham-gia)
-9. [GET /conversations/:id/join-requests — Xem danh sách yêu cầu tham gia](#9-get-conversationsidjoin-requests--xem-danh-sách-yêu-cầu-tham-gia)
-10. [PATCH /conversations/:id/join-requests/:requestId — Duyệt/từ chối yêu cầu](#10-patch-conversationsidjoin-requestsrequestid--duyệttừ-chối-yêu-cầu)
+1. [GET /conversations/:id/members — Danh sách thành viên](#1-get-conversationsidmembers--danh-sách-thành-viên)
+2. [PATCH /conversations/:id/settings — Cập nhật cài đặt nhóm](#2-patch-conversationsidsettings--cập-nhật-cài-đặt-nhóm)
+3. [DELETE /conversations/:id — Giải tán nhóm](#3-delete-conversationsid--giải-tán-nhóm)
+4. [POST /conversations/:id/leave — Rời nhóm](#4-post-conversationsidleave--rời-nhóm)
+5. [DELETE /conversations/:id/members/:userId — Kick thành viên](#5-delete-conversationsidmembersuserid--kick-thành-viên)
+6. [POST /conversations/:id/invite-link — Tạo link mời](#6-post-conversationsidinvite-link--tạo-link-mời)
+7. [DELETE /conversations/:id/invite-link — Thu hồi link mời](#7-delete-conversationsidinvite-link--thu-hồi-link-mời)
+8. [POST /conversations/join — Tham gia qua link mời](#8-post-conversationsjoin--tham-gia-qua-link-mời)
+9. [POST /conversations/:id/join-requests — Gửi yêu cầu tham gia](#9-post-conversationsidjoin-requests--gửi-yêu-cầu-tham-gia)
+10. [GET /conversations/:id/join-requests — Xem danh sách yêu cầu tham gia](#10-get-conversationsidjoin-requests--xem-danh-sách-yêu-cầu-tham-gia)
+11. [PATCH /conversations/:id/join-requests/:requestId — Duyệt/từ chối yêu cầu](#11-patch-conversationsidjoin-requestsrequestid--duyệttừ-chối-yêu-cầu)
 
 **WebSocket Events (Server → Client)**
 11. [group:settings_updated](#11-groupsettings_updated)
@@ -37,7 +38,66 @@
 
 ---
 
-## 1. PATCH /conversations/:id/settings — Cập nhật cài đặt nhóm
+## 1. GET /conversations/:id/members — Danh sách thành viên
+
+Trả về danh sách thành viên của cuộc trò chuyện kèm role và thông tin profile. Bất kỳ thành viên nào cũng có thể gọi.
+
+### Request
+
+```
+GET /conversations/:id/members?avatarVariant=thumb
+Authorization: Bearer <token>
+```
+
+| Query param | Type | Required | Mô tả |
+|---|---|---|---|
+| `avatarVariant` | `thumb` \| `original` | không | Kích thước ảnh đại diện (mặc định `thumb`) |
+
+### Response 200 OK
+
+```json
+{
+  "statusCode": 200,
+  "message": "OK",
+  "data": [
+    {
+      "userId": "b1c2d3e4-...",
+      "role": "owner",
+      "id": "b1c2d3e4-...",
+      "displayName": "Nguyễn Văn A",
+      "email": "a@example.com",
+      "avatarUrl": "https://cdn.example.com/avatars/thumb/b1c2d3e4.webp"
+    },
+    {
+      "userId": "f5e6d7c8-...",
+      "role": "member",
+      "id": "f5e6d7c8-...",
+      "displayName": "Trần Thị B",
+      "email": "b@example.com",
+      "avatarUrl": null
+    }
+  ]
+}
+```
+
+| Field | Type | Mô tả |
+|---|---|---|
+| `userId` | string | Keycloak ID của thành viên |
+| `role` | `owner` \| `admin` \| `member` | Role trong nhóm |
+| `displayName` | string | Tên hiển thị |
+| `email` | string | Email |
+| `avatarUrl` | string \| null | Presigned URL ảnh đại diện (null nếu chưa đặt) |
+
+### Lỗi
+
+| Status | Mô tả |
+|---|---|
+| 401 | Chưa xác thực |
+| 404 | Conversation không tồn tại |
+
+---
+
+## 2. PATCH /conversations/:id/settings — Cập nhật cài đặt nhóm
 
 Cập nhật một hoặc nhiều cài đặt của nhóm. Chỉ **OWNER** được thực hiện.
 

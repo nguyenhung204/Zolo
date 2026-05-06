@@ -236,31 +236,39 @@ From `NotificationPreferenceService.isAllowed()`:
 
 ### Decision Matrix
 
-| `notificationType` | `priority` | Global `notifyFor` | Global `muteUntil` | Conv mute / `notifyOnMessage=false` | `notifyOnMention` | Result |
-|--------------------|------------|--------------------|--------------------|--------------------------------------|-------------------|--------|
-| `call`             | `high`     | any                | any                | any                                  | any               | **ALLOW** (always urgent) |
-| `mention`          | `high`     | `NOTHING`          | any                | any                                  | any               | **BLOCK** |
-| `mention`          | `high`     | other              | active             | any                                  | `true`            | **ALLOW** (mention bypasses mute) |
-| `mention`          | `high`     | other              | any                | any                                  | `false`           | **BLOCK** (explicit toggle) |
-| `message`          | `normal`   | `NOTHING`          | any                | any                                  | any               | **BLOCK** |
-| `message`          | `normal`   | `MENTIONS_ONLY`    | any                | any                                  | any               | **BLOCK** |
-| `message`          | `normal`   | other              | active             | any                                  | any               | **BLOCK** |
-| `message`          | `normal`   | other              | inactive/null      | muted                                | any               | **BLOCK** |
-| `message`          | `normal`   | other              | inactive/null      | not muted                            | any               | **ALLOW** |
+The matrix below covers Gate 1 (global user settings from `users.settings.notifications`).
+Gates 2–3 (per-conversation / global DB prefs) only apply to `message` type after Gate 1 passes.
+
+| `notificationType` | `notifyFor`      | `mobileEnabled` | Result |
+|--------------------|------------------|-----------------|--------|
+| `call`             | any              | any             | **ALLOW** (always urgent — call bypasses all gates) |
+| `mention`          | `NOTHING`        | any             | **BLOCK** |
+| `mention`          | `MENTIONS_ONLY`  | `false`         | **BLOCK** (mobileEnabled wins) |
+| `mention`          | `MENTIONS_ONLY`  | `true`/absent   | **ALLOW** |
+| `mention`          | `ALL`            | `false`         | **BLOCK** |
+| `mention`          | `ALL`            | `true`/absent   | **ALLOW** |
+| `message`          | `NOTHING`        | any             | **BLOCK** |
+| `message`          | `MENTIONS_ONLY`  | any             | **BLOCK** |
+| `message`          | `ALL`            | `false`         | **BLOCK** |
+| `message`          | `ALL`            | `true`/absent   | → Gates 2 / 3 / ALLOW |
 
 ### Gate order (first matching gate wins):
 
-1. **Call short-circuit** — `notificationType === 'call' && priority === 'high'` → always ALLOW.
+1. **Call short-circuit** — `notificationType === 'call'` → always ALLOW (urgent, bypasses every gate).
 2. **Global user settings** (from `users.settings.notifications`, cached at
    `REDIS_KEYS.NOTIFICATION.USER_GLOBAL(userId)`, TTL 24 h):
-   - `notifyFor === 'NOTHING'` → BLOCK (all non-call events)
-   - `notifyFor === 'MENTIONS_ONLY'` → BLOCK for `message` type
-   - Global `muteUntil` active → BLOCK for `message` type (mentions bypass)
+   - `notifyFor === 'NOTHING'` → BLOCK all non-call notifications (message + mention)
+   - `notifyFor === 'MENTIONS_ONLY'` → BLOCK `message` type; allow `mention`
+   - `mobileEnabled === false` → BLOCK all push (FCM / APNS / Web) including mentions
    - Fail-open on cache miss (cold Redis never silences a user)
 3. **Per-conversation preference** (`notification_preferences` row where
-   `conversationId` matches) — if row exists, apply and stop.
-4. **Global notification_preferences row** (`conversationId IS NULL`).
+   `conversationId` matches) — if row exists, apply `muteUntil` and stop.
+4. **Global notification_preferences row** (`conversationId IS NULL`) — apply `muteUntil`.
 5. Default → **ALLOW**.
+
+> **Separation of concerns**: `desktopEnabled` (WebSocket `message:notify`) is enforced
+> by **realtime-gateway**, not here. `mobileEnabled` / `notifyFor` are enforced here
+> (push only). Both settings are independent and can be toggled separately.
 
 ### Mute duration tokens (`PUT /notifications/conversations/:id/mute`)
 

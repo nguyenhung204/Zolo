@@ -29,6 +29,8 @@
    - [message:revoked](#messagerevoked)
    - [message:deleted](#messagedeleted)
    - [message:deleted_for_me](#messagedeleted_for_me)
+   - [message:pinned](#messagepinned)
+   - [message:unpinned](#messageunpinned)
    - [message:reaction_updated](#messagereaction_updated)
    - [message:status](#messagestatus)
    - [typing:started](#typingstarted)
@@ -483,6 +485,46 @@ socket.on('message:deleted_for_me', (payload: {
 ```
 
 **FE behavior:** hide the message from this user's view only.
+
+---
+
+### message:pinned
+
+**Tier 2 — STREAM** · Target: `conversation:{id}` room.
+
+Emitted after a pin is persisted in `message-store`. This event is not emitted when the pin is rejected by the max-3 rule or when the message was already pinned.
+
+```typescript
+socket.on('message:pinned', (payload: {
+  messageId: string;
+  conversationId: string;
+  pinnedBy: string;
+  pinnedByName?: string;
+  pinnedAt: string;
+}) => { ... });
+```
+
+**FE behavior:** mark the message as pinned, add/update it in the pinned-message bar/list, and keep at most the server-authoritative 3 pinned messages. A persisted `message:new` system message with `metadata.action = 'MESSAGE_PINNED'` also arrives for history rendering.
+
+---
+
+### message:unpinned
+
+**Tier 2 — STREAM** · Target: `conversation:{id}` room.
+
+Emitted after an existing pin is removed from `message-store`. This event is not emitted when the target message was not pinned.
+
+```typescript
+socket.on('message:unpinned', (payload: {
+  messageId: string;
+  conversationId: string;
+  unpinnedBy: string;
+  unpinnedByName?: string;
+  unpinnedAt: string;
+}) => { ... });
+```
+
+**FE behavior:** remove the message from the pinned-message bar/list and clear the local pinned state. A persisted `message:new` system message with `metadata.action = 'MESSAGE_UNPINNED'` also arrives for history rendering.
 
 ---
 
@@ -1164,33 +1206,40 @@ callSocket.on(
 
 ### call:ended
 
-**Target**: `call:{callId}` room.
+**Target**: `call:{callId}` room **AND** each participant's personal room `user:{uid}`.
 
 Broadcast when any participant ends the call, or when cleanup processes terminate a ghost/stuck call.
 
+> **Why personal rooms?** A callee who accepts a call via FCM notification may open the app directly into LiveKit without first connecting to the Socket.IO `call:{callId}` room. Emitting to `user:{uid}` ensures that participant still receives `call:ended` and can cleanly leave the LiveKit meeting.
+
 ```typescript
-callSocket.on(
-  'call:ended',
-  (payload: {
-    callId: string;
-    conversationId: string;
-    endedBy: string;
-    endReason:
-      | 'user_ended'
-      | 'declined'
-      | 'caller_cancelled'
-      | 'ringing_timeout'
-      | 'ghost_call_cleanup'
-      | 'stale_call_cleanup'
-      | 'membership_revoked';
-    durationMs: number;
-    endedAt: string;
-  }) => {
-    // Disconnect from LiveKit SFU
-    // Stop local media tracks
-    // Leave call room: callSocket.emit('call:leave_room', { callId })
-  },
-);
+// Option A — callee joined the call:* room
+callSocket.on('call:ended', handler);
+
+// Option B — callee never joined the call:* room (FCM deep-link flow)
+// Listen on the personal room socket instead
+socket.on('call:ended', handler);
+
+// Shared handler:
+function handler(payload: {
+  callId: string;
+  conversationId: string;
+  endedBy: string;
+  endReason:
+    | 'user_ended'
+    | 'declined'
+    | 'caller_cancelled'
+    | 'ringing_timeout'
+    | 'ghost_call_cleanup'
+    | 'stale_call_cleanup'
+    | 'membership_revoked';
+  durationMs: number;
+  endedAt: string;
+}) {
+  // Disconnect from LiveKit SFU
+  // Stop local media tracks
+  // Leave call room: callSocket.emit('call:leave_room', { callId })
+}
 ```
 
 **FE behavior:** disconnect from LiveKit, stop all local media tracks, leave the `call:{callId}` Socket.IO room, show call duration summary.

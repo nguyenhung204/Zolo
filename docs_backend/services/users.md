@@ -204,26 +204,25 @@ Stored in `settings` column. All fields are optional and can be partially update
   "notifications": {
     "desktopEnabled": true,
     "mobileEnabled": true,
-    "notifyFor": "ALL",
-    "muteUntil": null
+    "notifyFor": "ALL"
   }
 }
 ```
 
-| Field | Type | Values / Notes |
-|-------|------|----------------|
-| `statusMessage` | string | Max 100 chars. Visible to colleagues. |
-| `theme` | enum | `LIGHT` \| `DARK` \| `SYSTEM` — client applies CSS |
-| `messageDensity` | enum | `COMFORTABLE` \| `COMPACT` — message list density |
-| `enterToSend` | boolean | `true` = Enter sends (default); `false` = Ctrl+Enter sends |
-| `notifications.desktopEnabled` | boolean | Desktop/browser push notifications |
-| `notifications.mobileEnabled` | boolean | Mobile push notifications |
-| `notifications.notifyFor` | enum | `ALL` \| `MENTIONS_ONLY` \| `NOTHING` — which messages trigger a push |
-| `notifications.muteUntil` | ISO string \| null | Silence all pushes until this datetime; `null` clears the mute |
+| Field | Type | Effect |
+|-------|------|--------|
+| `statusMessage` | string (max 100) | Custom status text visible to colleagues in the member list |
+| `theme` | `LIGHT` \| `DARK` \| `SYSTEM` | UI colour scheme applied client-side |
+| `messageDensity` | `COMFORTABLE` \| `COMPACT` | Message list vertical density applied client-side |
+| `enterToSend` | boolean | `true` (default) = Enter sends; `false` = Ctrl+Enter sends |
+| `notifications.desktopEnabled` | boolean | `false` = suppresses **WebSocket `message:notify`** events (realtime-gateway skips WS broadcast for this user) |
+| `notifications.mobileEnabled` | boolean | `false` = suppresses **FCM / APNS / Web Push** (notification-service blocks dispatch for this user) |
+| `notifications.notifyFor` | `ALL` \| `MENTIONS_ONLY` \| `NOTHING` | `NOTHING` = block all non-call push; `MENTIONS_ONLY` = block plain message push, allow @mention push |
+| `privacy.allowStrangerMessagesAndCalls` | boolean | `false` = only accepted friends may send DMs or start direct calls |
 
-> **Removed from previous design**: `language` and `timezone` (derived from OS/browser — no server-side value needed).
+> **Removed from previous design**: `language`, `timezone` (derived from OS/browser), and `notifications.muteUntil` (per-conversation muting via `PUT /notifications/conversations/:id/mute` replaces the global mute concept).
 
-> **Deep merge safety**: `notifications` sub-object is merged with `undefined`-key filtering before spread. Sending `{ "notifyFor": "NOTHING" }` will not wipe `desktopEnabled`.
+> **Deep merge safety**: `notifications` and `privacy` sub-objects are merged with `undefined`-key filtering before spread. Sending `{ "notifications": { "notifyFor": "NOTHING" } }` will **not** wipe `desktopEnabled` or `mobileEnabled`.
 
 ### Cache Usage
 

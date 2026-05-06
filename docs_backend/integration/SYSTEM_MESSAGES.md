@@ -56,8 +56,13 @@ These events include the same display-name fields.
 | Member added | `conversation:member-added` | added users' personal rooms |
 | Member removed / left | `conversation:member-removed` | removed users' personal rooms |
 | Member kicked | `group:member_kicked` | kicked user + all remaining members |
-| Role changed | `group:member_role_changed` | all group members |
+| Role changed / ownership transferred | `group:member_role_changed` | all group members |
 | Group settings updated | `group:settings_updated` | all group members |
+| Poll created | `group:poll_created` | all group members |
+| Poll voted | `group:poll_voted` | all group members |
+| Poll closed | `group:poll_closed` | all group members |
+| Message pinned | `message:pinned` | active `conversation:{id}` room |
+| Message unpinned | `message:unpinned` | active `conversation:{id}` room |
 
 See section 3 for full payload shapes.
 
@@ -186,6 +191,112 @@ recipient is an admin/owner.
 
 ---
 
+### `OWNERSHIP_TRANSFERRED`
+> The group owner transferred ownership to another member (usually when the owner leaves).
+
+```jsonc
+{
+  "action": "OWNERSHIP_TRANSFERRED",
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",          // the outgoing owner
+  "targetIds": ["uuid"],
+  "targetNames": ["Tran Thi B"]          // the new owner
+}
+```
+**Render:** *"[actorName] transferred group ownership to [targetNames[0]]"*
+
+---
+
+### `GROUP_SETTINGS_UPDATED`
+> Admin/owner changed group behaviour settings (`allowMemberMessage`, `isPublic`, `joinApprovalRequired`).
+
+```jsonc
+{
+  "action": "GROUP_SETTINGS_UPDATED",
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",
+  "changes": {
+    "allowMemberMessage": false,      // present only when this field changed
+    "isPublic": true,                 // present only when this field changed
+    "joinApprovalRequired": true      // present only when this field changed
+  }
+}
+```
+
+Render each changed field as a separate line (or join with "; "):
+
+| `changes` field | value `true` | value `false` |
+|---|---|---|
+| `allowMemberMessage` | *"[actorName] allowed members to send messages"* | *"[actorName] restricted messaging to admins only"* |
+| `isPublic` | *"[actorName] made the group public"* | *"[actorName] made the group private"* |
+| `joinApprovalRequired` | *"[actorName] enabled join approval"* | *"[actorName] disabled join approval"* |
+
+If multiple fields changed at once, render one line per field. Fallback if an unknown field appears: *"[actorName] updated group settings"*.
+
+---
+
+### `POLL_CLOSED`
+> A poll was closed (by creator, owner, or admin).
+
+```jsonc
+{
+  "action": "POLL_CLOSED",
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",
+  "pollId": "uuid"
+}
+```
+**Render:** *"[actorName] closed a poll"*
+
+---
+
+### `POLL_VOTED`
+> A member cast or updated their vote on a poll.
+
+```jsonc
+{
+  "action": "POLL_VOTED",
+  "actorId": "uuid",
+  "actorName": "Tran Thi B",
+  "pollId": "uuid",
+  "optionIds": ["opt-uuid-1"],          // the options they voted for
+  "optionTexts": ["This Friday"]         // human-readable labels, parallel array to optionIds
+}
+```
+**Render:** *"[actorName] voted for '[optionTexts.join(', ')]' on a poll"*
+
+---
+
+### `MESSAGE_PINNED`
+> A message was pinned after the pin row was persisted successfully.
+
+```jsonc
+{
+  "action": "MESSAGE_PINNED",
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",
+  "messageId": "message-uuid"
+}
+```
+**Render:** *"[actorName] pinned a message"*
+
+---
+
+### `MESSAGE_UNPINNED`
+> A message was unpinned after the pin row was removed successfully.
+
+```jsonc
+{
+  "action": "MESSAGE_UNPINNED",
+  "actorId": "uuid",
+  "actorName": "Nguyen Van A",
+  "messageId": "message-uuid"
+}
+```
+**Render:** *"[actorName] unpinned a message"*
+
+---
+
 ## 3. Dedicated Action Socket Events (Realtime)
 
 These events are emitted **immediately** when an action is committed (before the
@@ -257,15 +368,99 @@ Emitted to all group members.
 ```
 
 ### `group:settings_updated`
-Emitted to all group members when group name/avatar is changed.
+Emitted to all group members when **group behaviour settings** change (`allowMemberMessage`, `isPublic`, `joinApprovalRequired`).
 
 ```jsonc
 {
   "conversationId": "uuid",
-  "changes": { "name": "New Name", "avatarChanged": true },
+  "changes": {
+    "allowMemberMessage": false,   // only fields that changed are present
+    "joinApprovalRequired": true
+  },
   "updatedBy": "uuid",
   "updatedByName": "Nguyen Van A",
   "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:poll_created`
+Emitted to all group members when a new poll is created.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "poll": {
+    "id": "uuid",
+    "question": "When should we ship?",
+    "options": [{ "id": "opt-uuid", "text": "This Friday", "voterIds": [] }],
+    "multipleChoice": false,
+    "deadline": "2026-05-10T18:00:00.000Z",  // null if no deadline
+    "isClosed": false
+  },
+  "createdBy": "uuid",
+  "createdByName": "Nguyen Van A",
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:poll_voted`
+Emitted to all group members when anyone casts or updates their vote.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "pollId": "uuid",
+  "voterId": "uuid",
+  "voterName": "Tran Thi B",
+  "optionIds": ["opt-uuid-1"],           // options the voter chose
+  "options": [                            // full updated snapshot — replace local state
+    { "id": "opt-uuid-1", "text": "This Friday", "voterIds": ["uuid"] },
+    { "id": "opt-uuid-2", "text": "Next Monday", "voterIds": [] }
+  ],
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `group:poll_closed`
+Emitted to all group members when a poll is closed.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "pollId": "uuid",
+  "closedBy": "uuid",
+  "closedByName": "Nguyen Van A",
+  "options": [                            // final results snapshot
+    { "id": "opt-uuid-1", "text": "This Friday", "voterIds": ["uuid-a", "uuid-b"] },
+    { "id": "opt-uuid-2", "text": "Next Monday", "voterIds": [] }
+  ],
+  "timestamp": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `message:pinned`
+Emitted to the active `conversation:{id}` room after `message-store` persists a new pin. Not emitted when the pin is rejected by the max-3 rule or when the message was already pinned.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "messageId": "uuid",
+  "pinnedBy": "uuid",
+  "pinnedByName": "Nguyen Van A",
+  "pinnedAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+### `message:unpinned`
+Emitted to the active `conversation:{id}` room after `message-store` removes an existing pin.
+
+```jsonc
+{
+  "conversationId": "uuid",
+  "messageId": "uuid",
+  "unpinnedBy": "uuid",
+  "unpinnedByName": "Nguyen Van A",
+  "unpinnedAt": "2026-01-01T00:00:00.000Z"
 }
 ```
 
@@ -313,8 +508,14 @@ FE should apply the same rendering rules as for the real-time `message:new` payl
 | `chat.event.member_removed` | `MEMBER_LEFT` | Self-leave |
 | `chat.event.member_removed` | `MEMBER_REMOVED` | Admin removes member |
 | `group.event.member_kicked` | `MEMBER_KICKED` | Hard-kick by admin |
-| `group.event.member_role_changed` | `ROLE_CHANGED` | Admin changes member role |
+| `group.event.member_role_changed` | `ROLE_CHANGED` | Admin/owner changes member role |
+| `group.event.member_role_changed` | `OWNERSHIP_TRANSFERRED` | Owner leaves and appoints new owner |
 | `chat.event.conversation_updated` | `GROUP_INFO_UPDATED` | Group rename / avatar change |
+| `group.event.settings_updated` | `GROUP_SETTINGS_UPDATED` | Admin/owner changes behaviour settings |
+| `group.event.poll_closed` | `POLL_CLOSED` | Poll closed by creator / admin / owner |
+| `group.event.poll_voted` | `POLL_VOTED` | Member casts or updates a vote |
+| `chat.event.message_updated` | `MESSAGE_PINNED` | MessageStore persisted a new pin |
+| `chat.event.message_updated` | `MESSAGE_UNPINNED` | MessageStore removed an existing pin |
 
 > Note: `GROUP.DISBANDED` is not yet covered — the group disband flow pushes
 > `group:disbanded` WebSocket directly; system message support can be added later.
