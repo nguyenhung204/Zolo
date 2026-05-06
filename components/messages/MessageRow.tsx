@@ -26,6 +26,7 @@ import { CallSummaryBubble } from "./CallSummaryBubble";
 import { SystemMessageChip } from "./SystemMessageChip";
 import { CallSystemMessage } from "./CallSystemMessage";
 import { GroupInviteCard } from "./GroupInviteCard";
+import { LinkPreview, extractFirstUrl } from "./LinkPreview";
 import { messageDeliveryLabel, resolveMessageDeliveryStatus } from "./messageStatus";
 
 const INVITE_LINK_RE = /^Join "(.+)" on Zolo:\n(https?:\/\/\S+)$/;
@@ -445,16 +446,21 @@ function MessageContent({
       return message.metadata?.url
         ? <AnimatedSticker url={message.metadata.url} size={130} alt="sticker" />
         : null;
-    case "text":
+    case "text": {
+      const firstUrl = extractFirstUrl(message.content);
       return (
-        <MarkdownMessage
-          content={message.content}
-          isMine={isMine}
-          mentions={message.metadata?.mentions}
-          mentionLabels={mentionLabels}
-          mentionAll={message.metadata?.mentionAll}
-        />
+        <>
+          <MarkdownMessage
+            content={message.content}
+            isMine={isMine}
+            mentions={message.metadata?.mentions}
+            mentionLabels={mentionLabels}
+            mentionAll={message.metadata?.mentionAll}
+          />
+          {firstUrl && <LinkPreview url={firstUrl} isMine={isMine} />}
+        </>
       );
+    }
     case "image":
     case "video": {
       const fname = message.metadata?.filename;
