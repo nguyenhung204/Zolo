@@ -40,6 +40,12 @@ export interface CallAcceptResponseDto {
   livekitUrl: string;
 }
 
+export function isGroupInstantCall(call: Pick<CallDto, "calleeIds" | "participants"> | null | undefined): boolean {
+  if (!call) return false;
+  const calleeCount = call.participants?.filter((p) => p.role === "CALLEE").length ?? 0;
+  return calleeCount > 1 || (call.calleeIds?.length ?? 0) > 1 || (call.participants?.length ?? 0) > 2;
+}
+
 // ─── Instant Call API ─────────────────────────────────────────────────────────
 
 export async function startInstantCall(params: {

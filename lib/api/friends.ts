@@ -46,7 +46,16 @@ export interface UserSearchResult {
   lastName: string;
   avatarUrl?: string;
   title?: string;
-  friendship: FriendshipStatus;
+  friendship?: FriendshipStatus;
+}
+
+export interface FriendSearchProfile {
+  id: string;
+  username: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  avatarUrl?: string;
 }
 
 export async function getFriends(): Promise<Friendship[]> {
@@ -126,7 +135,15 @@ export async function unblockUser(userId: string): Promise<FriendshipMutationRes
 
 export async function searchUsers(query: string): Promise<UserSearchResult[]> {
   const res = await apiClient.get(`/users/search?q=${encodeURIComponent(query)}`);
+  // Response shape: { data: [...], total, page, limit }
   const d = res.data?.data;
+  return Array.isArray(d) ? d : [];
+}
+
+export async function searchFriends(query: string): Promise<FriendSearchProfile[]> {
+  const res = await apiClient.get(`/friendships/search?q=${encodeURIComponent(query)}`);
+  // Response may be a raw array or { data: [...] }
+  const d = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
   return Array.isArray(d) ? d : [];
 }
 

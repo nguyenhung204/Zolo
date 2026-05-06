@@ -3,6 +3,8 @@ export const queryKeys = {
   conversations: {
     all: ["conversations"] as const,
     list: () => [...queryKeys.conversations.all, "list"] as const,
+    search: (query: string, limit = 30) =>
+      [...queryKeys.conversations.all, "search", query, limit] as const,
     detail: (id: string) => [...queryKeys.conversations.all, "detail", id] as const,
     members: (id: string) => [...queryKeys.conversations.all, "members", id] as const,
     unread: (id: string) => [...queryKeys.conversations.all, "unread", id] as const,
@@ -34,6 +36,7 @@ export const queryKeys = {
     requests: () => [...queryKeys.friends.all, "requests"] as const,
     blocked: () => [...queryKeys.friends.all, "blocked"] as const,
     status: (userId: string) => [...queryKeys.friends.all, "status", userId] as const,
+    search: (query: string) => [...queryKeys.friends.all, "search", query] as const,
   },
 
   // Media

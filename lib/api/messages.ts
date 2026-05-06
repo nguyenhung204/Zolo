@@ -107,6 +107,10 @@ interface RawMessage {
   isDeleted?: boolean;
   isRevoked?: boolean;
   isEdited?: boolean;
+  isPinned?: boolean;
+  pinnedBy?: string;
+  pinnedByName?: string;
+  pinnedAt?: string;
   reactions?: unknown;
   status?: string;
 }
@@ -199,6 +203,9 @@ export interface MessagePage {
   data: Message[];
   meta: {
     hasMore: boolean;
+    hasMoreBefore?: boolean;
+    hasMoreAfter?: boolean;
+    targetOffset?: number;
     oldestOffset: number;
     newestOffset: number;
   };
@@ -389,6 +396,9 @@ export async function getMessages(params: {
   // Support both "metadata" (actual API) and "meta" (legacy/future shape)
   const meta: {
     hasMore?: boolean;
+    hasMoreBefore?: boolean;
+    hasMoreAfter?: boolean;
+    targetOffset?: number | string;
     oldestOffset?: number | string;
     newestOffset?: number | string;
     memberCursors?: unknown;
@@ -401,6 +411,44 @@ export async function getMessages(params: {
     data: rawMessages.map(normalizeRawMessage),
     meta: {
       hasMore: meta.hasMore ?? false,
+      hasMoreBefore: meta.hasMoreBefore,
+      hasMoreAfter: meta.hasMoreAfter,
+      targetOffset: meta.targetOffset == null ? undefined : Number(meta.targetOffset),
+      oldestOffset: Number(meta.oldestOffset ?? 0),
+      newestOffset: Number(meta.newestOffset ?? 0),
+    },
+    memberCursors,
+  };
+}
+
+export async function getMessagesAround(params: {
+  conversationId: string;
+  messageId: string;
+  limit?: number;
+}): Promise<MessagePage> {
+  const { conversationId, messageId, limit = 30 } = params;
+  const res = await apiClient.get(`/conversations/${conversationId}/messages/around`, {
+    params: { messageId, limit },
+  });
+  const response = res.data ?? {};
+  const payload = response.data ?? {};
+  const rawMessages: RawMessage[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload.data)
+      ? payload.data
+      : [];
+  const meta = payload.metadata ?? payload.meta ?? response.metadata ?? response.meta ?? {};
+  const memberCursors = normalizeMemberCursors(
+    (!Array.isArray(payload) ? payload.memberCursors : undefined) ?? meta.memberCursors
+  );
+
+  return {
+    data: rawMessages.map(normalizeRawMessage),
+    meta: {
+      hasMore: Boolean(meta.hasMoreBefore),
+      hasMoreBefore: Boolean(meta.hasMoreBefore),
+      hasMoreAfter: Boolean(meta.hasMoreAfter),
+      targetOffset: meta.targetOffset == null ? undefined : Number(meta.targetOffset),
       oldestOffset: Number(meta.oldestOffset ?? 0),
       newestOffset: Number(meta.newestOffset ?? 0),
     },
@@ -499,6 +547,7 @@ export async function forwardMessage(params: {
   sourceMessageId: string;
   sourceConversationId: string;
   targetConversationIds: string[];
+  includeCaption?: boolean;
 }): Promise<string[]> {
   const res = await apiClient.post("/messages/forward", params);
   return res.data?.data?.forwardedMessageIds ?? [];
@@ -531,7 +580,7 @@ export async function unpinMessage(
   conversationId: string
 ): Promise<void> {
   await apiClient.delete(`/messages/${messageId}/pin`, {
-    params: { conversationId },
+    data: { conversationId },
   });
 }
 
@@ -541,6 +590,25 @@ export async function getPinnedMessages(conversationId: string): Promise<Message
   const res = await apiClient.get(`/conversations/${conversationId}/pinned`);
   const raw: RawMessage[] = Array.isArray(res.data?.data) ? res.data.data : [];
   return raw
-    .map(normalizeRawMessage)
+    .map((message) => {
+      const rich = message as RawMessage & {
+        sender?: { id?: string };
+        pinnedByUser?: { displayName?: string; username?: string };
+        pinnedByName?: string;
+      };
+      const normalized = normalizeRawMessage({
+        ...message,
+        conversationId: message.conversationId ?? conversationId,
+        senderId: message.senderId ?? rich.sender?.id ?? "",
+      });
+      return {
+        ...normalized,
+        pinnedByName:
+          rich.pinnedByName ??
+          rich.pinnedByUser?.displayName ??
+          rich.pinnedByUser?.username ??
+          normalized.pinnedByName,
+      };
+    })
     .sort((a, b) => new Date(b.pinnedAt ?? b.createdAt).getTime() - new Date(a.pinnedAt ?? a.createdAt).getTime());
 }
