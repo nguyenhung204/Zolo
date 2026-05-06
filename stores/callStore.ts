@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { CallDto, CallTokenDto } from '@/lib/api/calls';
+import { isGroupInstantCall, type CallDto, type CallTokenDto } from '@/lib/api/calls';
 
 export type { CallDto, CallTokenDto };
 
@@ -110,8 +110,8 @@ export const useCallStore = create<InstantCallState>()(
       // groupCallsByConversation and declinedGroupCall ARE persisted so the
       // "call in progress" banner and re-join option survive page reloads.
       partialize: (state) => ({
-        activeCall: state.activeCall,
-        liveKitCredentials: state.liveKitCredentials,
+        activeCall: isGroupInstantCall(state.activeCall) ? state.activeCall : null,
+        liveKitCredentials: isGroupInstantCall(state.activeCall) ? state.liveKitCredentials : null,
         groupCallsByConversation: state.groupCallsByConversation,
         declinedGroupCall: state.declinedGroupCall,
       }),
