@@ -21,8 +21,9 @@ import {
   useTracks,
   useTrackToggle,
   useRoomContext,
+  useParticipants,
 } from "@livekit/components-react";
-import { Track, RoomEvent } from "livekit-client";
+import { Track } from "livekit-client";
 import { useCallStore } from "@/stores/callStore";
 import { useAuthStore } from "@/stores/authStore";
 import { usePresenceStore } from "@/stores/presenceStore";
@@ -237,25 +238,14 @@ function CameraButton() {
 function EndCallButton({ callId, isGroup }: { callId: string; isGroup: boolean }) {
   const { clearCallState, setDeclinedGroupCall, setGroupCall } = useCallStore();
   const room = useRoomContext();
+  const participants = useParticipants();
   const isBusyRef = useRef(false);
-
-  // Track real-time remote participant count via LiveKit room events.
-  // This is always accurate — unlike the store's participantIds which only grows.
-  const [remoteCount, setRemoteCount] = useState(() => room.remoteParticipants.size);
-  useEffect(() => {
-    const update = () => setRemoteCount(room.remoteParticipants.size);
-    room.on(RoomEvent.ParticipantConnected, update);
-    room.on(RoomEvent.ParticipantDisconnected, update);
-    return () => {
-      room.off(RoomEvent.ParticipantConnected, update);
-      room.off(RoomEvent.ParticipantDisconnected, update);
-    };
-  }, [room]);
 
   // For a group call with only 1 remote participant remaining (2 total),
   // leaving = ending the call for everyone.
   const conversationId = useCallStore.getState().activeCall?.conversationId ?? "";
-  const shouldEndGroupCall = isGroup && remoteCount <= 1;
+  const participantCount = Math.max(participants.length, room.numParticipants);
+  const shouldEndGroupCall = isGroup && participantCount === 2;
 
   const handleAction = useCallback(() => {
     if (isBusyRef.current) return;
