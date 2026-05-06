@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/query/keys";
-import { generateInviteLink, resetInviteLink, hasMinRole } from "@/lib/api/group";
+import { getInviteLink, generateInviteLink, regenerateInviteLink, revokeInviteLink, hasMinRole } from "@/lib/api/group";
 import { useMyConversationRole, useConversation } from "@/hooks/useConversations";
 import type { InviteLink } from "@/lib/api/group";
 import type { ApiError } from "@/lib/api/errors";
@@ -43,10 +43,9 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
 
   const { data: inviteLink, isLoading: isLinkLoading } = useQuery<InviteLink | null>({
     queryKey: queryKeys.inviteLink.detail(conversationId),
-    queryFn: () => null,
-    staleTime: Infinity,
+    queryFn: () => getInviteLink(conversationId),
+    staleTime: 5 * 60_000,
     enabled: canManageLinks,
-    initialData: null,
   });
 
   const generateMutation = useMutation<InviteLink, ApiError>({
@@ -56,7 +55,10 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
       toast.success("Invite link generated.");
     },
     onError: (err) => {
-      if (err.status === 403) {
+      if (err.status === 409) {
+        // A link already exists — refetch so the UI shows it.
+        qc.invalidateQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+      } else if (err.status === 403) {
         toast.error("You need to be an admin to generate invite links.");
       } else {
         toast.error(err.message ?? "Failed to generate invite link.");
@@ -64,18 +66,33 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
     },
   });
 
-  const resetMutation = useMutation<void, ApiError>({
-    mutationFn: () => resetInviteLink(conversationId),
+  const regenerateMutation = useMutation<InviteLink, ApiError>({
+    mutationFn: () => regenerateInviteLink(conversationId),
+    onSuccess: (data) => {
+      qc.setQueryData<InviteLink>(queryKeys.inviteLink.detail(conversationId), data);
+      toast.success("Invite link regenerated.");
+    },
+    onError: (err) => {
+      if (err.status === 403) {
+        toast.error("You need to be an admin to regenerate invite links.");
+      } else {
+        toast.error(err.message ?? "Failed to regenerate the invite link.");
+      }
+    },
+  });
+
+  const revokeMutation = useMutation<void, ApiError>({
+    mutationFn: () => revokeInviteLink(conversationId),
     onSuccess: () => {
-      qc.removeQueries({ queryKey: queryKeys.inviteLink.detail(conversationId) });
+      qc.setQueryData(queryKeys.inviteLink.detail(conversationId), null);
       toast.success("All previous invite links have been revoked.");
       setConfirmRevoke(false);
     },
     onError: (err) => {
       if (err.status === 403) {
-        toast.error("You need to be an admin to reset invite links.");
+        toast.error("You need to be an admin to revoke invite links.");
       } else {
-        toast.error(err.message ?? "Failed to reset the invite link.");
+        toast.error(err.message ?? "Failed to revoke the invite link.");
       }
     },
   });
@@ -150,8 +167,9 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
   };
 
   const isGenerating = generateMutation.isPending;
-  const isResetting = resetMutation.isPending;
-  const isBusy = isGenerating || isResetting || isLinkLoading;
+  const isRegenerating = regenerateMutation.isPending;
+  const isRevoking = revokeMutation.isPending;
+  const isBusy = isGenerating || isRegenerating || isRevoking || isLinkLoading;
 
   const formattedExpiry = inviteLink?.expiresAt
     ? new Date(inviteLink.expiresAt).toLocaleDateString([], {
@@ -170,7 +188,12 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
         <h3 className="text-sm font-semibold text-text">Invite link</h3>
       </div>
 
-      {!inviteLink ? (
+      {isLinkLoading ? (
+        <div className="rounded-2xl border border-border bg-surface-secondary p-5 flex items-center justify-center gap-2 text-muted">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span className="text-xs">Loading invite link…</span>
+        </div>
+      ) : !inviteLink ? (
         <div className="rounded-2xl border border-border bg-surface-secondary p-5 text-center space-y-3">
           <div className="w-12 h-12 mx-auto rounded-2xl bg-cta/10 text-cta flex items-center justify-center">
             <Link2 className="w-6 h-6" />
@@ -276,7 +299,7 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
           {/* Manage actions */}
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => generateMutation.mutate()}
+              onClick={() => regenerateMutation.mutate()}
               disabled={isBusy}
               className={cn(
                 "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium",
@@ -285,7 +308,7 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
                 "disabled:opacity-50 disabled:cursor-not-allowed",
               )}
             >
-              {isGenerating ? (
+              {isRegenerating ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -304,7 +327,7 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
               )}
             >
               <ShieldOff className="w-3.5 h-3.5" />
-              Revoke links
+              Revoke link
             </button>
           </div>
         </div>
@@ -322,11 +345,11 @@ export function GroupInviteConfig({ conversationId }: GroupInviteConfigProps) {
         open={confirmRevoke}
         title="Revoke invite links?"
         description="Anyone holding the current link won't be able to use it anymore. You can always generate a fresh one afterwards."
-        confirmLabel={resetMutation.isPending ? "Revoking…" : "Revoke links"}
-        loading={resetMutation.isPending}
+        confirmLabel={revokeMutation.isPending ? "Revoking…" : "Revoke link"}
+        loading={revokeMutation.isPending}
         tone="danger"
         onCancel={() => setConfirmRevoke(false)}
-        onConfirm={() => resetMutation.mutate()}
+        onConfirm={() => revokeMutation.mutate()}
       />
     </div>
   );

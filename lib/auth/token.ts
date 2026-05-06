@@ -21,6 +21,24 @@ type BffTokenResponse = {
   error?: string;
 };
 
+// ─── In-memory token tracking (for visibility-based refresh) ─────────────────
+
+let _currentTokenSet: TokenSet | null = null;
+
+export function setCurrentTokenSet(t: TokenSet) {
+  _currentTokenSet = t;
+}
+
+/**
+ * Returns true when the current access token expires within `bufferMs`
+ * (default 5 minutes). Used by the visibilitychange handler to decide
+ * whether to refresh immediately after the tab is un-hidden.
+ */
+export function isTokenExpiringSoon(bufferMs = 5 * 60_000): boolean {
+  if (!_currentTokenSet) return true;
+  return _currentTokenSet.expiresAt - Date.now() < bufferMs;
+}
+
 // ─── JWT decode (no external dependency) ─────────────────────────────────────
 
 export function decodeJwt(token: string): JwtPayload {

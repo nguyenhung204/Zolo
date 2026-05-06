@@ -2,6 +2,7 @@
 
 import { use, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Loader2,
   Users,
@@ -13,6 +14,8 @@ import {
 } from "lucide-react";
 import { useJoinByInvite } from "@/hooks/useGroup";
 import { useAuthStore } from "@/stores/authStore";
+import { queryKeys } from "@/lib/query/keys";
+import type { Conversation } from "@/lib/api/conversations";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -20,9 +23,24 @@ interface Props {
 
 type JoinState = "idle" | "confirm" | "joining" | "joined" | "pending" | "error";
 
+/** Decode a JWT payload without verification — only used to extract conversationId. */
+function decodeJwtConversationId(jwt: string): string | null {
+  try {
+    const part = jwt.split(".")[1];
+    if (!part) return null;
+    const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+    const payload = JSON.parse(json) as Record<string, unknown>;
+    const id = payload.conversationId ?? payload.sub ?? payload.cid;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function JoinGroupPage({ params }: Props) {
   const { token } = use(params);
   const router = useRouter();
+  const qc = useQueryClient();
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const joinMutation = useJoinByInvite();
@@ -44,8 +62,19 @@ export default function JoinGroupPage({ params }: Props) {
       return;
     }
 
+    // If the conversation is already in the cache the user is a member — go straight in.
+    const conversationId = decodeJwtConversationId(token);
+    if (conversationId) {
+      const cached = qc.getQueryData<Conversation[]>(queryKeys.conversations.list());
+      const alreadyMember = cached?.some((c) => c.id === conversationId);
+      if (alreadyMember) {
+        router.replace(`/conversations/${conversationId}`);
+        return;
+      }
+    }
+
     setState("confirm");
-  }, [isAuthenticated, isInitialized, router, token]);
+  }, [isAuthenticated, isInitialized, qc, router, token]);
 
   function handleJoin() {
     setState("joining");
@@ -64,6 +93,14 @@ export default function JoinGroupPage({ params }: Props) {
           }
         },
         onError: (err) => {
+          // Already a member — redirect directly to the conversation.
+          if (err.status === 400) {
+            const conversationId = decodeJwtConversationId(token);
+            if (conversationId) {
+              router.replace(`/conversations/${conversationId}`);
+              return;
+            }
+          }
           setErrorMessage(
             err.status === 401
               ? "This invite link has expired."
@@ -71,9 +108,7 @@ export default function JoinGroupPage({ params }: Props) {
                 ? "This invite link has been revoked."
                 : err.status === 404
                   ? "This group no longer exists."
-                  : err.status === 400
-                    ? "You're already a member or your request is pending."
-                    : "Couldn't join the group. Please try again.",
+                  : "Couldn't join the group. Please try again.",
           );
           setState("error");
         },

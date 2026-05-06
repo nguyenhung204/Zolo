@@ -316,14 +316,32 @@ export interface DeleteConversationForMeResult {
 
 // ─── Invite Links ─────────────────────────────────────────────────────────────
 
+/** GET /conversations/:id/invite-link — fetch the active link (null if none). */
+export async function getInviteLink(conversationId: string): Promise<InviteLink | null> {
+  const res = await apiClient.get(`/conversations/${conversationId}/invite-link`);
+  const link = (res.data.data ?? res.data)?.link ?? null;
+  return link;
+}
+
+/** POST /conversations/:id/invite-link — create a new link. 409 if one already exists. */
 export async function generateInviteLink(conversationId: string): Promise<InviteLink> {
   const res = await apiClient.post(`/conversations/${conversationId}/invite-link`);
   return res.data.data ?? res.data;
 }
 
-export async function resetInviteLink(conversationId: string): Promise<void> {
+/** PUT /conversations/:id/invite-link — revoke the old link and create a new one atomically. */
+export async function regenerateInviteLink(conversationId: string): Promise<InviteLink> {
+  const res = await apiClient.put(`/conversations/${conversationId}/invite-link`);
+  return res.data.data ?? res.data;
+}
+
+/** DELETE /conversations/:id/invite-link — revoke the current link. */
+export async function revokeInviteLink(conversationId: string): Promise<void> {
   await apiClient.delete(`/conversations/${conversationId}/invite-link`);
 }
+
+/** @deprecated Use revokeInviteLink instead. */
+export const resetInviteLink = revokeInviteLink;
 
 export interface JoinByInvitePayload {
   token: string;

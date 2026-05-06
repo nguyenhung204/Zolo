@@ -6,6 +6,8 @@ import { useAuthStore, type AuthUser } from "@/stores/authStore";
 import {
   refreshAccessToken,
   decodeJwt,
+  setCurrentTokenSet,
+  isTokenExpiringSoon,
   type TokenSet,
 } from "./token";
 import { connectChatSocket, connectCallSocket, getChatSocket } from "@/lib/socket/socket";
@@ -36,6 +38,7 @@ export function scheduleRefresh(tokens: TokenSet, onRefreshed: (t: TokenSet) => 
 }
 
 export function applyTokenSet(tokens: TokenSet, setAuth: (data: { token: string; user?: Partial<AuthUser> }) => void) {
+  setCurrentTokenSet(tokens);
   const parsed = decodeJwt(tokens.accessToken);
   setAuth({
     token: tokens.accessToken,
@@ -80,6 +83,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setInitialized();
       });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Re-check token when the user switches back to this tab ────────────────
+  // Browsers throttle setTimeout in background tabs (down to ~1/minute in
+  // Chrome for inactive tabs), so scheduleRefresh may fire late.  This handler
+  // triggers an immediate refresh if the token is expiring soon the moment the
+  // tab becomes visible again — keeping the session alive without any UX glitch.
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState !== "visible") return;
+      if (!isTokenExpiringSoon()) return;
+      try {
+        const fresh = await refreshAccessToken();
+        applyTokenSet(fresh, setAuth);
+        scheduleRefresh(fresh, (t) => applyTokenSet(t, setAuth));
+      } catch {
+        void clearClientAuthSession();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [setAuth]);
 
   // ── Disconnect session and show notice when server revokes the session ─────
   useEffect(() => {
