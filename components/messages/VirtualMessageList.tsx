@@ -174,7 +174,7 @@ function MessageRowComponent({
 
   if (item.kind === "poll") {
     return (
-      <div style={style} className="px-4 py-2 flex justify-center">
+      <div style={style} data-poll-id={item.poll.id} className="px-4 py-2 flex justify-center">
         <PollUI
           pollId={item.poll.id}
           myRole={myRole}
@@ -374,6 +374,7 @@ export function VirtualMessageList({
   const initialScrollDoneRef = useRef(false);
   // always up-to-date items.length without stale-closure issues in callbacks
   const itemsLengthRef = useRef(0);
+  const bottomTargetIndexRef = useRef(0);
   // Refs so the scroll listener always sees fresh values without re-registering
   const hasNextPageRef = useRef(hasNextPage);
   const isFetchingNextPageRef = useRef(isFetchingNextPage);
@@ -417,6 +418,13 @@ export function VirtualMessageList({
   const items = useMemo(() => buildItems(messages, visiblePolls), [messages, visiblePolls]);
   const stableTimelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
+  bottomTargetIndexRef.current = (() => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      if (item?.kind === "poll" && isActivePoll(item.poll)) return i;
+    }
+    return Math.max(0, items.length - 1);
+  })();
   const messageById = useMemo(
     () => new Map(messages.map((m) => [m.messageId, m])),
     [messages],
@@ -566,17 +574,39 @@ export function VirtualMessageList({
     setShowFab(false);
     const doScroll = () => {
       const el = listRef.current?.element;
+      const targetIndex = Math.max(0, bottomTargetIndexRef.current);
+      listRef.current?.scrollToRow({ index: targetIndex, align: "end" });
       if (el) {
-        el.scrollTop = el.scrollHeight;
-      } else {
-        listRef.current?.scrollToRow({ index: itemsLengthRef.current - 1, align: "end" });
+        const targetItem = items[targetIndex];
+        const targetEl =
+          targetItem?.kind === "poll"
+            ? Array.from(el.querySelectorAll<HTMLElement>("[data-poll-id]"))
+                .find((node) => node.dataset.pollId === targetItem.poll.id)
+            : null;
+        if (targetEl) {
+          const containerRect = el.getBoundingClientRect();
+          const targetRect = targetEl.getBoundingClientRect();
+          el.scrollTop += targetRect.bottom - containerRect.bottom;
+        } else {
+          el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+        }
       }
     };
     doScroll();
-    const t1 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 80);
-    const t2 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 220);
-    const t3 = setTimeout(() => { isScrollingToBottomRef.current = false; }, 320);
-    scrollToBottomTimersRef.current = [t1, t2, t3];
+    requestAnimationFrame(() => { if (atBottomRef.current) doScroll(); });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { if (atBottomRef.current) doScroll(); });
+    });
+    const t1 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 120);
+    const t2 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 360);
+    const t3 = setTimeout(() => { if (atBottomRef.current) doScroll(); }, 720);
+    const t4 = setTimeout(() => { isScrollingToBottomRef.current = false; }, 820);
+    scrollToBottomTimersRef.current = [
+      t1,
+      t2,
+      t3,
+      t4,
+    ];
   }, []);
 
   // Reset on conversation switch
@@ -655,6 +685,7 @@ export function VirtualMessageList({
         const scrollTop = Math.max(0, offsetBefore + targetH / 2 - containerEl.clientHeight / 2);
         containerEl.scrollTo({ top: scrollTop });
       }
+      listRef.current.scrollToRow({ index: targetIndex, align: "center" });
 
       const targetItem = items[targetIndex];
       const centerRenderedTarget = () => {
@@ -672,8 +703,10 @@ export function VirtualMessageList({
       requestAnimationFrame(() => { centerRenderedTarget(); });
 
       const doScroll = () => {
-        listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
-        requestAnimationFrame(() => { centerRenderedTarget(); });
+        if (!centerRenderedTarget()) {
+          listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
+          requestAnimationFrame(() => { centerRenderedTarget(); });
+        }
       };
 
       // Pass 2 & 3 — re-center after ResizeObserver measures the now-visible rows.
@@ -889,8 +922,13 @@ export function VirtualMessageList({
       setMessageMode("LIVE");
       clearPendingJumpedMessages(conversationId);
       getQueryClient().removeQueries({ queryKey: queryKeys.messages.list(conversationId) });
-      void refetch();
       initialScrollDoneRef.current = false;
+      void refetch().finally(() => {
+        requestAnimationFrame(() => {
+          initialScrollDoneRef.current = true;
+          domScrollToBottom();
+        });
+      });
       return;
     }
     domScrollToBottom();
@@ -942,7 +980,7 @@ export function VirtualMessageList({
         rowProps={rowProps}
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
-        overscanCount={8}
+        overscanCount={messageMode === "JUMPED" ? 50 : 12}
       />
       <ScrollToBottomFab
         show={showFab || (messageMode === "JUMPED" && pendingJumpedCount > 0)}
