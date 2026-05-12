@@ -393,6 +393,8 @@ export function VirtualMessageList({
   // Jump lock — prevents handleScroll from flipping atBottomRef while re-scroll passes run.
   const isJumpingRef = useRef(false);
   const jumpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const historyRestoreTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const isRestoringHistoryRef = useRef(false);
 
   // Flatten pages — oldest first
   const messages: Message[] = useMemo(
@@ -433,7 +435,7 @@ export function VirtualMessageList({
   const captureScrollAnchor = useCallback((container: HTMLDivElement) => {
     const containerRect = container.getBoundingClientRect();
     const anchor = Array.from(container.querySelectorAll<HTMLElement>("[data-message-id]"))
-      .find((node) => node.getBoundingClientRect().bottom >= containerRect.top + 1);
+      .find((node) => node.getBoundingClientRect().top >= containerRect.top + 24);
     const anchorRect = anchor?.getBoundingClientRect();
     scrollSnapRef.current = {
       messageId: anchor?.dataset.messageId ?? null,
@@ -441,6 +443,25 @@ export function VirtualMessageList({
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
     };
+  }, []);
+
+  const restoreScrollAnchor = useCallback((snap: NonNullable<typeof scrollSnapRef.current>) => {
+    const el = listRef.current?.element;
+    if (!el) return false;
+    if (snap.messageId) {
+      const targetEl = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
+        .find((node) => node.dataset.messageId === snap.messageId);
+      if (targetEl) {
+        const containerRect = el.getBoundingClientRect();
+        const targetRect = targetEl.getBoundingClientRect();
+        el.scrollTop += targetRect.top - containerRect.top - snap.top;
+        prevScrollTopRef.current = el.scrollTop;
+        return true;
+      }
+    }
+    el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
+    prevScrollTopRef.current = el.scrollTop;
+    return true;
   }, []);
 
   useEffect(() => {
@@ -580,25 +601,24 @@ export function VirtualMessageList({
   useLayoutEffect(() => {
     const snap = scrollSnapRef.current;
     if (!snap) return;
-    const el = listRef.current?.element;
-    if (!el) return;
-    if (snap.messageId) {
-      const targetEl = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
-        .find((node) => node.dataset.messageId === snap.messageId);
-      if (targetEl) {
-        const containerRect = el.getBoundingClientRect();
-        const targetRect = targetEl.getBoundingClientRect();
-        el.scrollTop += targetRect.top - containerRect.top - snap.top;
-      } else {
-        el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
-      }
-    } else {
-      el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
-    }
+    historyRestoreTimersRef.current.forEach(clearTimeout);
+    historyRestoreTimersRef.current = [];
+    isRestoringHistoryRef.current = true;
+    restoreScrollAnchor(snap);
+    requestAnimationFrame(() => restoreScrollAnchor(snap));
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => restoreScrollAnchor(snap));
+    });
+    const t1 = setTimeout(() => restoreScrollAnchor(snap), 80);
+    const t2 = setTimeout(() => restoreScrollAnchor(snap), 180);
+    const t3 = setTimeout(() => {
+      restoreScrollAnchor(snap);
+      isRestoringHistoryRef.current = false;
+    }, 320);
+    historyRestoreTimersRef.current = [t1, t2, t3];
     scrollSnapRef.current = null;
-    prevScrollTopRef.current = el.scrollTop;
     prevCountRef.current = stableTimelineCount;
-  }, [stableTimelineCount]);
+  }, [restoreScrollAnchor, stableTimelineCount]);
 
   // Scroll to the absolute DOM bottom — reliable regardless of virtual row heights.
   // Retries at 80 ms and 220 ms so positions stabilise as ResizeObserver fires.
@@ -660,6 +680,9 @@ export function VirtualMessageList({
     jumpTimersRef.current.forEach(clearTimeout);
     jumpTimersRef.current = [];
     isJumpingRef.current = false;
+    historyRestoreTimersRef.current.forEach(clearTimeout);
+    historyRestoreTimersRef.current = [];
+    isRestoringHistoryRef.current = false;
     setMessageMode("LIVE");
     clearPendingJumpedMessages(conversationId);
   }, [conversationId]);
@@ -669,6 +692,7 @@ export function VirtualMessageList({
     return () => {
       scrollToBottomTimersRef.current.forEach(clearTimeout);
       jumpTimersRef.current.forEach(clearTimeout);
+      historyRestoreTimersRef.current.forEach(clearTimeout);
     };
   }, []);
   // Jump to a specific message offset when requested (e.g. deep-link, pinned message)
@@ -889,7 +913,7 @@ export function VirtualMessageList({
 
       // Only update atBottom tracking when not in a programmatic scroll so that
       // height-measurement reflows don't incorrectly flip atBottomRef to false.
-      if (!isScrollingToBottomRef.current && !isJumpingRef.current) {
+      if (!isScrollingToBottomRef.current && !isJumpingRef.current && !isRestoringHistoryRef.current) {
         atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
         setShowFab(!atBottomRef.current);
         onScrollChange?.(atBottomRef.current, 0);
@@ -899,7 +923,7 @@ export function VirtualMessageList({
       if (
         initialScrollDoneRef.current &&
         scrollDirection === "backward" &&
-        scrollTop < 200 &&
+        scrollTop < Math.max(900, clientHeight * 1.5) &&
         hasNextPageRef.current &&
         !isFetchingNextPageRef.current
       ) {
@@ -964,7 +988,6 @@ export function VirtualMessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [items, userId, messageById, memberMap, otherMembers, myRole, canPinMessages, allowMemberMessage, setReplyTo, handleEdit, handleDelete, handleRevoke, handleForward, handlePin, handleViewDetails, handleRetry, highlightMessageId],
   );
-
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
