@@ -8,6 +8,7 @@ export type MessageDeliveryStatus = "sending" | "sent" | "delivered" | "read" | 
 
 export type SystemMessageAction =
   | "MEMBER_ADDED"
+  | "MEMBER_INVITED"
   | "MEMBER_LEFT"
   | "MEMBER_REMOVED"
   | "MEMBER_KICKED"

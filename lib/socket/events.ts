@@ -6,7 +6,7 @@ export type MessageType = "text" | "image" | "file" | "audio" | "video" | "syste
 export type MediaStatus = "created" | "uploaded" | "processing" | "ready" | "failed";
 export type ModerationAction = "mute_audio" | "mute_video" | "disable_screen" | "kick";
 export type RecordingStatus = "recording" | "paused" | "stopped" | "failed";
-export type ConversationMemberAddedSource = "member_add" | "invite_link" | "join_approved";
+export type ConversationMemberAddedSource = "member_add" | "member_invite" | "invite_link" | "join_approved";
 export type ConversationMemberRemovedSource = "member_left" | "member_removed";
 
 export interface WsMessage {
@@ -427,7 +427,9 @@ export interface ServerEvents {
     userName?: string;
     requestId: string;
     requestMessage: string | null;
-    source?: "invite_link" | "request";
+    source?: "invite_link" | "request" | "member_invite";
+    invitedBy?: string;
+    invitedByName?: string;
     timestamp: string;
   }) => void;
 

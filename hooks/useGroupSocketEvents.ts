@@ -341,6 +341,9 @@ export function useGroupSocketEvents(conversationId: string) {
         requestMessage: payload.requestMessage,
         status: "pending",
         createdAt: payload.timestamp,
+        source: payload.source,
+        invitedBy: payload.invitedBy,
+        invitedByName: payload.invitedByName,
         user: { id: payload.userId, displayName: payload.userName ?? payload.userId, avatarUrl: null },
       };
       qc.setQueryData<JoinRequest[]>(
@@ -353,12 +356,13 @@ export function useGroupSocketEvents(conversationId: string) {
       );
       const myRole = cachedMembers?.find((m) => m.userId === myId)?.role?.toLowerCase();
       if (myRole === "owner" || myRole === "admin") {
-        toast.info(
-          payload.source === "invite_link"
+        const toastText =
+          payload.source === "member_invite"
+            ? `${payload.invitedByName ?? "Someone"} invited ${payload.userName ?? "someone"} to join the group.`
+            : payload.source === "invite_link"
             ? "Someone requested to join via invite link."
-            : "Someone has requested to join the group.",
-          { duration: 5_000 }
-        );
+            : "Someone has requested to join the group.";
+        toast.info(toastText, { duration: 5_000 });
       }
     };
 

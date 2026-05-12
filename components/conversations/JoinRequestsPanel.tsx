@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, X, Clock, Users, Loader2 } from "lucide-react";
+import { Check, X, Clock, Users, Loader2, Link, UserPlus, Hand } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useJoinRequests, useReviewJoinRequest } from "@/hooks/useGroup";
 import type { JoinRequest } from "@/lib/api/group";
@@ -9,6 +9,33 @@ import type { JoinRequest } from "@/lib/api/group";
 
 interface JoinRequestsPanelProps {
   conversationId: string;
+}
+
+// ─── Source label ─────────────────────────────────────────────────────────────
+
+function SourceBadge({ request }: { request: JoinRequest }) {
+  if (request.source === "member_invite") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-cta/80">
+        <UserPlus className="w-3 h-3" />
+        Invited by {request.invitedByName ?? "a member"}
+      </span>
+    );
+  }
+  if (request.source === "invite_link") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted">
+        <Link className="w-3 h-3" />
+        Via invite link
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted">
+      <Hand className="w-3 h-3" />
+      Requested to join
+    </span>
+  );
 }
 
 // ─── Single request row ───────────────────────────────────────────────────────
@@ -51,6 +78,7 @@ function RequestRow({
           <p className="text-sm font-medium text-text truncate">{displayName}</p>
           <span className="text-xs text-muted shrink-0">{formattedDate}</span>
         </div>
+        <SourceBadge request={request} />
         {request.requestMessage && (
           <p className="text-xs text-muted mt-0.5 line-clamp-2 leading-relaxed">
             &ldquo;{request.requestMessage}&rdquo;

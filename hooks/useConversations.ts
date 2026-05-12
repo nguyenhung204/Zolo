@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   getConversations,
   getConversation,
@@ -214,10 +215,17 @@ export function useAddConversationMembers() {
   return useMutation({
     mutationFn: ({ conversationId, userIds }: { conversationId: string; userIds: string[] }) =>
       addConversationMembers(conversationId, userIds),
-    onSuccess: (_data, { conversationId }) => {
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
-      qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+    onSuccess: (data, { conversationId }) => {
+      if (data.requiresApproval) {
+        toast.info("Invite sent. Awaiting admin approval.");
+        // The WS group:join_requested event will update the pending list automatically.
+      } else {
+        toast.success("Members added successfully.");
+        // The WS conversation:member-added event updates the list; invalidate as fallback.
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.members(conversationId) });
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
+        qc.invalidateQueries({ queryKey: queryKeys.conversations.list() });
+      }
     },
   });
 }

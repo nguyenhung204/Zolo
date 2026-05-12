@@ -42,6 +42,9 @@ function buildSystemText(
       }
       return `${actor} added ${targetList} to the group`;
 
+    case "MEMBER_INVITED":
+      return `${actor} invited ${targetList} to the group (pending approval)`;
+
     case "MEMBER_LEFT":
       return metadata?.ownershipTransferredTo
         ? `${actor} transferred ownership and left the group`

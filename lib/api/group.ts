@@ -227,6 +227,9 @@ export interface JoinRequest {
   requestMessage: string | null;
   status: "pending" | "approved" | "rejected";
   createdAt: string;
+  source?: "request" | "invite_link" | "member_invite";
+  invitedBy?: string;
+  invitedByName?: string;
   /** Enriched profile. Present when the socket emits the event with `userName`;
    * absent (undefined) when fetched from REST (backend does not join profile data). */
   user?: JoinRequestUser;
@@ -240,6 +243,9 @@ function normalizeJoinRequest(raw: Record<string, unknown>): JoinRequest {
     requestMessage: (raw.requestMessage as string | null) ?? null,
     status: (raw.status as JoinRequest["status"]) ?? "pending",
     createdAt: raw.createdAt as string,
+    source: raw.source as JoinRequest["source"] | undefined,
+    invitedBy: raw.invitedBy as string | undefined,
+    invitedByName: raw.invitedByName as string | undefined,
     // Backend does not enrich with profile; carry it through if present.
     user: raw.user
       ? (raw.user as JoinRequestUser)
@@ -257,7 +263,9 @@ export interface GroupJoinRequestedEvent {
   userName?: string;
   requestId: string;
   requestMessage: string | null;
-  source?: "invite_link" | "request";
+  source?: "invite_link" | "request" | "member_invite";
+  invitedBy?: string;
+  invitedByName?: string;
   timestamp: string;
 }
 

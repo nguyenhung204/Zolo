@@ -1039,7 +1039,7 @@ export function useSocket() {
       toast.error(`This group has been disbanded${disbandedByName ? ` by ${disbandedByName}` : ""}.`);
     });
 
-    socket.on("group:join_requested", ({ conversationId }: { conversationId: string; userId: string; userName?: string; requestId: string; requestMessage: string | null; source?: "invite_link" | "request"; timestamp: string }) => {
+    socket.on("group:join_requested", ({ conversationId }: { conversationId: string; userId: string; userName?: string; requestId: string; requestMessage: string | null; source?: "invite_link" | "request" | "member_invite"; invitedBy?: string; invitedByName?: string; timestamp: string }) => {
       qc.invalidateQueries({ queryKey: queryKeys.joinRequests.list(conversationId) });
     });
 

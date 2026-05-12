@@ -1450,7 +1450,7 @@ export function ConversationSettingsModal({ conversationId, open, onClose }: Pro
             <div className="p-5">
           <div className="space-y-3">
                 <SectionHeader title={`Members (${membersLoading ? "…" : members.length})`} />
-                {canEdit && (
+                {!isDirect && (
                   <button
                     onClick={() => setAddMemberOpen(true)}
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-cta border border-cta/30 rounded-xl hover:bg-cta/10 transition cursor-pointer"

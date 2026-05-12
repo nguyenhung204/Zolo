@@ -230,11 +230,16 @@ export async function updateConversationInfo(
   return res.data.data;
 }
 
+export type AddMembersResult =
+  | { success: true; requiresApproval: false; addedUserIds: string[] }
+  | { success: true; requiresApproval: true; pendingRequests: Array<{ requestId: string; userId: string }>; skippedAlreadyMembers: string[]; skippedAlreadyRequested: string[] };
+
 export async function addConversationMembers(
   id: string,
   userIds: string[]
-): Promise<void> {
-  await apiClient.post(`/conversations/${id}/members`, { userIds });
+): Promise<AddMembersResult> {
+  const res = await apiClient.post(`/conversations/${id}/members`, { userIds });
+  return res.data.data as AddMembersResult;
 }
 
 export async function removeConversationMember(
