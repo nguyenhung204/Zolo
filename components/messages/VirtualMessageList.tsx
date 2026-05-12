@@ -588,49 +588,48 @@ export function VirtualMessageList({
       jumpTimersRef.current = [];
       isJumpingRef.current = true;
 
-      // ── Pre-seed height estimates ──────────────────────────────────────────────────
-      // react-window computes the scroll offset for scrollToRow(N) by summing
-      // getRowHeight(0..N-1). Unmeasured rows fall back to the 56px default, but
-      // polls are ~260px, system messages ~36px, dividers ~36px — so the
-      // cumulative error before the target easily reaches 300-500px.
-      // Seeding better estimates before pass-1 closes most of that gap.
+      // ── Pass 1: direct DOM scroll with per-type height estimates ────────────────────
+      // scrollToRow sums getRowHeight(0..N-1). Unmeasured rows return the 56px
+      // default, but polls (~260px), system msgs (~36px) and dividers (~36px)
+      // are far off, causing 300-500px cumulative error on first click.
+      // Fix: compute our own offset and call the DOM element's scrollTo directly
+      // so the height map is bypassed entirely for pass-1.
       const JUMP_GROUP_GAP_MS = 5 * 60 * 1000;
-      for (let i = 0; i < items.length; i++) {
-        if (rowHeight.getRowHeight(i) !== undefined) continue; // already measured
-        const it = items[i];
-        let est = 56;
-        if (!it) { est = 56; }
-        else if (it.kind === "padding") { est = 16; }
-        else if (it.kind === "divider") { est = 36; }
-        else if (it.kind === "poll") { est = 260; }
-        else if (it.kind === "message") {
+      const estimateH = (it: ListItem | undefined): number => {
+        if (!it) return 56;
+        if (it.kind === "padding") return 16;
+        if (it.kind === "divider") return 36;
+        if (it.kind === "poll") return 260;
+        if (it.kind === "message") {
           const { msg, prev } = it;
-          if (msg.type === "system") { est = 36; }
-          else if (msg.type === "call_summary") { est = 64; }
-          else {
-            const isGroupStart = !prev ||
-              prev.senderId !== msg.senderId ||
-              prev.type === "system" ||
-              prev.type === "call_summary" ||
-              msg.type === "system" ||
-              msg.type === "call_summary" ||
-              new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() >= JUMP_GROUP_GAP_MS;
-            est = isGroupStart ? 64 : 40;
-          }
+          if (msg.type === "system") return 36;
+          if (msg.type === "call_summary") return 64;
+          const isGroupStart = !prev ||
+            prev.senderId !== msg.senderId ||
+            prev.type === "system" || prev.type === "call_summary" ||
+            new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() >= JUMP_GROUP_GAP_MS;
+          return isGroupStart ? 64 : 40;
         }
-        rowHeight.setRowHeight(i, est);
+        return 56;
+      };
+      const containerEl = listRef.current?.element;
+      if (containerEl) {
+        let offsetBefore = 0;
+        for (let i = 0; i < targetIndex; i++) {
+          const h = rowHeight.getRowHeight(i);
+          offsetBefore += (h !== undefined && h !== 56) ? h : estimateH(items[i]);
+        }
+        const targetH = estimateH(items[targetIndex]);
+        const scrollTop = Math.max(0, offsetBefore + targetH / 2 - containerEl.clientHeight / 2);
+        containerEl.scrollTo({ top: scrollTop });
       }
 
       const doScroll = () =>
         listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
 
-      // Pass 1 — with seeded heights: landing is now close to center.
-      doScroll();
-
-      // Pass 2 & 3 — re-center after ResizeObserver cycles replace estimates
-      //               with actual measured heights.
-      const t1 = window.setTimeout(doScroll, 100);
-      const t2 = window.setTimeout(() => {
+      // Pass 2 & 3 — re-center after ResizeObserver measures the now-visible rows.
+      const t1 = setTimeout(doScroll, 100);
+      const t2 = setTimeout(() => {
         doScroll();
         isJumpingRef.current = false;
       }, 320);

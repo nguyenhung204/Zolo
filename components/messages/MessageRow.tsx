@@ -302,10 +302,6 @@ export function MessageRow({
                 </div>
               )}
             </div>
-          ) : isSticker ? (
-            <div className="p-0.5">
-              <AnimatedSticker url={message.metadata?.url ?? ""} size={130} alt="sticker" />
-            </div>
           ) : isRevoked ? (
             <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-[18px] border border-border/50 text-muted text-xs italic select-none">
               <Ban className="w-3 h-3 shrink-0" />
@@ -314,6 +310,10 @@ export function MessageRow({
           ) : isDeleted ? (
             <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-[18px] border border-border/50 text-muted text-xs italic select-none">
               Deleted
+            </div>
+          ) : isSticker ? (
+            <div className="p-0.5">
+              <AnimatedSticker url={message.metadata?.url ?? ""} size={130} alt="sticker" />
             </div>
           ) : (
             <div className={cn(
