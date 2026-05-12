@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useMemo, useState } from "react";
+import { useRef, useEffect, useCallback, useMemo, useState, useLayoutEffect } from "react";
 import {
   List,
   useDynamicRowHeight,
@@ -369,7 +369,7 @@ export function VirtualMessageList({
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const prevCountRef = useRef(0);
   // Snapshot before history fetch for scroll restoration
-  const scrollSnapRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  const scrollSnapRef = useRef<{ messageId: string | null; top: number; scrollTop: number; scrollHeight: number } | null>(null);
   // Whether initial scroll-to-bottom has been done for this conversation
   const initialScrollDoneRef = useRef(false);
   // always up-to-date items.length without stale-closure issues in callbacks
@@ -429,6 +429,19 @@ export function VirtualMessageList({
     () => new Map(messages.map((m) => [m.messageId, m])),
     [messages],
   );
+
+  const captureScrollAnchor = useCallback((container: HTMLDivElement) => {
+    const containerRect = container.getBoundingClientRect();
+    const anchor = Array.from(container.querySelectorAll<HTMLElement>("[data-message-id]"))
+      .find((node) => node.getBoundingClientRect().bottom >= containerRect.top + 1);
+    const anchorRect = anchor?.getBoundingClientRect();
+    scrollSnapRef.current = {
+      messageId: anchor?.dataset.messageId ?? null,
+      top: anchorRect ? anchorRect.top - containerRect.top : 0,
+      scrollTop: container.scrollTop,
+      scrollHeight: container.scrollHeight,
+    };
+  }, []);
 
   useEffect(() => {
     if (!latestActivePoll) return;
@@ -563,6 +576,29 @@ export function VirtualMessageList({
         });
     }
   }, [messages, setUserProfile]);
+
+  useLayoutEffect(() => {
+    const snap = scrollSnapRef.current;
+    if (!snap) return;
+    const el = listRef.current?.element;
+    if (!el) return;
+    if (snap.messageId) {
+      const targetEl = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
+        .find((node) => node.dataset.messageId === snap.messageId);
+      if (targetEl) {
+        const containerRect = el.getBoundingClientRect();
+        const targetRect = targetEl.getBoundingClientRect();
+        el.scrollTop += targetRect.top - containerRect.top - snap.top;
+      } else {
+        el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
+      }
+    } else {
+      el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
+    }
+    scrollSnapRef.current = null;
+    prevScrollTopRef.current = el.scrollTop;
+    prevCountRef.current = stableTimelineCount;
+  }, [stableTimelineCount]);
 
   // Scroll to the absolute DOM bottom — reliable regardless of virtual row heights.
   // Retries at 80 ms and 220 ms so positions stabilise as ResizeObserver fires.
@@ -769,19 +805,8 @@ export function VirtualMessageList({
     const oldCount = prevCountRef.current;
     if (newCount === oldCount) return;
 
-    const snap = scrollSnapRef.current;
-    if (snap !== null && newCount > oldCount) {
-      // History prepended — restore by pixel delta.
-      // Wrap in two rAF frames so ResizeObserver settles before we read scrollHeight.
-      scrollSnapRef.current = null;
-      const el = listRef.current?.element;
-      if (el) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            el.scrollTop = snap.scrollTop + (el.scrollHeight - snap.scrollHeight);
-          });
-        });
-      }
+    if (scrollSnapRef.current !== null && newCount > oldCount) {
+      return;
     } else if (newCount > oldCount) {
       // New message arrived — auto-scroll if user is at bottom OR it's their own message
       const lastItem = items[items.length - 2];
@@ -879,9 +904,7 @@ export function VirtualMessageList({
         !isFetchingNextPageRef.current
       ) {
         // Snapshot before fetch so we can restore position after prepend
-        if (scrollSnapRef.current === null) {
-          scrollSnapRef.current = { scrollTop, scrollHeight };
-        }
+        if (scrollSnapRef.current === null) captureScrollAnchor(target);
         fetchNextPageRef.current();
       }
       const newestPage = data?.pages[0];
@@ -896,7 +919,7 @@ export function VirtualMessageList({
         void loadMoreAfter();
       }
     },
-    [data?.pages, loadMoreAfter, messageMode, onScrollChange]
+    [captureScrollAnchor, data?.pages, loadMoreAfter, messageMode, onScrollChange]
   );
 
   const handleRowsRendered = useCallback(

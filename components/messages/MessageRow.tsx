@@ -167,29 +167,6 @@ export function MessageRow({
     );
   }
 
-  const inviteMatch = message.type === "text" && INVITE_LINK_RE.exec(message.content.trim());
-  if (inviteMatch) {
-    const [, groupName, joinUrl] = inviteMatch;
-    return (
-      <div
-        className={cn("group flex items-end gap-2 px-3", isMine ? "flex-row-reverse" : "flex-row")}
-        style={{ marginBottom: isGroupEnd ? "var(--msg-gap-end, 0.75rem)" : "var(--msg-gap-mid, 0.125rem)" }}
-      >
-        <div className="w-8 shrink-0 self-end">
-          {!isMine && isGroupEnd && (
-            <UserAvatar userId={message.senderId} name={senderName} avatarUrl={senderAvatarUrl} size="sm" showPresence={false} />
-          )}
-        </div>
-        <GroupInviteCard
-          groupName={groupName}
-          joinUrl={joinUrl}
-          createdAt={message.createdAt}
-          isMine={isMine}
-        />
-      </div>
-    );
-  }
-
   if (isCallSummary) {
     const otherMemberIds = otherMembers.map((m) => m.userId);
     return (
@@ -447,6 +424,18 @@ function MessageContent({
         ? <AnimatedSticker url={message.metadata.url} size={130} alt="sticker" />
         : null;
     case "text": {
+      const inviteMatch = INVITE_LINK_RE.exec(message.content.trim());
+      if (inviteMatch) {
+        const [, groupName, joinUrl] = inviteMatch;
+        return (
+          <GroupInviteCard
+            groupName={groupName}
+            joinUrl={joinUrl}
+            createdAt={message.createdAt}
+            isMine={isMine}
+          />
+        );
+      }
       const firstUrl = extractFirstUrl(message.content);
       return (
         <>

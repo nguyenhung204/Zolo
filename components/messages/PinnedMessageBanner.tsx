@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, Info, Contact } from "lucide-react";
+import { Pin, ChevronUp, ChevronDown, X, FileText, Image, Mic, Sticker, Video, Info, Contact, QrCode } from "lucide-react";
 import { usePinnedMessages } from "@/hooks/useMessages";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/query/keys";
@@ -14,6 +14,8 @@ interface PinnedMessageBannerProps {
   conversationId: string;
   onViewDetails?: (msg: Message) => void;
 }
+
+const INVITE_LINK_RE = /^Join "(.+)" on Zolo:\n(https?:\/\/\S+)$/;
 
 function mediaPreview(message: Message) {
   const attachments = message.attachments ?? [];
@@ -50,7 +52,11 @@ function mediaPreview(message: Message) {
 
 function pinnedPreview(message: Message) {
   if (message.isRevoked) return { icon: null, label: "Tin nhắn đã thu hồi" };
-  if (message.type === "text" || !message.type) return { icon: null, label: message.content || "…" };
+  if (message.type === "text" || !message.type) {
+    const inviteMatch = INVITE_LINK_RE.exec(message.content.trim());
+    if (inviteMatch) return { icon: QrCode, label: `QR mời nhóm: ${inviteMatch[1]}` };
+    return { icon: null, label: message.content || "…" };
+  }
   if (message.type === "image") return { icon: Image, label: "Hình ảnh" };
   if (message.type === "video") return { icon: Video, label: "Video" };
   if (message.type === "audio") return { icon: Mic, label: "Âm thanh" };
