@@ -356,13 +356,7 @@ export function useGroupSocketEvents(conversationId: string) {
       );
       const myRole = cachedMembers?.find((m) => m.userId === myId)?.role?.toLowerCase();
       if (myRole === "owner" || myRole === "admin") {
-        const toastText =
-          payload.source === "member_invite"
-            ? `${payload.invitedByName ?? "Someone"} invited ${payload.userName ?? "someone"} to join the group.`
-            : payload.source === "invite_link"
-            ? "Someone requested to join via invite link."
-            : "Someone has requested to join the group.";
-        toast.info(toastText, { duration: 5_000 });
+        // Badge is shown via the Requests tab counter — no toast needed
       }
     };
 

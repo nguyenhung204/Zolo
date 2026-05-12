@@ -395,49 +395,62 @@ export function VirtualMessageList({
     [data?.pages],
   );
 
-  const visiblePolls = supportsPolls
-    ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
-    : [];
-  const items = buildItems(messages, visiblePolls);
+  const visiblePolls = useMemo(
+    () => supportsPolls
+      ? polls.filter((poll) => poll.id && poll.question && poll.options.length > 0)
+      : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [supportsPolls, polls],
+  );
+  const items = useMemo(() => buildItems(messages, visiblePolls), [messages, visiblePolls]);
   const stableTimelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
-  const messageById = new Map(messages.map((m) => [m.messageId, m]));
+  const messageById = useMemo(
+    () => new Map(messages.map((m) => [m.messageId, m])),
+    [messages],
+  );
 
-  const memberMap = new Map(members.map((m) => [m.userId, m as ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }]));
+  const memberMap = useMemo(
+    () => new Map(members.map((m) => [m.userId, m as ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }])),
+    [members],
+  );
 
-  const memberCursors = new Map<string, { seen: number; delivered: number }>();
-  for (const page of data?.pages ?? []) {
-    for (const [cursorUserId, cursor] of Object.entries(page.memberCursors ?? {})) {
-      const prev = memberCursors.get(cursorUserId);
-      memberCursors.set(cursorUserId, {
-        seen: Math.max(prev?.seen ?? 0, Number(cursor.seen ?? 0)),
-        delivered: Math.max(prev?.delivered ?? 0, Number(cursor.delivered ?? 0)),
+  const otherMembers = useMemo(() => {
+    const memberCursors = new Map<string, { seen: number; delivered: number }>();
+    for (const page of data?.pages ?? []) {
+      for (const [cursorUserId, cursor] of Object.entries(page.memberCursors ?? {})) {
+        const prev = memberCursors.get(cursorUserId);
+        memberCursors.set(cursorUserId, {
+          seen: Math.max(prev?.seen ?? 0, Number(cursor.seen ?? 0)),
+          delivered: Math.max(prev?.delivered ?? 0, Number(cursor.delivered ?? 0)),
+        });
+      }
+    }
+    const result = members
+      .filter((m) => m.userId !== userId)
+      .map((m) => ({
+        userId: m.userId,
+        lastSeenOffset: Math.max(Number(m.lastSeenOffset ?? 0), memberCursors.get(m.userId)?.seen ?? 0),
+        lastDeliveredOffset: Math.max(Number(m.lastDeliveredOffset ?? 0), memberCursors.get(m.userId)?.delivered ?? 0),
+        avatarUrl: (m as { avatarUrl?: string | null }).avatarUrl ?? null,
+        displayName: (m as { displayName?: string }).displayName,
+        username: (m as { username?: string }).username,
+      }));
+    const memberIds = new Set(result.map((m) => m.userId));
+    for (const [cursorUserId, cursor] of memberCursors) {
+      if (cursorUserId === userId || memberIds.has(cursorUserId)) continue;
+      result.push({
+        userId: cursorUserId,
+        lastSeenOffset: cursor.seen,
+        lastDeliveredOffset: cursor.delivered,
+        avatarUrl: null,
+        displayName: undefined,
+        username: undefined,
       });
     }
-  }
-
-  const otherMembers = members
-    .filter((m) => m.userId !== userId)
-    .map((m) => ({
-      userId: m.userId,
-      lastSeenOffset: Math.max(Number(m.lastSeenOffset ?? 0), memberCursors.get(m.userId)?.seen ?? 0),
-      lastDeliveredOffset: Math.max(Number(m.lastDeliveredOffset ?? 0), memberCursors.get(m.userId)?.delivered ?? 0),
-      avatarUrl: (m as { avatarUrl?: string | null }).avatarUrl ?? null,
-      displayName: (m as { displayName?: string }).displayName,
-      username: (m as { username?: string }).username,
-    }));
-  const memberIds = new Set(otherMembers.map((m) => m.userId));
-  for (const [cursorUserId, cursor] of memberCursors) {
-    if (cursorUserId === userId || memberIds.has(cursorUserId)) continue;
-    otherMembers.push({
-      userId: cursorUserId,
-      lastSeenOffset: cursor.seen,
-      lastDeliveredOffset: cursor.delivered,
-      avatarUrl: null,
-      displayName: undefined,
-      username: undefined,
-    });
-  }
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members, data?.pages, userId]);
 
   // ─── Populate profiles for message senders ────────────────────────────────
   const setUserProfile = usePresenceStore((s) => s.setUserProfile);
@@ -568,13 +581,24 @@ export function VirtualMessageList({
         window.setTimeout(() => setHighlightMessageId(null), 2200);
       }
       initialScrollDoneRef.current = true;
-      prevCountRef.current = messages.length;
+      // Use stableTimelineCount (messages + polls) so the "new messages" effect
+      // doesn't incorrectly fire a domScrollToBottom after a jump when polls exist.
+      prevCountRef.current = stableTimelineCount;
       atBottomRef.current = false;
       setShowFab(true);
+      // Clear only on success so a subsequent render (with fully-loaded items) can retry.
+      useConversationStore.getState().setTargetOffset(null);
+      setTargetMessageId(null);
+      return;
     }
-    useConversationStore.getState().setTargetOffset(null);
-    setTargetMessageId(null);
-  }, [targetOffset, targetMessageId, items, messages.length, setTargetMessageId]);
+    // Target not yet in items — leave targetOffset set so the effect retries when
+    // items updates. Failsafe: clear after 5 s to avoid a permanently stuck state.
+    const clearTimer = window.setTimeout(() => {
+      useConversationStore.getState().setTargetOffset(null);
+      setTargetMessageId(null);
+    }, 5000);
+    return () => window.clearTimeout(clearTimer);
+  }, [targetOffset, targetMessageId, items, messages.length, stableTimelineCount, setTargetMessageId]);
 
   // Scroll to bottom when the first page of messages arrives for this conversation.
   // Uses DOM-native el.scrollTop = el.scrollHeight so virtual coordinate inaccuracies
@@ -757,6 +781,14 @@ export function VirtualMessageList({
     domScrollToBottom();
   }, [messageMode, setMessageMode, clearPendingJumpedMessages, conversationId, refetch, domScrollToBottom]);
 
+  // Stable rowProps object — prevents react-window from re-rendering every row
+  // whenever unrelated component state (e.g. showFab, isFetchingAfter) changes.
+  const rowProps = useMemo(
+    () => ({ items, userId, messageById, memberMap, otherMembers, myRole, canPinMessages, allowMemberMessage, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry, highlightMessageId }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, userId, messageById, memberMap, otherMembers, myRole, canPinMessages, allowMemberMessage, setReplyTo, handleEdit, handleDelete, handleRevoke, handleForward, handlePin, handleViewDetails, handleRetry, highlightMessageId],
+  );
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -792,7 +824,7 @@ export function VirtualMessageList({
         rowCount={items.length}
         rowHeight={rowHeight}
         rowComponent={MessageRowComponent}
-        rowProps={{ items, userId, messageById, memberMap, otherMembers, myRole, canPinMessages, allowMemberMessage, setReplyTo, onEdit: handleEdit, onDelete: handleDelete, onRevoke: handleRevoke, onForward: handleForward, onPin: handlePin, onViewDetails: handleViewDetails, onRetry: handleRetry, highlightMessageId }}
+        rowProps={rowProps}
         onRowsRendered={handleRowsRendered}
         onScroll={handleScroll}
         overscanCount={8}
