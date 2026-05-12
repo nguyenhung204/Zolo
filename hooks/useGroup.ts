@@ -20,6 +20,8 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/authStore";
 import { queryKeys } from "@/lib/query/keys";
+import type { ApiError } from "@/lib/api/errors";
+import type { Conversation } from "@/lib/api/conversations";
 import {
   getPolls,
   getPoll,
@@ -46,8 +48,6 @@ import {
   type JoinByInvitePayload,
   type JoinByInviteResult,
 } from "@/lib/api/group";
-import type { Conversation } from "@/lib/api/conversations";
-import type { ApiError } from "@/lib/api/errors";
 
 // ─── Polls ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +97,33 @@ export function useCreatePoll(conversationId: string) {
         },
       );
       qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);
+      qc.setQueryData<Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => {
+          if (!old) return old;
+          const updated = old.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  lastMessage: {
+                    id: newPoll.id,
+                    content: newPoll.question || "Bình chọn",
+                    type: "poll",
+                    senderId: newPoll.creatorId,
+                    createdAt: newPoll.createdAt,
+                  },
+                  updatedAt: newPoll.createdAt,
+                }
+              : conversation
+          );
+          const idx = updated.findIndex((conversation) => conversation.id === conversationId);
+          if (idx > 0) {
+            const [moved] = updated.splice(idx, 1);
+            updated.unshift(moved);
+          }
+          return updated;
+        }
+      );
     },
     onError: (err) => {
       if (err.status === 403) {

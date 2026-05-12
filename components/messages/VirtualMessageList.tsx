@@ -217,6 +217,7 @@ function MessageRowComponent({
 
   return (
     <div
+      data-message-id={msg.messageId}
       style={style}
       className={highlightMessageId === msg.messageId ? "bg-warning/20 transition-colors duration-700" : undefined}
     >
@@ -361,7 +362,7 @@ export function VirtualMessageList({
   }, [conversationId]);
 
   const listRef = useRef<ListImperativeAPI>(null!);
-  const rowHeight = useDynamicRowHeight({ defaultRowHeight: 56, key: conversationId });
+  const rowHeight = useDynamicRowHeight({ defaultRowHeight: 56, key: `${conversationId}:${messageMode}` });
 
   const atBottomRef = useRef(true);
   const [showFab, setShowFab] = useState(false);
@@ -405,6 +406,14 @@ export function VirtualMessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [supportsPolls, polls],
   );
+  const latestActivePoll = useMemo(
+    () =>
+      visiblePolls
+        .filter(isActivePoll)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        .at(-1) ?? null,
+    [visiblePolls],
+  );
   const items = useMemo(() => buildItems(messages, visiblePolls), [messages, visiblePolls]);
   const stableTimelineCount = messages.length + visiblePolls.length;
   itemsLengthRef.current = items.length;
@@ -412,6 +421,29 @@ export function VirtualMessageList({
     () => new Map(messages.map((m) => [m.messageId, m])),
     [messages],
   );
+
+  useEffect(() => {
+    if (!latestActivePoll) return;
+    getQueryClient().setQueryData<import("@/lib/api/conversations").Conversation[]>(
+      queryKeys.conversations.list(),
+      (old) =>
+        old?.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                lastMessage: {
+                  id: latestActivePoll.id,
+                  content: latestActivePoll.question || "Bình chọn",
+                  type: "poll",
+                  senderId: latestActivePoll.creatorId,
+                  createdAt: latestActivePoll.createdAt,
+                },
+                updatedAt: latestActivePoll.createdAt,
+              }
+            : conversation
+        ) ?? old
+    );
+  }, [conversationId, latestActivePoll]);
 
   const memberMap = useMemo(
     () => new Map(members.map((m) => [m.userId, m as ConversationMember & { displayName?: string; username?: string; avatarUrl?: string | null }])),
@@ -624,18 +656,37 @@ export function VirtualMessageList({
         containerEl.scrollTo({ top: scrollTop });
       }
 
-      const doScroll = () =>
+      const targetItem = items[targetIndex];
+      const centerRenderedTarget = () => {
+        if (targetItem?.kind !== "message") return false;
+        const container = listRef.current?.element;
+        if (!container) return false;
+        const targetEl = Array.from(container.querySelectorAll<HTMLElement>("[data-message-id]"))
+          .find((node) => node.dataset.messageId === targetItem.msg.messageId);
+        if (!targetEl) return false;
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = targetEl.getBoundingClientRect();
+        container.scrollTop += targetRect.top - containerRect.top - (container.clientHeight - targetRect.height) / 2;
+        return true;
+      };
+      requestAnimationFrame(() => { centerRenderedTarget(); });
+
+      const doScroll = () => {
         listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
+        requestAnimationFrame(() => { centerRenderedTarget(); });
+      };
 
       // Pass 2 & 3 — re-center after ResizeObserver measures the now-visible rows.
       const t1 = setTimeout(doScroll, 100);
       const t2 = setTimeout(() => {
         doScroll();
-        isJumpingRef.current = false;
       }, 320);
-      jumpTimersRef.current = [t1, t2];
+      const t3 = setTimeout(() => {
+        centerRenderedTarget();
+        isJumpingRef.current = false;
+      }, 520);
+      jumpTimersRef.current = [t1, t2, t3];
 
-      const targetItem = items[targetIndex];
       if (targetItem?.kind === "message") {
         setHighlightMessageId(targetItem.msg.messageId);
         window.setTimeout(() => setHighlightMessageId(null), 2200);

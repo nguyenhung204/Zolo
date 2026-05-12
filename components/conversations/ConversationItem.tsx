@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { UserAvatar } from "@/components/presence/UserAvatar";
 import { formatDistanceToNowStrict } from "@/lib/utils/date";
 import type { Conversation } from "@/lib/api/conversations";
-import { FileText, Hash, Image, Mic, Megaphone, Phone, Sticker, Video, AtSign } from "lucide-react";
+import { AtSign, BarChart3, FileText, Hash, Image, Mic, Megaphone, Phone, Sticker, Video } from "lucide-react";
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -46,6 +46,8 @@ function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
       return { icon: Sticker, label: prefix + "Sticker" };
     case "media":
       return { icon: Image, label: prefix + "Media" };
+    case "poll":
+      return { icon: BarChart3, label: prefix + (msg.content || "Bình chọn") };
     case "system":
       return { icon: null, label: msg.content };
     default:

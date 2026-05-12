@@ -255,6 +255,33 @@ export function useGroupSocketEvents(conversationId: string) {
         },
       );
       qc.setQueryData<Poll>(queryKeys.polls.detail(newPoll.id), newPoll);
+      qc.setQueryData<Conversation[]>(
+        queryKeys.conversations.list(),
+        (old) => {
+          if (!old) return old;
+          const updated = old.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                  ...conversation,
+                  lastMessage: {
+                    id: newPoll.id,
+                    content: newPoll.question || "Bình chọn",
+                    type: "poll",
+                    senderId: newPoll.creatorId,
+                    createdAt: newPoll.createdAt,
+                  },
+                  updatedAt: newPoll.createdAt,
+                }
+              : conversation
+          );
+          const idx = updated.findIndex((conversation) => conversation.id === conversationId);
+          if (idx > 0) {
+            const [moved] = updated.splice(idx, 1);
+            updated.unshift(moved);
+          }
+          return updated;
+        }
+      );
     };
 
     // ── group:poll_voted ────────────────────────────────────────────────────
