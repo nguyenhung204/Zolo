@@ -388,6 +388,9 @@ export function VirtualMessageList({
   // while heights are still being measured after a virtual-coordinate scroll.
   const isScrollingToBottomRef = useRef(false);
   const scrollToBottomTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Jump lock — prevents handleScroll from flipping atBottomRef while re-scroll passes run.
+  const isJumpingRef = useRef(false);
+  const jumpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Flatten pages — oldest first
   const messages: Message[] = useMemo(
@@ -556,13 +559,19 @@ export function VirtualMessageList({
     scrollToBottomTimersRef.current.forEach(clearTimeout);
     scrollToBottomTimersRef.current = [];
     isScrollingToBottomRef.current = false;
+    jumpTimersRef.current.forEach(clearTimeout);
+    jumpTimersRef.current = [];
+    isJumpingRef.current = false;
     setMessageMode("LIVE");
     clearPendingJumpedMessages(conversationId);
   }, [conversationId]);
 
   // Cleanup timers on unmount
   useEffect(() => {
-    return () => { scrollToBottomTimersRef.current.forEach(clearTimeout); };
+    return () => {
+      scrollToBottomTimersRef.current.forEach(clearTimeout);
+      jumpTimersRef.current.forEach(clearTimeout);
+    };
   }, []);
   // Jump to a specific message offset when requested (e.g. deep-link, pinned message)
   useEffect(() => {
@@ -574,7 +583,28 @@ export function VirtualMessageList({
       )
     );
     if (targetIndex >= 0 && listRef.current) {
-      listRef.current.scrollToRow({ index: targetIndex, align: "center" });
+      // Cancel any previous jump timers so stale re-scrolls don’t interfere.
+      jumpTimersRef.current.forEach(window.clearTimeout);
+      jumpTimersRef.current = [];
+      isJumpingRef.current = true;
+
+      const doScroll = () =>
+        listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
+
+      // Pass 1 — immediately: brings the target rows into the viewport so
+      //           react-window renders them and ResizeObserver can measure heights.
+      doScroll();
+
+      // Pass 2 & 3 — re-center after ResizeObserver cycles fire and actual row
+      //               heights replace the 56 px estimates used on first render.
+      //               Without this, the first jump always lands slightly off.
+      const t1 = window.setTimeout(doScroll, 100);
+      const t2 = window.setTimeout(() => {
+        doScroll();
+        isJumpingRef.current = false;
+      }, 320);
+      jumpTimersRef.current = [t1, t2];
+
       const targetItem = items[targetIndex];
       if (targetItem?.kind === "message") {
         setHighlightMessageId(targetItem.msg.messageId);
@@ -582,14 +612,18 @@ export function VirtualMessageList({
       }
       initialScrollDoneRef.current = true;
       // Use stableTimelineCount (messages + polls) so the "new messages" effect
-      // doesn't incorrectly fire a domScrollToBottom after a jump when polls exist.
+      // doesn’t incorrectly fire a domScrollToBottom after a jump when polls exist.
       prevCountRef.current = stableTimelineCount;
       atBottomRef.current = false;
       setShowFab(true);
       // Clear only on success so a subsequent render (with fully-loaded items) can retry.
       useConversationStore.getState().setTargetOffset(null);
       setTargetMessageId(null);
-      return;
+      return () => {
+        jumpTimersRef.current.forEach(window.clearTimeout);
+        jumpTimersRef.current = [];
+        isJumpingRef.current = false;
+      };
     }
     // Target not yet in items — leave targetOffset set so the effect retries when
     // items updates. Failsafe: clear after 5 s to avoid a permanently stuck state.
@@ -716,7 +750,7 @@ export function VirtualMessageList({
 
       // Only update atBottom tracking when not in a programmatic scroll so that
       // height-measurement reflows don't incorrectly flip atBottomRef to false.
-      if (!isScrollingToBottomRef.current) {
+      if (!isScrollingToBottomRef.current && !isJumpingRef.current) {
         atBottomRef.current = scrollHeight - scrollTop - clientHeight < 80;
         setShowFab(!atBottomRef.current);
         onScrollChange?.(atBottomRef.current, 0);
