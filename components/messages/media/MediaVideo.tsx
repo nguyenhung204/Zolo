@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, memo } from "react";
 import { Play, Pause, Volume2, VolumeX, Maximize2, Download, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/lib/api/messages";
@@ -14,7 +14,7 @@ interface Props {
   isMine: boolean;
 }
 
-export function MediaVideo({ message, isMine }: Props) {
+export const MediaVideo = memo(function MediaVideo({ message, isMine }: Props) {
   const isUploading = typeof message._uploadProgress === "number" && message._uploadProgress < 100;
 
   const [videoSrc, setVideoSrc] = useState<string | null>(
@@ -292,4 +292,4 @@ export function MediaVideo({ message, isMine }: Props) {
       </div>
     </div>
   );
-}
+});
