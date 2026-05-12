@@ -588,16 +588,47 @@ export function VirtualMessageList({
       jumpTimersRef.current = [];
       isJumpingRef.current = true;
 
+      // ── Pre-seed height estimates ──────────────────────────────────────────────────
+      // react-window computes the scroll offset for scrollToRow(N) by summing
+      // getRowHeight(0..N-1). Unmeasured rows fall back to the 56px default, but
+      // polls are ~260px, system messages ~36px, dividers ~36px — so the
+      // cumulative error before the target easily reaches 300-500px.
+      // Seeding better estimates before pass-1 closes most of that gap.
+      const JUMP_GROUP_GAP_MS = 5 * 60 * 1000;
+      for (let i = 0; i < items.length; i++) {
+        if (rowHeight.getRowHeight(i) !== undefined) continue; // already measured
+        const it = items[i];
+        let est = 56;
+        if (!it) { est = 56; }
+        else if (it.kind === "padding") { est = 16; }
+        else if (it.kind === "divider") { est = 36; }
+        else if (it.kind === "poll") { est = 260; }
+        else if (it.kind === "message") {
+          const { msg, prev } = it;
+          if (msg.type === "system") { est = 36; }
+          else if (msg.type === "call_summary") { est = 64; }
+          else {
+            const isGroupStart = !prev ||
+              prev.senderId !== msg.senderId ||
+              prev.type === "system" ||
+              prev.type === "call_summary" ||
+              msg.type === "system" ||
+              msg.type === "call_summary" ||
+              new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime() >= JUMP_GROUP_GAP_MS;
+            est = isGroupStart ? 64 : 40;
+          }
+        }
+        rowHeight.setRowHeight(i, est);
+      }
+
       const doScroll = () =>
         listRef.current?.scrollToRow({ index: targetIndex, align: "center" });
 
-      // Pass 1 — immediately: brings the target rows into the viewport so
-      //           react-window renders them and ResizeObserver can measure heights.
+      // Pass 1 — with seeded heights: landing is now close to center.
       doScroll();
 
-      // Pass 2 & 3 — re-center after ResizeObserver cycles fire and actual row
-      //               heights replace the 56 px estimates used on first render.
-      //               Without this, the first jump always lands slightly off.
+      // Pass 2 & 3 — re-center after ResizeObserver cycles replace estimates
+      //               with actual measured heights.
       const t1 = window.setTimeout(doScroll, 100);
       const t2 = window.setTimeout(() => {
         doScroll();
@@ -632,7 +663,7 @@ export function VirtualMessageList({
       setTargetMessageId(null);
     }, 5000);
     return () => window.clearTimeout(clearTimer);
-  }, [targetOffset, targetMessageId, items, messages.length, stableTimelineCount, setTargetMessageId]);
+  }, [targetOffset, targetMessageId, items, messages.length, stableTimelineCount, setTargetMessageId, rowHeight]);
 
   // Scroll to bottom when the first page of messages arrives for this conversation.
   // Uses DOM-native el.scrollTop = el.scrollHeight so virtual coordinate inaccuracies
