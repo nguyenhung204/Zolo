@@ -624,7 +624,7 @@ function ContactCardInner({
       <div
         className={cn(
           "overflow-hidden rounded-2xl border shadow-sm",
-          isMine ? "bg-white text-primary border-white/20" : "bg-surface border-border/70",
+          isMine ? "bg-white border-white/20" : "bg-surface border-border/70",
         )}
       >
         <div className="h-1.5 bg-gradient-to-r from-cta via-secondary to-success" />
@@ -643,10 +643,10 @@ function ContactCardInner({
               </div>
             )}
             <div className="min-w-0 flex-1">
-              <p className="font-semibold truncate text-primary">{name}</p>
-              <p className="text-xs truncate text-muted">@{username}</p>
+              <p className={cn("font-semibold truncate", isMine ? "text-slate-900" : "text-primary")}>{name}</p>
+              <p className={cn("text-xs truncate", isMine ? "text-slate-500" : "text-muted")}>@{username}</p>
               {email && (
-                <p className="text-xs truncate text-muted flex items-center gap-1 mt-0.5">
+                <p className={cn("text-xs truncate flex items-center gap-1 mt-0.5", isMine ? "text-slate-500" : "text-muted")}>
                   <Mail className="w-3 h-3 shrink-0" />
                   {email}
                 </p>

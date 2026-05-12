@@ -827,12 +827,16 @@ export function MessageComposer({
 
   const handleSendContact = (user: ContactPickUser) => {
     const caption = text.trim();
+    const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username;
     send({
       conversationId,
       type: "contact_card",
       content: caption,
       replyToMessageId: replyTo?.messageId,
-      metadata: { contactUserId: user.id },
+      metadata: {
+        contactUserId: user.id,
+        contactUsername: displayName,
+      },
     }).catch(() => toast.error("Could not send contact card."));
     setText("");
     setReplyTo(null);

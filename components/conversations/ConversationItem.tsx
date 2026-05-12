@@ -46,6 +46,8 @@ function lastMsgPreview(msg: Conversation["lastMessage"], isMe: boolean) {
       return { icon: Sticker, label: prefix + "Sticker" };
     case "media":
       return { icon: Image, label: prefix + "Media" };
+    case "contact_card":
+      return { icon: null, label: prefix + (msg.metadata?.contactUsername || "Danh thiếp") };
     case "poll":
       return { icon: BarChart3, label: prefix + (msg.content || "Bình chọn") };
     case "system":
