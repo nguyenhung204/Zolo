@@ -71,6 +71,7 @@ interface SendOptions {
     fileSize?: number;
     filename?: string;
     contactUserId?: string;
+    contactUsername?: string;
   };
   // Client-only: shown while upload is in progress
   localPreviewUrl?: string;
@@ -258,6 +259,7 @@ export function useSendMessage() {
         fileSize?: number;
         filename?: string;
         contactUserId?: string;
+        contactUsername?: string;
       };
     },
     maxAttempts = 5

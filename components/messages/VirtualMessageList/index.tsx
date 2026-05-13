@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, memo } from "react";
-import { List, type RowComponentProps } from "react-window";
+import { List, type RowComponentProps, type ListProps } from "react-window";
 import type { Message } from "@/lib/api/messages";
 import type { ConversationMember } from "@/lib/api/conversations";
 import { useConversationStore } from "@/stores/conversationStore";
@@ -243,7 +243,7 @@ export function VirtualMessageList({
         style={{ height: "100%", width: "100%", overflowAnchor: "none" } as React.CSSProperties}
         rowCount={timeline.items.length}
         rowHeight={scroll.rowHeight}
-        rowComponent={MessageRowComponent}
+        rowComponent={MessageRowComponent as unknown as NonNullable<ListProps<RowData>["rowComponent"]>}
         rowProps={rowProps}
         onRowsRendered={scroll.handleRowsRendered}
         onScroll={scroll.handleScroll}

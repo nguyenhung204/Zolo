@@ -239,6 +239,7 @@ export interface SendMessagePayload {
     fileSize?: number;
     filename?: string;
     contactUserId?: string;
+    contactUsername?: string;
   };
 }
 
