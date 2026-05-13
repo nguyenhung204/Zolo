@@ -7,7 +7,7 @@ import {
   useEffect,
   useLayoutEffect,
 } from "react";
-import { merge, timer, EMPTY, finalize, takeUntil } from "rxjs";
+import { finalize } from "rxjs";
 import type { Subscription } from "rxjs";
 import {
   useDynamicRowHeight,
@@ -21,14 +21,11 @@ import { queryKeys } from "@/lib/query/keys";
 import { useSeenCursor } from "@/hooks/useSeenCursor";
 import type { ListItem } from "../types";
 import {
-  rAF$,
-  fromResizeObserver,
   createBottomScrollStream,
   createJumpScrollStream,
   createHistoryRestoreStream,
 } from "../utils/rx";
 import { getBottomTargetIndex, estimateRowHeight } from "../utils/scroll";
-import { isActivePoll } from "../utils/buildItems";
 import {
   BOTTOM_THRESHOLD_PX,
   HISTORY_FETCH_THRESHOLD_PX,
@@ -127,8 +124,16 @@ export function useVirtualScroll({
 
   // ─── UI state ─────────────────────────────────────────────────────────────
   const [showFab, setShowFab] = useState(false);
+  const showFabRef = useRef(false);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const [isFetchingAfter, setIsFetchingAfter] = useState(false);
+
+  const updateShowFab = useCallback((value: boolean) => {
+    if (showFabRef.current !== value) {
+      showFabRef.current = value;
+      setShowFab(value);
+    }
+  }, []);
 
   // ─── Seen cursor ──────────────────────────────────────────────────────────
   const [lastVisibleOffset, setLastVisibleOffset] = useState<number | null>(null);
@@ -154,9 +159,9 @@ export function useVirtualScroll({
       const el = listRef.current?.element;
       if (!el) return false;
       if (snap.messageId) {
-        const targetEl = Array.from(
-          el.querySelectorAll<HTMLElement>("[data-message-id]"),
-        ).find((node) => node.dataset.messageId === snap.messageId);
+        const targetEl = el.querySelector<HTMLElement>(
+          `[data-message-id="${snap.messageId}"]`,
+        );
         if (targetEl) {
           const containerRect = el.getBoundingClientRect();
           const targetRect = targetEl.getBoundingClientRect();
@@ -177,7 +182,7 @@ export function useVirtualScroll({
     scrollToBottomSubRef.current?.unsubscribe();
     scrollState.current.isScrollingToBottom = true;
     scrollState.current.atBottom = true;
-    setShowFab(false);
+    updateShowFab(false);
 
     const doScroll = () => {
       const el = listRef.current?.element;
@@ -209,7 +214,7 @@ export function useVirtualScroll({
         scrollState.current.isScrollingToBottom = false;
       },
     }).subscribe();
-  }, [items]);
+  }, [items, updateShowFab]);
 
   // ─── loadMoreAfter (JUMPED mode) ──────────────────────────────────────────
   const loadMoreAfter = useCallback(async () => {
@@ -275,7 +280,7 @@ export function useVirtualScroll({
         scrollState.current.isScrollingToBottom = false;
         scrollToBottomSubRef.current?.unsubscribe();
         scrollState.current.atBottom = false;
-        setShowFab(true);
+        updateShowFab(true);
         onScrollChange?.(false, 0);
       }
 
@@ -286,7 +291,7 @@ export function useVirtualScroll({
       ) {
         scrollState.current.atBottom =
           scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD_PX;
-        setShowFab(!scrollState.current.atBottom);
+        updateShowFab(!scrollState.current.atBottom);
         onScrollChange?.(scrollState.current.atBottom, 0);
       }
 
@@ -315,7 +320,7 @@ export function useVirtualScroll({
         void loadMoreAfter();
       }
     },
-    [captureScrollAnchor, data?.pages, loadMoreAfter, messageMode, onScrollChange],
+    [captureScrollAnchor, data?.pages, loadMoreAfter, messageMode, onScrollChange, updateShowFab],
   );
 
   // ─── handleRowsRendered ───────────────────────────────────────────────────
@@ -385,6 +390,7 @@ export function useVirtualScroll({
     scrollSnapRef.current = null;
     initialNewestOffsetRef.current = null;
     newestPageEvictedRef.current = false;
+    showFabRef.current = false;
     setShowFab(false);
     setLastVisibleOffset(null);
     scrollToBottomSubRef.current?.unsubscribe();
@@ -519,9 +525,9 @@ export function useVirtualScroll({
         if (targetItem?.kind !== "message") return false;
         const container = listRef.current?.element;
         if (!container) return false;
-        const targetEl = Array.from(
-          container.querySelectorAll<HTMLElement>("[data-message-id]"),
-        ).find((node) => node.dataset.messageId === targetItem.msg.messageId);
+        const targetEl = container.querySelector<HTMLElement>(
+          `[data-message-id="${targetItem.msg.messageId}"]`,
+        );
         if (!targetEl) return false;
         const containerRect = container.getBoundingClientRect();
         const targetRect = targetEl.getBoundingClientRect();
@@ -554,7 +560,7 @@ export function useVirtualScroll({
       scrollState.current.initialScrollDone = true;
       scrollState.current.prevCount = stableTimelineCount;
       scrollState.current.atBottom = false;
-      setShowFab(true);
+      updateShowFab(true);
 
       useConversationStore.getState().setTargetOffset(null);
       setTargetMessageId(null);

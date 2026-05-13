@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import { Loader2 } from "lucide-react";
 import type { Message } from "@/lib/api/messages";
 import { fetchDisplayUrl } from "./shared";
@@ -14,7 +14,7 @@ interface Props {
 
 const MAX_CHAT_IMAGE_WIDTH = 360;
 
-export function MediaImage({ message, isMine }: Props) {
+export const MediaImage = memo(function MediaImage({ message, isMine }: Props) {
   const isUploading = typeof message._uploadProgress === "number" && message._uploadProgress < 100;
   const isMediaReady = !message.mediaStatus || message.mediaStatus === "ready";
   const imageAttachment = message.attachments?.find((attachment) => {
@@ -49,7 +49,7 @@ export function MediaImage({ message, isMine }: Props) {
             .finally(() => { isLoadingRef.current = false; });
         }
       },
-      { rootMargin: "100px" }
+      { rootMargin: "800px" }
     );
     if (imgRef.current) observer.observe(imgRef.current);
     return () => observer.disconnect();
@@ -128,4 +128,4 @@ export function MediaImage({ message, isMine }: Props) {
       <Loader2 className="w-5 h-5 animate-spin text-muted/60" />
     </div>
   );
-}
+});

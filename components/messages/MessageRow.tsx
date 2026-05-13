@@ -9,7 +9,7 @@ import {
   Contact, MessageCircle, UserPlus, UserCheck, Loader2, Mail,
 } from "lucide-react";
 import { AnimatedSticker } from "@/components/messages/AnimatedSticker";
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, memo } from "react";
 import { useAuthStore } from "@/stores/authStore";
 import { addReaction } from "@/lib/api/messages";
 import type { ReactionMap } from "@/lib/api/messages";
@@ -69,7 +69,7 @@ interface MessageRowProps {
   onRetry?: (msg: Message) => void;
 }
 
-export function MessageRow({
+export const MessageRow = memo(function MessageRow({
   message, isMine, isGroupStart, isGroupEnd,
   replyMsg,
   senderName = "", senderAvatarUrl,
@@ -394,7 +394,7 @@ export function MessageRow({
       </div>
     </div>
   );
-}
+});
 
 // ─── MessageContent ───────────────────────────────────────────────────────────
 

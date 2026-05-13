@@ -20,9 +20,14 @@ export function isActivePoll(poll: Poll): boolean {
 export function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
   const activePolls = polls.filter(isActivePoll);
 
-  const timeline = [
-    ...messages.map((msg) => ({ kind: "message" as const, createdAt: msg.createdAt, msg })),
-  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const timeline = messages
+    .map((msg) => ({
+      kind: "message" as const,
+      ts: new Date(msg.createdAt).getTime(),
+      dateStr: new Date(msg.createdAt).toDateString(),
+      msg,
+    }))
+    .sort((a, b) => a.ts - b.ts);
 
   const items: ListItem[] = [{ kind: "padding" }]; // top spacer
 
@@ -30,12 +35,8 @@ export function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
     const item = timeline[i];
     const prev = timeline[i - 1] ?? null;
 
-    // Insert date divider when the calendar day changes
-    if (
-      !prev ||
-      new Date(prev.createdAt).toDateString() !== new Date(item.createdAt).toDateString()
-    ) {
-      items.push({ kind: "divider", label: formatDateDivider(item.createdAt) });
+    if (!prev || prev.dateStr !== item.dateStr) {
+      items.push({ kind: "divider", label: formatDateDivider(item.msg.createdAt) });
     }
 
     const prevMsg = prev?.kind === "message" ? prev.msg : null;
@@ -44,7 +45,6 @@ export function buildItems(messages: Message[], polls: Poll[]): ListItem[] {
     items.push({ kind: "message", msg: item.msg, prev: prevMsg, next: nextMsg });
   }
 
-  // Append active polls at the very bottom so they are immediately visible
   if (activePolls.length > 0) {
     const sorted = [...activePolls].sort(
       (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),

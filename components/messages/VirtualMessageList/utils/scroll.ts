@@ -29,6 +29,27 @@ export function estimateRowHeight(item: ListItem | undefined): number {
     if (msg.type === "system") return 36;
     if (msg.type === "call_summary") return 64;
     if (msg.type === "contact_card") return 240;
+    if (msg.type === "sticker") return 160;
+    if (msg.type === "audio") return 72;
+
+    if (msg.type === "image") {
+      const w = msg.metadata?.width;
+      const h = msg.metadata?.height;
+      if (w && h) {
+        const displayW = Math.min(360, w);
+        return Math.round(displayW * (h / w)) + 32;
+      }
+      return 280;
+    }
+    if (msg.type === "video") return 300;
+    if (msg.type === "media") {
+      const count = msg.attachments?.length ?? 0;
+      if (count <= 1) return 280;
+      if (count <= 4) return 360;
+      return 500;
+    }
+    if (msg.type === "file") return 72;
+
     const isGroupStart =
       !prev ||
       prev.senderId !== msg.senderId ||

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import { List, type RowComponentProps } from "react-window";
 import type { Message } from "@/lib/api/messages";
 import type { ConversationMember } from "@/lib/api/conversations";
@@ -37,7 +37,7 @@ interface VirtualMessageListProps {
 
 // ─── Row renderer (must live outside the parent for stable ref) ───────────────
 
-function MessageRowComponent({
+const MessageRowComponent = memo(function MessageRowComponent({
   index,
   style,
   items,
@@ -140,7 +140,7 @@ function MessageRowComponent({
       />
     </div>
   );
-}
+});
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -247,7 +247,7 @@ export function VirtualMessageList({
         rowProps={rowProps}
         onRowsRendered={scroll.handleRowsRendered}
         onScroll={scroll.handleScroll}
-        overscanCount={scroll.messageMode === "JUMPED" ? 50 : 20}
+        overscanCount={scroll.messageMode === "JUMPED" ? 50 : 30}
       />
 
       <ScrollToBottomFab
